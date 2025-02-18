@@ -1,0 +1,47 @@
+zVariables: ['Epoch', 'Frequency', 'RH', 'LH']
+
+Variable: Epoch
+Attributes: {'CATDESC': 'Time (UT)', 'DISPLAY_TYPE': ' ', 'FIELDNAM': 'Epoch', 'FILLVAL': np.float64(-1e+31), 'LABLAXIS': 'Epoch', 'UNITS': 's', 'VALIDMIN': np.float64(62766835200000.0), 'VALIDMAX': np.float64(63745056000000.0), 'VAR_TYPE': 'support_data', 'SCALETYP': 'Linear', 'MONOTON': 'INCREASE', 'DICT_KEY': 'time>Epoch'}
+Data: [6.38222976e+13 6.38222976e+13 6.38222976e+13 ... 6.38223840e+13
+ 6.38223840e+13 6.38223840e+13]
+Type: <class 'numpy.ndarray'>
+Dimension: 1
+Shape: (86400,)
+Size: 86400
+-----------
+Variable: Frequency
+Attributes: {'CATDESC': 'Frequency', 'DISPLAY_TYPE': ' ', 'FIELDNAM': 'Frequency', 'FILLVAL': np.float32(-1000000000000000.0), 'FORMAT': 'E9.3', 'LABLAXIS': 'frequency', 'UNITS': 'Hz', 'VALIDMIN': np.float32(15000000.0), 'VALIDMAX': np.float32(40000000.0), 'VAR_TYPE': 'support_data', 'SCALETYP': 'log', 'MONOTON': 'INCREASE'}
+Data: [13793945. 13824463. 13854980. 13885498. 13916016. 13946533. 13977051. ... 41198732. 41229248.]
+Type: <class 'numpy.ndarray'>
+Dimension: 1
+Shape: (900,)
+Size: 900
+-----------
+Variable: RH
+Attributes: {'CATDESC': 'Power Flux Density (RH)', 'DEPEND_0': 'Epoch', 'DEPEND_1': 'Frequency', 'DISPLAY_TYPE': 'spectrogram', 'FIELDNAM': 'RH', 'FILLVAL': np.uint8(255), 'LABLAXIS': 'RH', 'UNITS': 'dB', 'VALIDMIN': np.uint8(0), 'VALIDMAX': np.uint8(150), 'VAR_TYPE': 'data', 'SCALETYP': 'Linear', 'DICT_KEY': 'frequency>power_flux_density_channel'}
+Data: [[119 124 122 ...  82  76  77]
+ [117 122 118 ...  78  77  79]
+ [119 124 120 ...  81  78  75]
+ ...
+ [123 123 124 ...  81  87  83]
+ [120 116 122 ...  91  97  92]
+ [117 119 120 ...  86  92  88]]
+Type: <class 'numpy.ndarray'>
+Dimension: 2
+Shape: (86400, 900)
+Size: 77760000
+-----------
+Variable: LH
+Attributes: {'CATDESC': 'Power Flux Density (LH)', 'DEPEND_0': 'Epoch', 'DEPEND_1': 'Frequency', 'DISPLAY_TYPE': 'spectrogram', 'FIELDNAM': 'LH', 'FILLVAL': np.uint8(255), 'LABLAXIS': 'LH', 'UNITS': 'dB', 'VALIDMIN': np.uint8(0), 'VALIDMAX': np.uint8(150), 'VAR_TYPE': 'data', 'SCALETYP': 'Linear', 'DICT_KEY': 'frequency>power_flux_density_channel'}
+Data: [[117 122 122 ...  84  83  82]
+ [117 121 118 ...  84  85  85]
+ [116 121 118 ...  86  85  84]
+ ...
+ [122 126 132 ...  93  99  93]
+ [120 123 131 ... 101 106 100]
+ [115 122 130 ...  96 102  96]]
+Type: <class 'numpy.ndarray'>
+Dimension: 2
+Shape: (86400, 900)
+Size: 77760000
+-----------

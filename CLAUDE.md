@@ -210,13 +210,13 @@ echo $GITHUB_TOKEN
 ```
 
 ### 実際のトークン設定
-実際のPersonal Access Token: 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
+実際のPersonal Access Token: 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
 
 ```bash
 # 一時的な設定
-export GITHUB_TOKEN="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"
+export GITHUB_TOKEN="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"
 
 # 永続的な設定
-echo 'export GITHUB_TOKEN="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"' >> ~/.bashrc
+echo 'export GITHUB_TOKEN="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"' >> ~/.bashrc
 source ~/.bashrc
 ```

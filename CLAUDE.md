@@ -209,14 +209,199 @@ EOF
 echo $GITHUB_TOKEN
 ```
 
-### 実際のトークン設定
-実際のPersonal Access Token: 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
+# GitHub リポジトリ管理（改善版）
 
+## 🔐 認証設定
+
+### SSH認証（推奨方法）
 ```bash
-# 一時的な設定
-export GITHUB_TOKEN="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"
+# 1. SSH鍵生成
+ssh-keygen -t ed25519 -C "kinno.naoto.r6@dc.tohoku.ac.jp"
 
-# 永続的な設定
+# 2. SSH鍵をGitHubに登録
+cat ~/.ssh/id_ed25519.pub
+# → GitHub Settings > SSH and GPG keys に追加
+
+# 3. SSH接続テスト
+ssh -T git@github.com
+
+# 4. リモートURL設定
+git remote set-url origin git@github.com:kinno-7010/Research.git
+```
+
+### Personal Access Token（代替方法）
+```bash
+# 1. 新しいトークン作成（GitHub.com）
+# Settings > Developer settings > Personal access tokens > Generate new token
+# 必要な権限: repo, workflow, write:packages
+
+# 2. 環境変数設定
+export GITHUB_TOKEN="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"
 echo 'export GITHUB_TOKEN="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"' >> ~/.bashrc
 source ~/.bashrc
+
+# 3. リモートURL設定
+git remote set-url origin https://kinno-7010:$GITHUB_TOKEN@github.com/kinno-7010/Research.git
 ```
+
+## 🛠️ Git基本設定
+
+### ユーザー情報設定
+```bash
+# グローバル設定
+git config --global user.name "kinno-7010"
+git config --global user.email "kinno.naoto.r6@dc.tohoku.ac.jp"
+
+# リポジトリ固有設定
+git config user.name "kinno-7010"
+git config user.email "kinno.naoto.r6@dc.tohoku.ac.jp"
+```
+
+### 便利な設定
+```bash
+# デフォルトブランチ設定
+git config --global init.defaultBranch main
+
+# プッシュ設定
+git config --global push.default simple
+
+# 認証情報キャッシュ（HTTPS使用時）
+git config --global credential.helper cache
+git config --global credential.helper 'cache --timeout=3600'
+```
+
+## 📅 コミット・プッシュ手順
+
+### 1. 時刻確認（必須）
+```bash
+# 現在時刻確認（JST）
+date "+%Y%m%d %H:%M"
+# 例: 20250702 17:44
+```
+
+### 2. ファイル追加・コミット
+```bash
+# ファイル追加
+git add [ファイル名]
+# または
+git add **/*.ipynb **/*.py **/*.pro CLAUDE.md
+
+# コミット（時刻形式必須）
+git commit -m "$(date '+%Y%m%d %H:%M') : [コミットメッセージ]"
+
+# 例:
+git commit -m "$(date '+%Y%m%d %H:%M') : CME解析コードのGUI機能を改善"
+```
+
+### 3. プッシュ
+```bash
+# 通常のプッシュ
+git push origin main
+
+# 初回プッシュ（アップストリーム設定）
+git push -u origin main
+```
+
+## 🚨 トラブルシューティング
+
+### 認証エラーの場合
+```bash
+# 1. 現在の認証方式確認
+git remote -v
+
+# 2. SSH接続テスト（SSH使用時）
+ssh -T git@github.com
+
+# 3. トークン有効性確認（HTTPS使用時）
+curl -H "Authorization: token $GITHUB_TOKEN" https://api.github.com/user
+
+# 4. 認証情報クリア
+git credential-manager-core erase
+# または
+git config --global --unset credential.helper
+```
+
+### よくあるエラーと対処法
+
+#### エラー: "Authentication failed"
+```bash
+# 解決策1: SSH認証に切り替え
+git remote set-url origin git@github.com:kinno-7010/Research.git
+
+# 解決策2: 新しいトークン作成・設定
+export GITHUB_TOKEN="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"
+git remote set-url origin https://kinno-7010:$GITHUB_TOKEN@github.com/kinno-7010/Research.git
+```
+
+#### エラー: "Permission denied"
+```bash
+# SSH鍵の権限確認
+chmod 600 ~/.ssh/id_ed25519
+chmod 644 ~/.ssh/id_ed25519.pub
+
+# SSH Agentに鍵追加
+ssh-add ~/.ssh/id_ed25519
+```
+
+#### エラー: "Repository not found"
+```bash
+# リモートURL確認・修正
+git remote -v
+git remote set-url origin [正しいURL]
+```
+
+## 📋 日常的なワークフロー
+
+### A. 簡単なコミット・プッシュ
+```bash
+# ワンライナー（SSH認証設定済みの場合）
+git add . && git commit -m "$(date '+%Y%m%d %H:%M') : [メッセージ]" && git push
+```
+
+### B. 詳細なコミットメッセージ
+```bash
+git commit -m "$(cat <<EOF
+$(date '+%Y%m%d %H:%M') : [メインメッセージ]
+
+- [変更点1]
+- [変更点2]
+- [変更点3]
+
+🤖 Generated with Claude Code
+Co-Authored-By: Claude <noreply@anthropic.com>
+EOF
+)"
+```
+
+## 🔄 定期メンテナンス
+
+### 月次チェック項目
+- [ ] Personal Access Tokenの有効期限確認
+- [ ] SSH鍵の状態確認
+- [ ] リモートリポジトリとの同期状況確認
+
+### セキュリティベストプラクティス
+- [ ] トークンを公開リポジトリにコミットしない
+- [ ] 定期的なトークン更新（3ヶ月毎推奨）
+- [ ] SSH鍵のパスフレーズ設定
+- [ ] 不要になったトークンの削除
+
+## 🆘 緊急時の対処
+
+### すぐにプッシュしたい場合
+```bash
+# 1. 現在の状態確認
+git status
+git log --oneline -3
+
+# 2. 強制的なHTTPS認証
+git remote set-url origin https://kinno-7010@github.com/kinno-7010/Research.git
+git push origin main
+# → パスワード入力時にPersonal Access Tokenを使用
+
+# 3. SSH認証（事前設定済みの場合）
+git remote set-url origin git@github.com:kinno-7010/Research.git
+git push origin main
+```
+
+**重要**: 認証エラーが続く場合は、GitHubのPersonal Access Tokenページで新しいトークンを作成し、適切な権限（repo, workflow）を付与してください。

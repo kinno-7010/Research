@@ -489,7 +489,8 @@ def create_single_integrated_image(ax, target_time_str: str):
     # mk4_map_mean, mk4_map_std = np.nanmean(mk4_map.data), np.nanstd(mk4_map.data)
     # mk4_vmin, mk4_vmax = mk4_map_mean, mk4_map_mean + 1*mk4_map_std
     mk4_vmin, mk4_vmax = -1, 4
-    n_mk4 = np.clip((mk4_map.data - mk4_vmin) / (mk4_vmax - mk4_vmin), 0, 1)
+    mk4_norm = ImageNormalize(mk4_map.data, vmin=mk4_vmin, vmax=mk4_vmax, stretch=LinearStretch(), clip=True)
+    n_mk4 = mk4_norm(mk4_map.data)
 
 
     lasco_map_mean, lasco_map_std = np.nanmean(lasco_map.data), np.nanstd(lasco_map.data)
@@ -497,21 +498,21 @@ def create_single_integrated_image(ax, target_time_str: str):
     print('lasco_vmin', lasco_vmin, 'lasco_vmax', lasco_vmax)
     # lasco_vmin, lasco_vmax = np.nanpercentile(lasco_map.data, [1, 99])
     lasco_vmin, lasco_vmax = 60, 380
-    n_lasco = np.clip((lasco_map.data - lasco_vmin) / (lasco_vmax - lasco_vmin), 0, 1)
+    lasco_norm = ImageNormalize(lasco_map.data, vmin=lasco_vmin, vmax=lasco_vmax, stretch=LinearStretch(), clip=True)
+    n_lasco = lasco_norm(lasco_map.data)
 
     # AIA RGB 合成用正規化
-    def normalize_log_stretch(arr, vmin, vmax):
-        arr_clip = np.maximum(arr, 1e-9)
-        norm = ImageNormalize(arr_clip, vmin=vmin, vmax=vmax, stretch=LogStretch(), clip=True)
-        return norm(arr_clip)
+    def normalize_linear_stretch(arr, vmin, vmax):
+        norm = ImageNormalize(arr, vmin=vmin, vmax=vmax, stretch=LinearStretch(), clip=True)
+        return norm(arr)
 
     def scale01(a):
         mn, mx = np.nanmin(a), np.nanmax(a)
         return (a - mn) / (mx - mn) if mx > mn else np.zeros_like(a)
     
-    r_ch = normalize_log_stretch(aia211_map.data, vmin=aia_norm_ranges[0], vmax=aia_norm_ranges[1])
-    g_ch = normalize_log_stretch(aia193_map.data, vmin=aia_norm_ranges[0], vmax=aia_norm_ranges[1])
-    b_ch = normalize_log_stretch(aia171_map.data, vmin=aia_norm_ranges[0], vmax=aia_norm_ranges[1])
+    r_ch = normalize_linear_stretch(aia211_map.data, vmin=aia_norm_ranges[0], vmax=aia_norm_ranges[1])
+    g_ch = normalize_linear_stretch(aia193_map.data, vmin=aia_norm_ranges[0], vmax=aia_norm_ranges[1])
+    b_ch = normalize_linear_stretch(aia171_map.data, vmin=aia_norm_ranges[0], vmax=aia_norm_ranges[1])
 
     r01, g01, b01 = map(scale01, (r_ch, g_ch, b_ch))
 
@@ -599,11 +600,10 @@ def select_by_midpoint(target_time: Time, map_list: list[tuple]):
     return map_list[idx]
 
     
-def normalize_log_stretch_integrated(arr, vmin, vmax):
+def normalize_linear_stretch_integrated(arr, vmin, vmax):
     """AIA RGB 合成用正規化"""
-    arr_clip = np.maximum(arr, 1e-9)
-    norm = ImageNormalize(arr_clip, vmin=vmin, vmax=vmax, stretch=LogStretch(), clip=True)
-    return norm(arr_clip)
+    norm = ImageNormalize(arr, vmin=vmin, vmax=vmax, stretch=LinearStretch(), clip=True)
+    return norm(arr)
 
 
 def get_params(m):
@@ -796,7 +796,8 @@ def create_single_diff_image(ax, target_time_str: str):
     mk4_vmin, mk4_vmax = np.percentile(mk4_diff, [0.1, 99.9])
     mk4_vmin, mk4_vmax = -2, 1.5
     print('mk4_vmin', mk4_vmin, 'mk4_vmax', mk4_vmax)
-    n_mk4 = np.clip((mk4_diff - mk4_vmin) / (mk4_vmax - mk4_vmin), 0, 1)
+    mk4_norm = ImageNormalize(mk4_diff, vmin=mk4_vmin, vmax=mk4_vmax, stretch=LinearStretch(), clip=True)
+    n_mk4 = mk4_norm(mk4_diff)
 
     # lasco_map_mean, lasco_map_std = np.nanmean(lasco_map.data), np.nanstd(lasco_map.data)
     # lasco_vmin, lasco_vmax = lasco_map_mean - lasco_map_std, lasco_map_mean + lasco_map_std
@@ -804,13 +805,13 @@ def create_single_diff_image(ax, target_time_str: str):
     lasco_vmin, lasco_vmax = -5, 50
     print('lasco_vmin', lasco_vmin, 'lasco_vmax', lasco_vmax)
     
-    n_lasco = np.clip((lasco_diff - lasco_vmin) / (lasco_vmax - lasco_vmin), 0, 1)
+    lasco_norm = ImageNormalize(lasco_diff, vmin=lasco_vmin, vmax=lasco_vmax, stretch=LinearStretch(), clip=True)
+    n_lasco = lasco_norm(lasco_diff)
 
     # AIA RGB 合成用正規化
-    def normalize_log_stretch(arr, vmin, vmax):
-        arr_clip = np.maximum(arr, 1e-9)
-        norm = ImageNormalize(arr_clip, vmin=vmin, vmax=vmax, stretch=LogStretch(), clip=True)
-        return norm(arr_clip)
+    def normalize_linear_stretch(arr, vmin, vmax):
+        norm = ImageNormalize(arr, vmin=vmin, vmax=vmax, stretch=LinearStretch(), clip=True)
+        return norm(arr)
 
     def scale01(a):
         mn, mx = np.nanmin(a), np.nanmax(a)

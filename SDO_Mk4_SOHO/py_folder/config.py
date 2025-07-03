@@ -19,7 +19,7 @@ import numpy as np
 import pandas as pd
 import sunpy.map
 from astropy.time import Time
-from astropy.visualization import ImageNormalize, PowerStretch, AsinhStretch, LogStretch
+from astropy.visualization import ImageNormalize, PowerStretch, AsinhStretch, LogStretch, LinearStretch
 from astropy.visualization.mpl_normalize import ImageNormalize
 from matplotlib.ticker import FuncFormatter
 from tqdm import tqdm

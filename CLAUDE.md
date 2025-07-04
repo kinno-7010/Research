@@ -197,8 +197,6 @@ date "+%Y%m%d %H:%M"
 
 ### 2. ファイル追加・コミット
 ```bash
-# ファイルの追加
-git add **/*.py **/*.ipynb **/*.pro CLAUDE.md
 
 # または特定ファイル
 git add [ファイル名]
@@ -268,6 +266,95 @@ git push origin main
 # ワンライナー
 git add . && git commit -m "$(date '+%Y%m%d %H:%M') : [メッセージ]" && git push
 ```
+
+## 🔧 Claude Code環境での特殊な問題と解決方法
+
+### Claude Code環境でのSSH認証エラー
+
+#### 典型的なエラー
+```
+Error: ssh_askpass: exec(/usr/bin/ssh-askpass): No such file or directory
+git@github.com: Permission denied (publickey).
+```
+
+#### 原因
+1. **対話的認証の制約**: Claude Code環境では、パスフレーズやパスワードの対話的入力ができません
+2. **ssh-askpassの欠如**: WSL環境では `ssh-askpass` がデフォルトでインストールされていません
+3. **SSH鍵のパスフレーズ**: 既存のSSH鍵にパスフレーズが設定されている場合、認証時に対話的入力が必要になります
+
+#### 解決方法
+
+##### Option A: 既存鍵からパスフレーズを削除
+```bash
+# 1. 既存鍵の確認
+ls -la ~/.ssh/id_ed25519_github*
+
+# 2. 既存鍵からパスフレーズを削除
+ssh-keygen -p -f ~/.ssh/id_ed25519_github
+# Enter old passphrase: [現在のパスフレーズを入力]
+# Enter new passphrase (empty for no passphrase): [Enter]
+# Enter same passphrase again: [Enter]
+
+# 3. 公開鍵を確認（既にGitHubに登録済みの場合はスキップ）
+cat ~/.ssh/id_ed25519_github.pub
+```
+
+##### Option B: 新規鍵を作成（古い鍵の場合）
+```bash
+# 1. 現在の鍵をバックアップ
+mv ~/.ssh/id_ed25519_github ~/.ssh/id_ed25519_github.bak
+
+# 2. パスフレーズなし鍵生成
+ssh-keygen -t ed25519 -C "kinno.naoto.r6@dc.tohoku.ac.jp" -f ~/.ssh/id_ed25519_github -N ""
+
+# 3. 公開鍵を表示（GitHub登録用）
+cat ~/.ssh/id_ed25519_github.pub
+```
+
+#### 完全な設定手順
+```bash
+# SSH設定ファイル作成 (作成されている場合は必要なし)
+cat > ~/.ssh/config << 'EOF'
+Host github.com
+    HostName github.com
+    User git
+    IdentityFile ~/.ssh/id_ed25519_github
+    IdentitiesOnly yes
+EOF
+
+# 権限設定
+chmod 600 ~/.ssh/config ~/.ssh/id_ed25519_github
+chmod 644 ~/.ssh/id_ed25519_github.pub
+
+# SSH Agent設定
+eval "$(ssh-agent -s)"
+ssh-add ~/.ssh/id_ed25519_github
+
+# 接続テスト
+ssh -T git@github.com
+```
+
+#### 成功の確認
+以下のようなメッセージが表示されれば成功です：
+
+```bash
+# SSH接続テスト成功時
+Hi kinno-7010! You've successfully authenticated, but GitHub does not provide shell access.
+
+# プッシュ成功時
+To github.com:kinno-7010/Research.git
+   [commit1]..[commit2]  main -> main
+```
+
+### Claude Code環境での注意事項
+1. **セキュリティ**: パスフレーズなしSSH鍵は、開発環境やClaude Code環境などの制限された環境でのみ使用してください
+2. **権限管理**: SSH関連ファイルの権限設定を適切に行ってください
+3. **定期更新**: セキュリティ向上のため、3-6ヶ月ごとに鍵の再生成を検討してください
+
+### 環境特有の制約
+- **対話的プロンプト不可**: パスフレーズやパスワードの入力ができません
+- **GUI認証不可**: X11転送やGUIツールが利用できません
+- **セッション制限**: SSH Agentの状態が維持されない場合があります
 
 ## 🚨 トラブルシューティング手順
 

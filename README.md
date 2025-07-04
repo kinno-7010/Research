@@ -15,6 +15,7 @@
   - CME発生過程の高時間分解能観測
   - 太陽フレアとCMEの関連性調査
 - **データサイト**: [JSOC Stanford](http://jsoc.stanford.edu/) / [SDO NASA](https://sdo.gsfc.nasa.gov/data/)
+- **関連論文**: Lemen, J. R., et al. (2012). "The Atmospheric Imaging Assembly (AIA) on the Solar Dynamics Observatory (SDO)." *Solar Physics*, 275, 17-40. [DOI: 10.1007/s11207-011-9776-8](https://doi.org/10.1007/s11207-011-9776-8)
 
 #### SOHO (Solar and Heliospheric Observatory)
 - **機器**: LASCO-C2 (Large Angle and Spectrometric Coronagraph)
@@ -24,6 +25,7 @@
   - pB (polarized Brightness) データによる電子密度推定
   - 電子密度トモグラフィ解析
 - **データサイト**: [CDAW NASA](https://cdaw.gsfc.nasa.gov/) / [LASCO NRL](https://lasco-www.nrl.navy.mil/)
+- **関連論文**: Brueckner, G. E., et al. (1995). "The Large Angle Spectroscopic Coronagraph (LASCO)." *Solar Physics*, 162, 357-402. [DOI: 10.1007/BF00733434](https://doi.org/10.1007/BF00733434)
 
 #### Parker Solar Probe (PSP)
 - **機器**: FIELDS (電場・磁場測定装置)
@@ -33,6 +35,7 @@
   - 太陽風中の電磁場揺らぎ測定
   - 近日点での高時間分解能電波観測
 - **データサイト**: [Parker Solar Probe Mission](https://parkersolarprobe.jhuapl.edu/)
+- **関連論文**: Bale, S. D., et al. (2016). "The FIELDS Instrument Suite for Solar Probe Plus." *Space Science Reviews*, 204, 49-82. [DOI: 10.1007/s11214-016-0244-5](https://doi.org/10.1007/s11214-016-0244-5)
 
 ### 🏔️ 地上観測機器
 
@@ -43,6 +46,9 @@
   - CME高度進化の詳細測定（15秒間隔）
   - 偏光度データ(pB)による密度構造解析
 - **データサイト**: [MLSO HAO NCAR](https://www2.hao.ucar.edu/mlso/) / [データリクエスト](mailto:mlso_data_requests@ucar.edu)
+- **関連論文**: 
+  - Mark-4: Elmore, D. F., et al. (2003). "Calibration of a ground-based solar coronal polarimeter." *Proc. SPIE 4843*, 66-76. [DOI: 10.1117/12.459279](https://doi.org/10.1117/12.459279)
+  - K-Cor: de Wijn, A. G., et al. (2012). "Stray light and polarimetry considerations for the COSMO K-Coronagraph." *Proc. SPIE 8444*, 84443N. [DOI: 10.1117/12.926511](https://doi.org/10.1117/12.926511)
 
 #### 電波観測ネットワーク
 
@@ -100,6 +106,17 @@
 **主要解析日時**: 2022年6月13日 02:00-05:00 UT
 
 このイベントは複数観測機器で同時観測され、CME発生からType II電波バースト発生までの全過程を追跡可能な貴重なデータセットとなっている。
+
+## 📚 主要観測機器の関連論文
+
+### 宇宙観測機器
+- **SDO/AIA**: Lemen, J. R., et al. (2012). "The Atmospheric Imaging Assembly (AIA) on the Solar Dynamics Observatory (SDO)." *Solar Physics*, 275, 17-40.
+- **SOHO/LASCO**: Brueckner, G. E., et al. (1995). "The Large Angle Spectroscopic Coronagraph (LASCO)." *Solar Physics*, 162, 357-402.
+- **Parker Solar Probe/FIELDS**: Bale, S. D., et al. (2016). "The FIELDS Instrument Suite for Solar Probe Plus." *Space Science Reviews*, 204, 49-82.
+
+### 地上観測機器
+- **MLSO Mark-4**: Elmore, D. F., et al. (2003). "Calibration of a ground-based solar coronal polarimeter." *Proc. SPIE 4843*, 66-76.
+- **MLSO K-Cor**: de Wijn, A. G., et al. (2012). "Stray light and polarimetry considerations for the COSMO K-Coronagraph." *Proc. SPIE 8444*, 84443N.
 
 ## 🔗 関連リンク
 - [Virtual Solar Observatory (VSO)](https://sdac.virtualsolar.org/)

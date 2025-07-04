@@ -58,6 +58,7 @@ AI運用5原則
 * 出力やレスポンスのハードコード
 * エラーメッセージの無視や隠蔽
 * 一時的な修正による問題の先送り
+* ファイル・フォルダーの消去(消去を行う際は必ずユーザーに「何のファイル/フォルダーを何のために消去するのか」を示し，必ず確認を取ること．)
 
 # Python実行環境セットアップ
 
@@ -110,45 +111,64 @@ deactivate
 ### ユーザー情報
 - **ユーザー名**: kinno-7010
 - **メールアドレス**: kinno.naoto.r6@dc.tohoku.ac.jp
-- **リポジトリURL**: https://github.com/kinno-7010/Research
+- **リポジトリURL**: git@github.com:kinno-7010/Research.git
 
-### Personal Access Token
-- **トークン**: 環境変数 `$GITHUB_TOKEN` で管理
-- **用途**: HTTPS認証でのGitHubプッシュ/プル操作
+## SSH認証設定（推奨）
+
+### 1. SSH鍵設定確認
+```bash
+# SSH設定確認
+cat ~/.ssh/config
+# 出力例：
+# Host github.com
+#     HostName github.com
+#     User git
+#     IdentityFile ~/.ssh/id_ed25519_github
+#     IdentitiesOnly yes
+
+# SSH鍵ファイル確認
+ls -la ~/.ssh/id_ed25519_github*
+```
+
+### 2. SSH Agent設定
+```bash
+# SSH Agent起動・鍵追加
+eval "$(ssh-agent -s)"
+ssh-add ~/.ssh/id_ed25519_github
+
+# SSH接続テスト
+ssh -T git@github.com
+# 成功時出力: "Hi kinno-7010! You've successfully authenticated..."
+```
+
+### 3. Git設定
+```bash
+# ユーザー情報設定
+git config user.name "kinno-7010"
+git config user.email "kinno.naoto.r6@dc.tohoku.ac.jp"
+
+# リモートURL設定（SSH）
+git remote set-url origin git@github.com:kinno-7010/Research.git
+```
 
 ## コミット・プッシュ手順
 
-### 1. Git設定
+### 1. 時刻確認（必須）
 ```bash
-git config user.email "kinno.naoto.r6@dc.tohoku.ac.jp"
-git config user.name "kinno-7010"
+# 現在時刻確認（JST）
+date "+%Y%m%d %H:%M"
+# 例: 20250704 14:30
 ```
 
-### 2. 環境変数設定
+### 2. ファイル追加・コミット・プッシュ
 ```bash
-# Personal Access Tokenを環境変数に設定
-export GITHUB_TOKEN="[YOUR_TOKEN]"
-
-# 永続化（.bashrcに追加）
-echo 'export GITHUB_TOKEN="[YOUR_TOKEN]"' >> ~/.bashrc
-source ~/.bashrc
-```
-
-### 3. リモートURL設定（環境変数使用）
-```bash
-git remote set-url origin https://kinno-7010:$GITHUB_TOKEN@github.com/kinno-7010/Research.git
-```
-
-### 4. ファイル追加・コミット・プッシュ
-```bash
-# 特定ファイルの追加
+# ファイル追加
 git add [ファイル名]
-
-# 特定拡張子のファイルを一括追加
+# または
 git add **/*.ipynb **/*.py **/*.pro CLAUDE.md
 
-# コミット（日時形式必須）
-git commit -m "YYYYMMDD HH:MM : [コミットメッセージ]"
+# コミット（時刻形式必須）
+git commit -m "$(date '+%Y%m%d %H:%M') : [コミットメッセージ]"
 
 # プッシュ
 git push origin main
@@ -163,26 +183,17 @@ git push origin main
 2. **日本時間（JST）を使用**
 3. **時刻は24時間形式で記載**
 
-### 時刻確認手順
-```bash
-# 現在時刻を確認
-date
-
-# 出力例: Wed Jul  2 17:44:36 JST 2025
-# → コミットメッセージ: 20250702 17:44 : [メッセージ]
-```
-
 ### 例:
 ```bash
-git commit -m "20250702 14:30 : CME解析コードの GUI機能を改善"
-git commit -m "20250702 16:45 : 新しいデータ処理パイプラインを追加" 
-git commit -m "20250702 18:20 : SOHO/LASCO データ読み込み機能を修正"
+git commit -m "$(date '+%Y%m%d %H:%M') : CME解析コードのGUI機能を改善"
+git commit -m "$(date '+%Y%m%d %H:%M') : 新しいデータ処理パイプラインを追加"
+git commit -m "$(date '+%Y%m%d %H:%M') : SOHO/LASCO データ読み込み機能を修正"
 ```
 
 ### テンプレート
 ```bash
 git commit -m "$(cat <<'EOF'
-YYYYMMDD HH:MM : [メインメッセージ]
+$(date '+%Y%m%d %H:%M') : [メインメッセージ]
 
 - [変更点1]
 - [変更点2]
@@ -195,213 +206,47 @@ EOF
 )"
 ```
 
+## 日常的なワークフロー
+
+### シンプルなコミット・プッシュ
+```bash
+# ワンライナー
+git add . && git commit -m "$(date '+%Y%m%d %H:%M') : [メッセージ]" && git push
+```
+
+## トラブルシューティング
+
+### SSH認証エラーの場合
+```bash
+# 1. SSH Agent再起動
+eval "$(ssh-agent -s)"
+ssh-add ~/.ssh/id_ed25519_github
+
+# 2. SSH接続テスト
+ssh -T git@github.com
+
+# 3. 権限確認
+chmod 600 ~/.ssh/id_ed25519_github
+chmod 644 ~/.ssh/id_ed25519_github.pub
+
+# 4. SSH設定確認
+cat ~/.ssh/config
+```
+
+### 緊急時の対処
+```bash
+# 現在の状態確認
+git status
+git remote -v
+
+# リモートURL確認・修正
+git remote set-url origin git@github.com:kinno-7010/Research.git
+```
+
 ## 注意事項
 
-1. **Personal Access Tokenは環境変数で管理**（セキュリティ強化）
+1. **SSH認証を使用**（セキュリティ強化）
 2. コミットメッセージには**必ず日時を含める**こと
 3. 研究データファイル（.fits, .csvなど）は基本的にコミット対象外
 4. 大容量ファイルはGit LFSの使用を検討
 
-## 環境変数の確認・設定
-
-### 現在の環境変数確認
-```bash
-echo $GITHUB_TOKEN
-```
-
-# GitHub リポジトリ管理（改善版）
-
-## 🔐 認証設定
-
-### SSH認証（推奨方法）
-```bash
-# 1. SSH鍵生成
-ssh-keygen -t ed25519 -C "kinno.naoto.r6@dc.tohoku.ac.jp"
-
-# 2. SSH鍵をGitHubに登録
-cat ~/.ssh/id_ed25519.pub
-# → GitHub Settings > SSH and GPG keys に追加
-
-# 3. SSH接続テスト
-ssh -T git@github.com
-
-# 4. リモートURL設定
-git remote set-url origin git@github.com:kinno-7010/Research.git
-```
-
-### Personal Access Token（代替方法）
-```bash
-# 1. 新しいトークン作成（GitHub.com）
-# Settings > Developer settings > Personal access tokens > Generate new token
-# 必要な権限: repo, workflow, write:packages
-
-# 2. 環境変数設定
-export GITHUB_TOKEN="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"
-echo 'export GITHUB_TOKEN="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"' >> ~/.bashrc
-source ~/.bashrc
-
-# 3. リモートURL設定
-git remote set-url origin https://kinno-7010:$GITHUB_TOKEN@github.com/kinno-7010/Research.git
-```
-
-## 🛠️ Git基本設定
-
-### ユーザー情報設定
-```bash
-# グローバル設定
-git config --global user.name "kinno-7010"
-git config --global user.email "kinno.naoto.r6@dc.tohoku.ac.jp"
-
-# リポジトリ固有設定
-git config user.name "kinno-7010"
-git config user.email "kinno.naoto.r6@dc.tohoku.ac.jp"
-```
-
-### 便利な設定
-```bash
-# デフォルトブランチ設定
-git config --global init.defaultBranch main
-
-# プッシュ設定
-git config --global push.default simple
-
-# 認証情報キャッシュ（HTTPS使用時）
-git config --global credential.helper cache
-git config --global credential.helper 'cache --timeout=3600'
-```
-
-## 📅 コミット・プッシュ手順
-
-### 1. 時刻確認（必須）
-```bash
-# 現在時刻確認（JST）
-date "+%Y%m%d %H:%M"
-# 例: 20250702 17:44
-```
-
-### 2. ファイル追加・コミット
-```bash
-# ファイル追加
-git add [ファイル名]
-# または
-git add **/*.ipynb **/*.py **/*.pro CLAUDE.md
-
-# コミット（時刻形式必須）
-git commit -m "$(date '+%Y%m%d %H:%M') : [コミットメッセージ]"
-
-# 例:
-git commit -m "$(date '+%Y%m%d %H:%M') : CME解析コードのGUI機能を改善"
-```
-
-### 3. プッシュ
-```bash
-# 通常のプッシュ
-git push origin main
-
-# 初回プッシュ（アップストリーム設定）
-git push -u origin main
-```
-
-## 🚨 トラブルシューティング
-
-### 認証エラーの場合
-```bash
-# 1. 現在の認証方式確認
-git remote -v
-
-# 2. SSH接続テスト（SSH使用時）
-ssh -T git@github.com
-
-# 3. トークン有効性確認（HTTPS使用時）
-curl -H "Authorization: token $GITHUB_TOKEN" https://api.github.com/user
-
-# 4. 認証情報クリア
-git credential-manager-core erase
-# または
-git config --global --unset credential.helper
-```
-
-### よくあるエラーと対処法
-
-#### エラー: "Authentication failed"
-```bash
-# 解決策1: SSH認証に切り替え
-git remote set-url origin git@github.com:kinno-7010/Research.git
-
-# 解決策2: 新しいトークン作成・設定
-export GITHUB_TOKEN="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"
-git remote set-url origin https://kinno-7010:$GITHUB_TOKEN@github.com/kinno-7010/Research.git
-```
-
-#### エラー: "Permission denied"
-```bash
-# SSH鍵の権限確認
-chmod 600 ~/.ssh/id_ed25519
-chmod 644 ~/.ssh/id_ed25519.pub
-
-# SSH Agentに鍵追加
-ssh-add ~/.ssh/id_ed25519
-```
-
-#### エラー: "Repository not found"
-```bash
-# リモートURL確認・修正
-git remote -v
-git remote set-url origin [正しいURL]
-```
-
-## 📋 日常的なワークフロー
-
-### A. 簡単なコミット・プッシュ
-```bash
-# ワンライナー（SSH認証設定済みの場合）
-git add . && git commit -m "$(date '+%Y%m%d %H:%M') : [メッセージ]" && git push
-```
-
-### B. 詳細なコミットメッセージ
-```bash
-git commit -m "$(cat <<EOF
-$(date '+%Y%m%d %H:%M') : [メインメッセージ]
-
-- [変更点1]
-- [変更点2]
-- [変更点3]
-
-🤖 Generated with Claude Code
-Co-Authored-By: Claude <noreply@anthropic.com>
-EOF
-)"
-```
-
-## 🔄 定期メンテナンス
-
-### 月次チェック項目
-- [ ] Personal Access Tokenの有効期限確認
-- [ ] SSH鍵の状態確認
-- [ ] リモートリポジトリとの同期状況確認
-
-### セキュリティベストプラクティス
-- [ ] トークンを公開リポジトリにコミットしない
-- [ ] 定期的なトークン更新（3ヶ月毎推奨）
-- [ ] SSH鍵のパスフレーズ設定
-- [ ] 不要になったトークンの削除
-
-## 🆘 緊急時の対処
-
-### すぐにプッシュしたい場合
-```bash
-# 1. 現在の状態確認
-git status
-git log --oneline -3
-
-# 2. 強制的なHTTPS認証
-git remote set-url origin https://kinno-7010@github.com/kinno-7010/Research.git
-git push origin main
-# → パスワード入力時にPersonal Access Tokenを使用
-
-# 3. SSH認証（事前設定済みの場合）
-git remote set-url origin git@github.com:kinno-7010/Research.git
-git push origin main
-```
-
-**重要**: 認証エラーが続く場合は、GitHubのPersonal Access Tokenページで新しいトークンを作成し、適切な権限（repo, workflow）を付与してください。

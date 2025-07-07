@@ -817,9 +817,9 @@ def create_single_diff_image(ax, target_time_str: str):
         mn, mx = np.nanmin(a), np.nanmax(a)
         return (a - mn) / (mx - mn) if mx > mn else np.zeros_like(a)
     
-    r_ch = normalize_log_stretch(aia211_diff, vmin=aia_norm_ranges[0], vmax=aia_norm_ranges[1])
-    g_ch = normalize_log_stretch(aia193_diff, vmin=aia_norm_ranges[0], vmax=aia_norm_ranges[1])
-    b_ch = normalize_log_stretch(aia171_diff, vmin=aia_norm_ranges[0], vmax=aia_norm_ranges[1])
+    r_ch = normalize_linear_stretch(aia211_diff, vmin=aia_norm_ranges[0], vmax=aia_norm_ranges[1])
+    g_ch = normalize_linear_stretch(aia193_diff, vmin=aia_norm_ranges[0], vmax=aia_norm_ranges[1])
+    b_ch = normalize_linear_stretch(aia171_diff, vmin=aia_norm_ranges[0], vmax=aia_norm_ranges[1])
 
     r01, g01, b01 = map(scale01, (r_ch, g_ch, b_ch))
 

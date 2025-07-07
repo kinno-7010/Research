@@ -63,8 +63,8 @@ def draw_frame(data, header, ax):
 
     date_obs = header.get('DATE-OBS', 'Unknown Time')
     ax.set_title(f"Time: {date_obs}", fontsize=12)
-    ax.set_xlabel("X [Solar Radius $R_\\odot$]", fontsize=10)
-    ax.set_ylabel("Y [Solar Radius $R_\\odot$]", fontsize=10)
+    ax.set_xlabel("X [Solar Radius $R_\\\\odot$]", fontsize=10)
+    ax.set_ylabel("Y [Solar Radius $R_\\\\odot$]", fontsize=10)
 
     return im
 

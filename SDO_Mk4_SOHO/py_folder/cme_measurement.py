@@ -483,7 +483,7 @@ def measure_cme_height_manual_multi_points(ax, map_data, params, r_map, instrume
             while not finished:
                 plt.pause(0.1)
                 if len(click_points) > 0:
-                    print(f"DEBUG: 途中経過 - click_points: {len(click_points)}")
+                    pass  # デバッグ出力を削除
             print("DEBUG: クリック待機ループ終了")
             
         except Exception as e:

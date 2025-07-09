@@ -37,7 +37,7 @@ def parse_ucomp_filename(filename):
     
     return datetime.strptime(datetime_str, "%Y-%m-%dT%H:%M:%S"), int(wavelength)
 
-def scan_ucomp_data(start_time, end_time, wavelength=DEFAULT_WAVELENGTH, use_cache=True):
+def scan_ucomp_data(start_time, end_time, wavelength=None, use_cache=True):
     """
     指定された時間範囲でUCOMPデータをスキャン（ファイル名ベース）
     
@@ -47,8 +47,8 @@ def scan_ucomp_data(start_time, end_time, wavelength=DEFAULT_WAVELENGTH, use_cac
         スキャン開始時刻 (ISO形式)
     end_time : str or Time  
         スキャン終了時刻 (ISO形式)
-    wavelength : int
-        波長 (default: 1074)
+    wavelength : int or None
+        波長 (Noneの場合は全波長のデータを取得)
     use_cache : bool
         キャッシュを使用するか (default: True)
         
@@ -57,7 +57,8 @@ def scan_ucomp_data(start_time, end_time, wavelength=DEFAULT_WAVELENGTH, use_cac
     list
         [(sunpy.map.Map, file_path), ...] のリスト
     """
-    validate_wavelength(wavelength)
+    if wavelength is not None:
+        validate_wavelength(wavelength)
     
     # 時刻オブジェクトに変換
     if isinstance(start_time, str):
@@ -74,12 +75,18 @@ def scan_ucomp_data(start_time, end_time, wavelength=DEFAULT_WAVELENGTH, use_cac
     
     print(f"Scanning UCOMP data: {ucomp_dir}")
     print(f"Time range: {start_time_obj.iso} - {end_time_obj.iso}")
-    print(f"Wavelength: {wavelength} nm")
+    if wavelength is not None:
+        print(f"Wavelength: {wavelength} nm")
+    else:
+        print("Wavelength: All wavelengths")
     
     # UCOMPファイル専用スキャン（ファイル名ベース）
     try:
-        # 指定波長のファイルパターン
-        file_pattern = f"*.ucomp.{wavelength}.l2.fts"
+        # 波長フィルタリングの設定
+        if wavelength is not None:
+            file_pattern = f"*.ucomp.{wavelength}.l2.fts"
+        else:
+            file_pattern = "*.ucomp.*.l2.fts"
         files = list(ucomp_dir.glob(file_pattern))
         
         print(f"Found {len(files)} total files with pattern: {file_pattern}")
@@ -95,16 +102,18 @@ def scan_ucomp_data(start_time, end_time, wavelength=DEFAULT_WAVELENGTH, use_cac
                 
                 # 時間範囲チェック
                 if start_time_obj <= file_time <= end_time_obj:
-                    # SunPy Mapを作成せず、時刻情報とファイルパスのみを保存
-                    # 簡易的なオブジェクトとして辞書を使用
-                    file_info = {
-                        'date': file_time,
-                        'filename': filename,
-                        'file_path': file_path,
-                        'wavelength': file_wavelength
-                    }
-                    maps_with_paths.append((file_info, file_path))
-                    print(f"  Added: {filename} ({file_time.iso})")
+                    # 波長フィルタリング（wavelengthがNoneの場合は全波長を受け入れる）
+                    if wavelength is None or file_wavelength == wavelength:
+                        # SunPy Mapを作成せず、時刻情報とファイルパスのみを保存
+                        # 簡易的なオブジェクトとして辞書を使用
+                        file_info = {
+                            'date': file_time,
+                            'filename': filename,
+                            'file_path': file_path,
+                            'wavelength': file_wavelength
+                        }
+                        maps_with_paths.append((file_info, file_path))
+                        print(f"  Added: {filename} ({file_time.iso})")
                         
             except ValueError as e:
                 # UCOMPファイル名でない場合はスキップ
@@ -117,7 +126,10 @@ def scan_ucomp_data(start_time, end_time, wavelength=DEFAULT_WAVELENGTH, use_cac
         # 時刻順にソート
         maps_with_paths.sort(key=lambda x: x[0]['date'])
         
-        print(f"Found {len(maps_with_paths)} UCOMP files for wavelength {wavelength} in time range")
+        if wavelength is not None:
+            print(f"Found {len(maps_with_paths)} UCOMP files for wavelength {wavelength} in time range")
+        else:
+            print(f"Found {len(maps_with_paths)} UCOMP files for all wavelengths in time range")
         return maps_with_paths
         
     except Exception as e:
@@ -126,7 +138,7 @@ def scan_ucomp_data(start_time, end_time, wavelength=DEFAULT_WAVELENGTH, use_cac
         traceback.print_exc()
         return []
 
-def find_closest_ucomp_data(target_time, start_time, end_time, wavelength=DEFAULT_WAVELENGTH):
+def find_closest_ucomp_data(target_time, start_time, end_time, wavelength=None):
     """
     指定時刻に最も近いUCOMPデータを見つける
     
@@ -178,7 +190,7 @@ def find_closest_ucomp_data(target_time, start_time, end_time, wavelength=DEFAUL
     
     return closest_data
 
-def get_available_ucomp_times(start_time, end_time, wavelength=DEFAULT_WAVELENGTH):
+def get_available_ucomp_times(start_time, end_time, wavelength=None):
     """
     指定時間範囲で利用可能なUCOMPデータの時刻リストを取得
     

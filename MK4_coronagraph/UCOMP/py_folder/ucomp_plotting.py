@@ -9,9 +9,13 @@ from astropy.io import fits
 import gc
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from scipy import ndimage
+from scipy.ndimage import map_coordinates
 
 # ベクトル場描画関数をインポート
-def create_vector_field_grid(data_shape, radial_interval_rs=0.1, angular_interval_deg=5):
+import numpy as np
+
+def create_vector_field_grid(data_shape, rsun_obs, cdelt1, crpix1, crpix2, 
+                             radial_interval_rs=0.1, angular_interval_deg=5):
     """
     太陽中心座標系でのベクトル場グリッドを作成
     """
@@ -19,7 +23,7 @@ def create_vector_field_grid(data_shape, radial_interval_rs=0.1, angular_interva
     center_x, center_y = width // 2, height // 2
     
     # 太陽半径をピクセル単位で計算
-    solar_radius_pixels = min(data_shape) // 4
+    solar_radius_pixels = rsun_obs / cdelt1
     
     # 動径方向の範囲を設定（0.5Rsから2.5Rsまで）
     r_min_rs = 0.5
@@ -55,7 +59,8 @@ def create_vector_field_grid(data_shape, radial_interval_rs=0.1, angular_interva
     
     return np.array(x_grid), np.array(y_grid)
 
-def draw_magnetic_field_vectors(ax, data, azimuth_data, x_grid, y_grid, 
+
+def draw_magnetic_field_vectors(ax, data, azimuth_data, x_grid, y_grid, crpix1, crpix2,
                                arrow_length_scale=20, arrow_width=0.004, 
                                arrow_color='white', arrow_alpha=0.9):
     """
@@ -98,7 +103,7 @@ def draw_magnetic_field_vectors(ax, data, azimuth_data, x_grid, y_grid,
             dy = arrow_length_scale * np.sin(vector_angle)
             
             # ベクトル参照点を黒い小さな点で表示
-            ax.plot(x_pos, y_pos, 'o', markersize=2, color='white')
+            ax.plot(x_pos, y_pos, 'o', markersize=1, color='white')
             
             # 矢印を描画（太陽中心原点座標系、黒枠付き）
             ax.arrow(x_pos, y_pos, dx, dy, 

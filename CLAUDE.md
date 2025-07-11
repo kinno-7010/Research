@@ -189,59 +189,6 @@ git remote -v
 
 ## 📅 コミット・プッシュ手順
 
-### 1. 現在時刻確認（必須）
-```bash
-# 日本時間での現在時刻確認
-date "+%Y%m%d %H:%M"
-```
-
-### 2. ファイル追加・コミット
-```bash
-
-# または特定ファイル
-git add [ファイル名]
-
-# コミット（時刻形式必須）
-git commit -m "$(date '+%Y%m%d %H:%M') : [コミットメッセージ]"
-```
-
-### 3. プッシュ
-```bash
-# GitHub にプッシュ
-git push origin main
-```
-
-## コミットメッセージ形式
-
-**必須形式**: `YYYYMMDD HH:MM : [メッセージ内容]` （日本時間で記載）
-
-### 重要事項
-1. **必ず `date` コマンドで現在時刻を確認してからコミット**
-2. **日本時間（JST）を使用**
-3. **時刻は24時間形式で記載**
-
-### 例:
-```bash
-git commit -m "$(date '+%Y%m%d %H:%M') : CME解析コードのGUI機能を改善"
-git commit -m "$(date '+%Y%m%d %H:%M') : 新しいデータ処理パイプラインを追加"
-git commit -m "$(date '+%Y%m%d %H:%M') : SOHO/LASCO データ読み込み機能を修正"
-```
-
-### テンプレート
-```bash
-git commit -m "$(cat <<'EOF'
-$(date '+%Y%m%d %H:%M') : [メインメッセージ]
-
-- [変更点1]
-- [変更点2]
-- [変更点3]
-
-🤖 Generated with [Claude Code](https://claude.ai/code)
-
-Co-Authored-By: Claude <noreply@anthropic.com>
-EOF
-)"
-```
 
 ## 💡 推奨ワークフロー
 

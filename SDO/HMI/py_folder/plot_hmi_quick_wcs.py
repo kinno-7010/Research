@@ -338,7 +338,7 @@ def read_hmi_quick(filepath):
 
 def plot_hmi_quick(hmi_data, downsample=1):
     """
-    HMI磁場マップの高速プロット
+    HMI磁場マップの高速プロット（座標系完全修正版）
     
     Parameters:
     -----------
@@ -347,33 +347,30 @@ def plot_hmi_quick(hmi_data, downsample=1):
     downsample : int
         ダウンサンプリング率（高速化のため）
     """
+    import numpy as np
+    import matplotlib.pyplot as plt
+    import astropy.units as u
+    import os
+    
+    # 必要な関数をグローバルスコープから参照
+    global draw_hmi_solar_grid, draw_solar_coordinate_lines
+    
     print(f"\n=== HMI磁場マップ（高速プロット） ===")
     
     data = hmi_data['data']
     time_str = hmi_data['time']
+    hmi_map = hmi_data.get('sunpy_map')
     
-    # 座標情報を取得
-    if 'lon' in hmi_data and 'lat' in hmi_data:
-        lon_full = hmi_data['lon']
-        lat_full = hmi_data['lat']
-        use_solar_coords = True
-        print("太陽座標系を使用します")
-    else:
-        use_solar_coords = False
-        print("ピクセル座標系を使用します")
+    if hmi_map is None:
+        print("エラー: SunPy Mapオブジェクトが必要です")
+        return
     
-    # ダウンサンプリングで高速化
+    # ダウンサンプリング
     if downsample > 1:
         data_plot = data[::downsample, ::downsample]
-        if use_solar_coords:
-            lon_plot = lon_full[::downsample]
-            lat_plot = lat_full[::downsample]
         print(f"ダウンサンプリング: {data.shape} → {data_plot.shape}")
     else:
         data_plot = data
-        if use_solar_coords:
-            lon_plot = lon_full
-            lat_plot = lat_full
     
     # NaN値をマスク
     data_masked = np.ma.masked_invalid(data_plot)
@@ -390,185 +387,216 @@ def plot_hmi_quick(hmi_data, downsample=1):
     
     print(f"磁場統計: {data_min:.1f} ～ {data_max:.1f} Gauss (σ={data_std:.1f})")
     
-    # プロット作成
-    fig, axes = plt.subplots(2, 2, figsize=(15, 12))
-    fig.suptitle(f'HMI Magnetogram Quick View\n{time_str}', fontsize=14, fontweight='bold')
+    # プロット作成（figureサイズを大きく調整）
+    fig = plt.figure(figsize=(14, 12))
+    fig.suptitle(f'HMI Magnetogram Quick View\n{time_str}', fontsize=16, fontweight='bold', y=0.98)
     
-    # カラースケールの調整
-    vmax = min(abs(data_max), abs(data_min), 500)
+    # GridSpecを使用してサブプロットの配置を調整
+    from matplotlib.gridspec import GridSpec
+    gs = GridSpec(2, 2, figure=fig, hspace=0.25, wspace=0.3, 
+                  left=0.08, right=0.95, top=0.93, bottom=0.05)
     
-    # 太陽の中心を原点に合わせるための座標設定
+    # 通常のaxesを先に作成（プロファイル用）
+    # axesをNumPy配列に変換して、[row, col]形式のインデックスを使えるようにする
+    axes = np.array([[None, None], [None, None]], dtype=object)
+    axes[1, 0] = fig.add_subplot(gs[1, 0])
+    axes[1, 1] = fig.add_subplot(gs[1, 1])
+    
+    # === 座標系の理解と変換 ===
+    # 元のコードの座標系（太陽中心基準のピクセル座標）
+    x_min_solar_center = -512  # 太陽中心から左に512ピクセル
+    x_max_solar_center = 0   # 太陽中心から左に50ピクセル
+    y_min_solar_center = -100   # 太陽中心から下に50ピクセル
+    y_max_solar_center = 512   # 太陽中心から上に512ピクセル
+    
+    # 画像サイズと中心
     ny, nx = data_plot.shape
-    center_y, center_x = ny // 2, nx // 2
-    extent = [-center_x, nx-center_x, -center_y, ny-center_y]
+    center_x = nx // 2
+    center_y = ny // 2
     
-    # プロファイル用の座標設定（太陽中心からのピクセル数で指定）
-    x_from_center = -250   # 太陽中心からX方向にピクセル
-    y_from_center = 150  # 太陽中心からY方向にピクセル
+    # 配列インデックスに変換（0始まり）
+    x_min_pix = center_x + x_min_solar_center
+    x_max_pix = center_x + x_max_solar_center
+    y_min_pix = center_y + y_min_solar_center
+    y_max_pix = center_y + y_max_solar_center
     
-    # ピクセルスケールを取得してarcsecに変換
-    cdelt1 = hmi_data['coord_info']['cdelt1']  # X方向のピクセルスケール (arcsec/pixel)
-    cdelt2 = hmi_data['coord_info']['cdelt2']  # Y方向のピクセルスケール (arcsec/pixel)
+    print(f"\n座標変換の詳細:")
+    print(f"画像サイズ: {nx} x {ny}")
+    print(f"太陽中心（ピクセル）: ({center_x}, {center_y})")
+    print(f"太陽中心基準座標: X=[{x_min_solar_center}, {x_max_solar_center}], Y=[{y_min_solar_center}, {y_max_solar_center}]")
+    print(f"配列インデックス: X=[{x_min_pix}, {x_max_pix}], Y=[{y_min_pix}, {y_max_pix}]")
     
-    x_from_center_arcsec = x_from_center * cdelt1
-    y_from_center_arcsec = y_from_center * cdelt2
+    # 実際のarcsec値を確認
+    from astropy.coordinates import SkyCoord
+    from sunpy.coordinates import frames
     
-    print(f"ピクセルスケール: X={cdelt1:.2f} arcsec/pixel, Y={cdelt2:.2f} arcsec/pixel")
-    print(f"指定位置: X={x_from_center} pixel = {x_from_center_arcsec:.1f} arcsec")
-    print(f"指定位置: Y={y_from_center} pixel = {y_from_center_arcsec:.1f} arcsec")
+    # 表示範囲の角のarcsec座標を取得
+    corner_coords = []
+    for x_pix, y_pix in [(x_min_pix, y_min_pix), (x_max_pix, y_max_pix)]:
+        world = hmi_map.pixel_to_world(x_pix * u.pix, y_pix * u.pix)
+        corner_coords.append((world.Tx.value, world.Ty.value))
     
-    # 実際の配列インデックスに変換
-    center_col = x_from_center + center_x
-    center_row = y_from_center + center_y
+    print(f"対応するarcsec範囲: X=[{corner_coords[0][0]:.1f}, {corner_coords[1][0]:.1f}], Y=[{corner_coords[0][1]:.1f}, {corner_coords[1][1]:.1f}]")
     
+    # プロファイル用の座標（太陽中心基準ピクセル座標で指定）
+    x_profile_solar_center = -250  # 太陽中心から左に250ピクセル
+    y_profile_solar_center = 150   # 太陽中心から上に150ピクセル
     
-    # 3. 中央行プロファイル（xlim範囲内のデータのみ使用）
-    # axes[0,0]のxlim設定を取得
-    x_min, x_max = -512, -50  # xlim範囲（ピクセル単位）
-    x_min_arcsec, x_max_arcsec = -1024, 0  # arcsecに変換
+    # 配列インデックスに変換
+    profile_x_pix = center_x + x_profile_solar_center
+    profile_y_pix = center_y + y_profile_solar_center
     
-    # 全行プロファイルを取得
-    row_profile_full = data_plot[center_row, :]
-    x_coords_full = np.arange(len(row_profile_full)) - center_x
+    # 対応するarcsec座標を取得
+    profile_world = hmi_map.pixel_to_world(profile_x_pix * u.pix, profile_y_pix * u.pix)
+    x_profile_arcsec = profile_world.Tx.value
+    y_profile_arcsec = profile_world.Ty.value
     
-    # xlim範囲内のインデックスを特定
-    x_mask = (x_coords_full >= x_min_arcsec) & (x_coords_full <= x_max_arcsec)
-    row_profile = row_profile_full[x_mask]
-    x_coords = x_coords_full[x_mask]
-    x_coords_arcsec = x_coords * cdelt1  # arcsecに変換
-
-    # 4. 中央列プロファイル（ylim範囲内のデータのみ使用）
-    y_min, y_max = -50, 512  # ylim範囲（ピクセル単位）
-    y_min_arcsec, y_max_arcsec = -200, 1024  # arcsecに変換
-   
-    
-    # 全列プロファイルを取得
-    col_profile_full = data_plot[:, center_col]
-    y_coords_full = np.arange(len(col_profile_full)) - center_y
-    
-    
-    # ylim範囲内のインデックスを特定
-    y_mask = (y_coords_full >= y_min_arcsec) & (y_coords_full <= y_max_arcsec)
-    col_profile = col_profile_full[y_mask]
-    y_coords = y_coords_full[y_mask]
-    y_coords_arcsec = y_coords * cdelt2  # arcsecに変換
+    print(f"\nプロファイル位置:")
+    print(f"  太陽中心基準: ({x_profile_solar_center}, {y_profile_solar_center}) pixel")
+    print(f"  配列インデックス: ({profile_x_pix}, {profile_y_pix})")
+    print(f"  arcsec: ({x_profile_arcsec:.1f}, {y_profile_arcsec:.1f})")
     
     # ---------------------------------------------------------------------------------
     # プロット作成
     lat, lon = 20, -40
     
-    if use_solar_coords:
-        # 太陽座標系を使用（SunPy Map オブジェクトが利用可能な場合はWCS軸を使用）
-        extent_solar = [lon_plot[0], lon_plot[-1], lat_plot[0], lat_plot[-1]]
-        
-        # SunPy Map オブジェクトが利用可能かチェック
-        hmi_map = hmi_data.get('sunpy_map')
-        use_wcs_projection = hmi_map is not None
-        
-        if use_wcs_projection:
-            # WCS projection を使用してプロット
-            print("WCS projection を使用します")
-            # 既存のaxes[0,0]を削除してWCS軸で再作成
-            axes[0,0].remove()
-            axes[0,0] = fig.add_subplot(2, 2, 1, projection=hmi_map.wcs)
-            
-            # 1. 磁場マップ（WCS座標系）
-            im1 = axes[0,0].imshow(data_masked, cmap='RdBu_r', origin='lower', 
-                                   vmin=-200, vmax=200)
-            axes[0,0].set_title('Radial Magnetic Field')
-            axes[0,0].set_xlabel('Solar X (arcsec)')
-            axes[0,0].set_ylabel('Solar Y (arcsec)')
-            # axes[0,0].set_xlim(x_min_arcsec, x_max_arcsec)
-            # axes[0,0].set_ylim(y_min_arcsec, y_max_arcsec)
-            
-            # SunPy の draw_grid メソッドを使用
-            grid_success = draw_hmi_solar_grid(hmi_map, axes[0,0])
-            if not grid_success:
-                print("フォールバック: 手動グリッドを使用")
-                add_solar_grid_fallback(axes[0,0], extent_solar)
-            
-            # 指定した緯度・経度の線を描画（修正版）
-            draw_solar_coordinate_lines(hmi_map, axes[0,0], target_lat=lat, target_lon=lon)
-          
-            axes[0,0].legend(loc='upper right')
-            
+    # 1. 磁場マップ（WCS座標系）
+    axes[0,0] = fig.add_subplot(gs[0, 0], projection=hmi_map.wcs)
     
-    # 2. 磁場強度
+    im1 = axes[0,0].imshow(data_masked, cmap='RdBu_r', origin='lower', 
+                           vmin=-200, vmax=200)
+    axes[0,0].set_title('Radial Magnetic Field')
+    axes[0,0].set_xlabel('Solar X (arcsec)')
+    axes[0,0].set_ylabel('Solar Y (arcsec)')
+    
+    # === 重要: ピクセル座標でxlim, ylimを設定 ===
+    axes[0,0].set_xlim(x_min_pix, x_max_pix)
+    axes[0,0].set_ylim(y_min_pix, y_max_pix)
+    
+    # グリッドと座標線を描画
+    draw_hmi_solar_grid(hmi_map, axes[0,0])
+    draw_solar_coordinate_lines(hmi_map, axes[0,0], target_lat=lat, target_lon=lon)
+    
+    # プロファイル位置を示す線（ピクセル座標で描画）
+    axes[0,0].legend(loc='upper right')
+    
+    # 2. 磁場強度（フルディスク表示）
     magnitude = np.abs(data_masked)
     
-    if use_solar_coords:
-        # 2番目のプロット: 磁場強度
-        if use_wcs_projection:
-            # WCS projection を使用
-            axes[0,1].remove()
-            axes[0,1] = fig.add_subplot(2, 2, 2, projection=hmi_map.wcs)
-            
-            im2 = axes[0,1].imshow(magnitude, cmap='plasma', origin='lower', 
-                                   vmax=200)
-            axes[0,1].set_title('Magnetic Field Strength')
-            axes[0,1].set_xlabel('Solar X (arcsec)')
-            axes[0,1].set_ylabel('Solar Y (arcsec)')
-            # axes[0,1].set_xlim(x_min_arcsec, x_max_arcsec)
-            # axes[0,1].set_ylim(y_min_arcsec, y_max_arcsec)
-            # axes[0,1].axhline(y=y_from_center_arcsec, color='magenta', linestyle='--', alpha=0.5, linewidth=1, label=f'Y={y_from_center_arcsec:.1f}(arcsec)')
-            # axes[0,1].axvline(x=x_from_center_arcsec, color='cyan', linestyle='--', alpha=0.5, linewidth=1, label=f'X={x_from_center_arcsec:.1f}(arcsec)')
-            
-            # SunPy の draw_grid メソッドを使用
-            grid_success = draw_hmi_solar_grid(hmi_map, axes[0,1])
-            if not grid_success:
-                add_solar_grid_fallback(axes[0,1], extent_solar)
-            
-            # 指定した緯度・経度の線を描画（修正版）
-            draw_solar_coordinate_lines(hmi_map, axes[0,1], target_lat=lat, target_lon=lon)
-            
-            axes[0,1].legend(loc='upper right')
+    axes[0,1] = fig.add_subplot(gs[0, 1], projection=hmi_map.wcs)
     
-
-    # col_profileは既にy_maskで制限されているので、直接計算
-    valid_col_data = col_profile[np.isfinite(col_profile)]
-    col_profile_mean = np.mean(valid_col_data)
-    col_profile_std = np.std(valid_col_data)
-
-    axes[1,0].plot(y_coords_arcsec, col_profile, '-', color='cyan', linewidth=1, label=f'Ave$\\pm$std: {col_profile_mean:.1f} $\\pm$ {col_profile_std:.1f} Gauss')
-    axes[1,0].set_title(f'On X={x_from_center_arcsec:.1f} arcsec line profile')
-    axes[1,0].set_xlabel('Y (arcsec from Sun center)')
+    im2 = axes[0,1].imshow(magnitude, cmap='plasma', origin='lower', vmax=200)
+    axes[0,1].set_title('Magnetic Field Strength (Full Disk)', fontsize=14, pad=10)
+    axes[0,1].set_xlabel('Solar X (arcsec)', fontsize=12)
+    axes[0,1].set_ylabel('Solar Y (arcsec)', fontsize=12)
+    
+    # フルディスク表示（ピクセル座標で0から画像サイズまで）
+    axes[0,1].set_xlim(x_min_pix, x_max_pix)
+    axes[0,1].set_ylim(y_min_pix, y_max_pix)
+    
+    draw_hmi_solar_grid(hmi_map, axes[0,1])
+    draw_solar_coordinate_lines(hmi_map, axes[0,1], target_lat=lat, target_lon=lon)
+    axes[0,1].legend(loc='upper right')
+    
+    # フォントサイズを調整
+    axes[0,1].tick_params(axis='both', which='major', labelsize=10)
+    
+    # 3. Y方向プロファイル（X固定）
+    # 表示範囲をピクセル座標で制限
+    y_pix_min = max(0, int(y_min_pix))
+    y_pix_max = min(data_plot.shape[0], int(y_max_pix))
+    
+    if 0 <= profile_x_pix < data_plot.shape[1]:
+        y_profile_data = data_plot[y_pix_min:y_pix_max, profile_x_pix]
+        y_pixels = np.arange(y_pix_min, y_pix_max)
+        
+        # ピクセル座標をarcsec座標に変換
+        y_coords_arcsec = []
+        valid_values = []
+        for idx, y_pix in enumerate(y_pixels):
+            try:
+                world = hmi_map.pixel_to_world(profile_x_pix * u.pix, y_pix * u.pix)
+                y_coords_arcsec.append(world.Ty.value)
+                valid_values.append(y_profile_data[idx])
+            except:
+                pass
+        
+        if len(valid_values) > 0:
+            y_coords_arcsec = np.array(y_coords_arcsec)
+            valid_values = np.array(valid_values)
+            valid_data = valid_values[np.isfinite(valid_values)]
+            
+            if len(valid_data) > 0:
+                profile_mean = np.mean(valid_data)
+                profile_std = np.std(valid_data)
+                
+                axes[1,0].plot(y_coords_arcsec, valid_values, '-', color='cyan', 
+                              linewidth=1.5, label=f'Ave±std: {profile_mean:.1f} ± {profile_std:.1f} G')
+                axes[1,0].fill_between(y_coords_arcsec,
+                                      profile_mean - profile_std,
+                                      profile_mean + profile_std,
+                                      color='gray', alpha=0.2)
+                axes[1,0].axhline(y=profile_mean, color='cyan', linestyle='--', alpha=0.8)
+    
+    axes[1,0].set_title(f'Profile at X={x_profile_arcsec}" (arcsec)')
+    axes[1,0].set_xlabel('Y (arcsec)')
     axes[1,0].set_ylabel('Br (Gauss)')
     axes[1,0].grid(True, alpha=0.3)
     axes[1,0].axhline(y=0, color='k', linestyle='--', alpha=0.5)
-    axes[1,0].axvline(x=0, color='orange', linestyle=':', alpha=0.7, linewidth=1)  # 太陽中心線
-    axes[1,0].set_xlim(y_min_arcsec, y_max_arcsec)  # arcsec単位で設定
+    axes[1,0].axvline(x=0, color='orange', linestyle=':', alpha=0.7)
+    axes[1,0].set_xlim(corner_coords[0][1], corner_coords[1][1])  # Y方向のarcsec範囲
     axes[1,0].legend(loc='upper right')
-    axes[1,0].axhline(y=col_profile_mean, color='cyan', linestyle='--', alpha=0.8, linewidth=2)
-    # col_profileのave±stdの範囲にシェードをかける
-    axes[1,0].fill_between(y_coords_arcsec,  # arcsec座標を使用
-                          col_profile_mean - col_profile_std,
-                          col_profile_mean + col_profile_std,
-                          color='gray', alpha=0.2)
-
-    valid_row_data = row_profile[np.isfinite(row_profile)]
-    row_profile_mean = np.mean(valid_row_data)
-    row_profile_std = np.std(valid_row_data)
-
-
-    axes[1,1].plot(x_coords_arcsec, row_profile, '-', color='magenta', linewidth=1, label=f'Ave$\\pm$std: {row_profile_mean:.1f} $\\pm$ {row_profile_std:.1f} Gauss')
-    axes[1,1].set_title(f'On Y={y_from_center_arcsec:.1f} arcsec line profile')
-    axes[1,1].set_xlabel('X (arcsec from Sun center)')
+    
+    # 4. X方向プロファイル（Y固定）
+    # 表示範囲をピクセル座標で制限
+    x_pix_min = max(0, int(x_min_pix))
+    x_pix_max = min(data_plot.shape[1], int(x_max_pix))
+    
+    if 0 <= profile_y_pix < data_plot.shape[0]:
+        x_profile_data = data_plot[profile_y_pix, x_pix_min:x_pix_max]
+        x_pixels = np.arange(x_pix_min, x_pix_max)
+        
+        # ピクセル座標をarcsec座標に変換
+        x_coords_arcsec = []
+        valid_values = []
+        for idx, x_pix in enumerate(x_pixels):
+            try:
+                world = hmi_map.pixel_to_world(x_pix * u.pix, profile_y_pix * u.pix)
+                x_coords_arcsec.append(world.Tx.value)
+                valid_values.append(x_profile_data[idx])
+            except:
+                pass
+        
+        if len(valid_values) > 0:
+            x_coords_arcsec = np.array(x_coords_arcsec)
+            valid_values = np.array(valid_values)
+            valid_data = valid_values[np.isfinite(valid_values)]
+            
+            if len(valid_data) > 0:
+                profile_mean = np.mean(valid_data)
+                profile_std = np.std(valid_data)
+                
+                axes[1,1].plot(x_coords_arcsec, valid_values, '-', color='magenta', 
+                              linewidth=1.5, label=f'Ave±std: {profile_mean:.1f} ± {profile_std:.1f} G')
+                axes[1,1].fill_between(x_coords_arcsec,
+                                      profile_mean - profile_std,
+                                      profile_mean + profile_std,
+                                      color='gray', alpha=0.2)
+                axes[1,1].axhline(y=profile_mean, color='magenta', linestyle='--', alpha=0.8)
+    
+    axes[1,1].set_title(f'Profile at Y={y_profile_arcsec}" (arcsec)')
+    axes[1,1].set_xlabel('X (arcsec)')
     axes[1,1].set_ylabel('Br (Gauss)')
     axes[1,1].grid(True, alpha=0.3)
     axes[1,1].axhline(y=0, color='k', linestyle='--', alpha=0.5)
-    axes[1,1].axvline(x=0, color='orange', linestyle=':', alpha=0.7, linewidth=1)  # 太陽中心線
-    axes[1,1].set_xlim(x_min_arcsec, x_max_arcsec)  # arcsec単位で設定
+    axes[1,1].axvline(x=0, color='orange', linestyle=':', alpha=0.7)
+    axes[1,1].set_xlim(corner_coords[0][0], corner_coords[1][0])  # X方向のarcsec範囲
     axes[1,1].legend(loc='upper right')
-    axes[1,1].axhline(y=row_profile_mean, color='magenta', linestyle='--', alpha=0.8, linewidth=2)
-    # row_profileのave±stdの範囲にシェードをかける
-    axes[1,1].fill_between(x_coords_arcsec,  # arcsec座標を使用
-                          row_profile_mean - row_profile_std,
-                          row_profile_mean + row_profile_std,
-                          color='gray', alpha=0.2)
-
-    plt.tight_layout()
     
-    # 保存場所をResearch/SDO/HMIに変更
+    # tight_layoutは使用しない（GridSpecで調整済み）
+    # plt.tight_layout()
+    
+    # 保存
     save_dir = "/mnt/d/wsl/home/kinno-7010/Research/SDO/HMI"
     filename = f"hmi_quick_view_{time_str.replace(':', '').replace('.', '').replace('-', '')}.png"
     full_path = os.path.join(save_dir, filename)
@@ -578,13 +606,17 @@ def plot_hmi_quick(hmi_data, downsample=1):
     
     plt.show()
     
-    # 簡易統計
-    print(f"\n統計情報:")
-    print(f"  元データサイズ: {data.shape}")
-    print(f"  プロット解像度: {data_plot.shape}")
-    print(f"  磁場範囲: {data_min:.1f} ～ {data_max:.1f} Gauss")
-    print(f"  平均磁場: {np.mean(valid_data):.1f} ± {data_std:.1f} Gauss")
-    print(f"  有効ピクセル率: {100*len(valid_data)/data_plot.size:.1f}%")
+    # デバッグ情報
+    print(f"\n=== デバッグ情報 ===")
+    print(f"データ形状: {data_plot.shape}")
+    print(f"太陽中心ピクセル: ({data_plot.shape[1]//2}, {data_plot.shape[0]//2})")
+    print(f"フルディスク（ピクセル）: X=[0, {data_plot.shape[1]}], Y=[0, {data_plot.shape[0]}]")
+    
+    # 太陽中心のarcsec座標を確認
+    center_pix_x = data_plot.shape[1] // 2
+    center_pix_y = data_plot.shape[0] // 2
+    center_world = hmi_map.pixel_to_world(center_pix_x * u.pix, center_pix_y * u.pix)
+    print(f"太陽中心（arcsec）: ({center_world.Tx.value:.1f}, {center_world.Ty.value:.1f})")
 
 def main():
     """

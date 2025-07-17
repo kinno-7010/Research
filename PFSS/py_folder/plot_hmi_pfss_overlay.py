@@ -98,21 +98,48 @@ def compute_pfss_solution(hmi_map, nrho=25, rss=2.5):
         print(f"  警告: {n_nan} 個のNaN値を検出しました")
         print(f"  NaN値を0に置き換えます")
         data[nan_mask] = 0.0
-        
-        # 新しいマップを作成
         hmi_map_clean = sunpy.map.Map(data, hmi_map.meta)
     else:
         hmi_map_clean = hmi_map
         print("  NaN値は検出されませんでした")
     
-    # メタデータの修正（必要に応じて）
-    if 'cunit1' not in hmi_map_clean.meta:
-        hmi_map_clean.meta['cunit1'] = 'deg'
-    if 'cunit2' not in hmi_map_clean.meta:
-        hmi_map_clean.meta['cunit2'] = 'deg'
+    # CEA投影にリプロジェクション
+    print("  HMIマップをCEA投影にリプロジェクション中...")
+    shape_cea = (180, 360)
+
+    reference_coord = SkyCoord(0 * u.deg, 0 * u.deg,
+                               frame='heliographic_stonyhurst',
+                               obstime=hmi_map.date,
+                               rsun=hmi_map.rsun_meters)
+
+    # CEA投影用のヘッダーを作成
+    header_cea = sunpy.map.make_fitswcs_header(
+        shape_cea,
+        reference_coord,
+        projection_code="CEA"
+    )
+
+    # ======================= ここからが修正部分 (最終版) =======================
+    # pfsspyライブラリの厳密な内部検証を通過するために、スケール値を仕様通りに手動設定する
+
+    # 経度スケール (CDELT1): 360度 / 360ピクセル = 1.0
+    header_cea['cdelt1'] = 360.0 / shape_cea[1]
+    header_cea['cunit1'] = 'deg'
+
+    # 緯度スケール (CDELT2): pfsspyの検証式から逆算した値 (2 / pi) を設定する
+    header_cea['cdelt2'] = 2 / np.pi
+    header_cea['cunit2'] = 'deg'
+    # ======================= ここまでが修正部分 (最終版) =======================
+
+    # マップをリプロジェクション
+    hmi_map_cea = hmi_map_clean.reproject_to(header_cea)
+    
+    # リプロジェクション後のマップのNaNも0で埋める
+    hmi_map_cea.data[np.isnan(hmi_map_cea.data)] = 0.0
+    print(f"  リプロジェクション完了. 新しい形状: {hmi_map_cea.data.shape}")
     
     # PFSS入力オブジェクトを作成
-    pfss_input = pfsspy.Input(hmi_map_clean, nrho, rss)
+    pfss_input = pfsspy.Input(hmi_map_cea, nrho, rss)
     
     # PFSS解を計算
     pfss_output = pfsspy.pfss(pfss_input)
@@ -120,7 +147,6 @@ def compute_pfss_solution(hmi_map, nrho=25, rss=2.5):
     print("  PFSS計算完了")
     
     return pfss_output
-
 
 def define_field_line_seeds(hmi_map, x_lims_pix, y_lims_pix, n_seeds_x=7, n_seeds_y=7, 
                            use_strong_field=False, field_threshold=100):
@@ -240,7 +266,7 @@ def trace_field_lines(seeds, pfss_output):
     return field_lines
 
 
-def plot_hmi_with_pfss(hmi_data, pfss_output, field_lines, save_filename=None):
+def plot_hmi_with_pfss(hmi_data, pfss_output, field_lines, rss, nrho, save_filename=None):
     """
     HMI画像にPFSS磁力線を重ねてプロット
     
@@ -252,6 +278,10 @@ def plot_hmi_with_pfss(hmi_data, pfss_output, field_lines, save_filename=None):
         PFSS解
     field_lines : list
         トレースされた磁力線
+    rss : float
+        ソース面の半径 (Rs)
+    nrho : int
+        動径方向の格子点数
     save_filename : str
         保存ファイル名
     """
@@ -259,7 +289,6 @@ def plot_hmi_with_pfss(hmi_data, pfss_output, field_lines, save_filename=None):
     
     # データを取得
     hmi_map = hmi_data['full_map']
-    masked_data = hmi_data['masked_data']
     x_lims_pix = hmi_data['x_lims_pix']
     y_lims_pix = hmi_data['y_lims_pix']
     
@@ -268,14 +297,11 @@ def plot_hmi_with_pfss(hmi_data, pfss_output, field_lines, save_filename=None):
     
     # 1. HMI全体マップ + 表示範囲の枠
     ax1 = fig.add_subplot(221, projection=hmi_map)
-    hmi_map.plot(axes=ax1, cmap='hmimag', vmin=-1500, vmax=1500)
+    hmi_map.plot_settings['norm'].vmin = -1500
+    hmi_map.plot_settings['norm'].vmax = 1500
+    hmi_map.plot(axes=ax1, cmap='hmimag')
     
-    # 表示範囲を矩形で示す
     from matplotlib.patches import Rectangle
-    world_coords = hmi_map.pixel_to_world(
-        [x_lims_pix[0], x_lims_pix[1]] * u.pixel,
-        [y_lims_pix[0], y_lims_pix[1]] * u.pixel
-    )
     rect = Rectangle(
         (x_lims_pix[0], y_lims_pix[0]),
         x_lims_pix[1] - x_lims_pix[0],
@@ -284,81 +310,52 @@ def plot_hmi_with_pfss(hmi_data, pfss_output, field_lines, save_filename=None):
         transform=ax1.get_transform('pixel')
     )
     ax1.add_patch(rect)
-    
     ax1.set_title('HMI Full Disk + Region of Interest', fontsize=14)
     
-    # 2. 指定範囲のHMI画像（plot_hmi_single.pyと同じ）
+    # 2. 指定範囲のHMI画像
     ax2 = fig.add_subplot(222, projection=hmi_map)
-    im2 = ax2.imshow(hmi_map.data, cmap='RdBu_r', origin='lower', 
-                     vmin=-200, vmax=200, extent=[0, hmi_map.data.shape[1], 0, hmi_map.data.shape[0]])
+    im2 = ax2.imshow(hmi_map.data, cmap='RdBu_r', origin='lower', vmin=-200, vmax=200)
     ax2.set_xlim(x_lims_pix)
     ax2.set_ylim(y_lims_pix)
-    
     cbar2 = fig.colorbar(im2, ax=ax2, orientation='vertical', pad=0.1, shrink=0.8)
     cbar2.ax.set_ylabel('$B_r$ (Gauss)', fontsize=12)
     ax2.set_title('HMI Radial Magnetic Field (Zoomed)', fontsize=14)
-    
-    # 太陽座標グリッドを描画
     draw_hmi_solar_grid(hmi_map, ax2)
     
     # 3. 指定範囲のHMI画像 + PFSS磁力線
     ax3 = fig.add_subplot(223, projection=hmi_map)
-    im3 = ax3.imshow(hmi_map.data, cmap='RdBu_r', origin='lower', 
-                     vmin=-200, vmax=200, extent=[0, hmi_map.data.shape[1], 0, hmi_map.data.shape[0]])
+    im3 = ax3.imshow(hmi_map.data, cmap='RdBu_r', origin='lower', vmin=-200, vmax=200)
     ax3.set_xlim(x_lims_pix)
     ax3.set_ylim(y_lims_pix)
     
-    # 磁力線を重ねる（色分けオプション付き）
     for fline in field_lines:
         coords = fline.coords
-        
-        # 磁力線の特性を判定
         if hasattr(coords, 'radius'):
-            start_r = coords.radius[0].to(u.Rsun).value
-            end_r = coords.radius[-1].to(u.Rsun).value
+            end_r = fline.coords.radius[-1].to(u.Rsun).value
+            try:
+                start_pix = hmi_map.world_to_pixel(coords[0])
+                x_pix, y_pix = int(start_pix.x.value), int(start_pix.y.value)
+            except AttributeError:
+                start_pix = hmi_map.world_to_pixel(coords[0])
+                x_pix, y_pix = int(start_pix[0].value), int(start_pix[1].value)
             
-            # 開始点の磁場極性を判定
-            start_coord = coords[0]
-            start_pix = hmi_map.world_to_pixel(start_coord)
-            x_pix = int(start_pix[0].value)
-            y_pix = int(start_pix[1].value)
+            polarity = hmi_map.data[y_pix, x_pix] if (0 <= y_pix < hmi_map.data.shape[0] and 0 <= x_pix < hmi_map.data.shape[1]) else 0
             
-            # 境界チェック
-            if (0 <= x_pix < hmi_map.data.shape[1] and 
-                0 <= y_pix < hmi_map.data.shape[0]):
-                polarity = hmi_map.data[y_pix, x_pix]
-            else:
-                polarity = 0
+            color, linewidth, alpha = ('white', 1.0, 0.7)
+            if end_r > 2.0:
+                color = 'yellow' if polarity > 0 else 'cyan'
+                linewidth, alpha = 1.5, 0.9
             
-            # 開いた/閉じた磁力線の判定と色設定
-            if end_r > 2.0:  # 開いた磁力線
-                if polarity > 0:
-                    color = 'yellow'  # 正極性から出る開いた磁力線
-                else:
-                    color = 'cyan'    # 負極性から出る開いた磁力線
-                linewidth = 1.5
-                alpha = 0.9
-            else:  # 閉じた磁力線
-                color = 'white'
-                linewidth = 1.0
-                alpha = 0.7
-        else:
-            # デフォルト設定
-            color = 'white'
-            linewidth = 1.2
-            alpha = 0.8
-        
-        ax3.plot_coord(coords, alpha=alpha, linewidth=linewidth, color=color)
-    
+            ax3.plot_coord(coords, alpha=alpha, linewidth=linewidth, color=color)
+
     ax3.set_title('HMI + PFSS Field Lines', fontsize=14)
     draw_hmi_solar_grid(hmi_map, ax3)
     
-    # 凡例を追加
     from matplotlib.lines import Line2D
     legend_elements = [
-        Line2D([0], [0], color='yellow', lw=2, label='開いた磁力線（正極性）'),
-        Line2D([0], [0], color='cyan', lw=2, label='開いた磁力線（負極性）'),
-        Line2D([0], [0], color='white', lw=2, label='閉じた磁力線')
+        Line2D([0], [0], color='yellow', lw=2, label='Open Lines (from N-pole)'),
+        Line2D([0], [0], color='cyan', lw=2, label='Open Lines (from S-pole)'),
+        Line2D([0], [0], color='white', lw=2, label='Closed Lines')
     ]
     ax3.legend(handles=legend_elements, loc='upper right', fontsize=10)
     
@@ -366,81 +363,65 @@ def plot_hmi_with_pfss(hmi_data, pfss_output, field_lines, save_filename=None):
     ax4 = fig.add_subplot(224)
     ax4.axis('off')
     
-    # 統計を計算
-    open_lines = 0
-    closed_lines = 0
-    positive_start = 0
-    negative_start = 0
+    open_lines = sum(1 for fline in field_lines if fline.is_open)
+    closed_lines = len(field_lines) - open_lines
     
-    for i, fline in enumerate(field_lines):
-        coords = fline.coords
-        if hasattr(coords, 'radius'):
-            start_r = coords.radius[0].to(u.Rsun).value
-            end_r = coords.radius[-1].to(u.Rsun).value
-            
-            # 開いた/閉じた磁力線の判定
-            if end_r > 2.0:  # ソース面に到達
-                open_lines += 1
+    positive_start, negative_start = 0, 0
+    for fline in field_lines:
+        try:
+            start_pix = hmi_map.world_to_pixel(fline.coords[0])
+            x_pix, y_pix = int(start_pix.x.value), int(start_pix.y.value)
+        except AttributeError:
+            start_pix = hmi_map.world_to_pixel(fline.coords[0])
+            x_pix, y_pix = int(start_pix[0].value), int(start_pix[1].value)
+
+        if (0 <= y_pix < hmi_map.data.shape[0] and 0 <= x_pix < hmi_map.data.shape[1]):
+            if hmi_map.data[y_pix, x_pix] > 0:
+                positive_start += 1
             else:
-                closed_lines += 1
-            
-            # 開始点の極性を判定
-            start_coord = coords[0]
-            # ピクセル座標に変換
-            start_pix = hmi_map.world_to_pixel(start_coord)
-            x_pix = int(start_pix[0].value)
-            y_pix = int(start_pix[1].value)
-            
-            # 境界チェック
-            if (0 <= x_pix < hmi_map.data.shape[1] and 
-                0 <= y_pix < hmi_map.data.shape[0]):
-                if hmi_map.data[y_pix, x_pix] > 0:
-                    positive_start += 1
-                else:
-                    negative_start += 1
+                negative_start += 1
     
-    stats_text = f"""PFSS磁力線解析結果
+    # ======================= ここからが修正部分 =======================
+    # 引数で渡された rss と nrho を使用する
+    stats_text = f"""PFSS Field Line Analysis
 
-観測情報:
-• HMI観測時刻: {hmi_map.date.strftime("%Y-%m-%d %H:%M:%S")}
-• 表示範囲: [{x_lims_pix[0]}:{x_lims_pix[1]}, {y_lims_pix[0]}:{y_lims_pix[1]}] pixels
+Observation Info:
+- HMI Obs Time: {hmi_map.date.strftime("%Y-%m-%d %H:%M:%S")}
+- Display Range: [{x_lims_pix[0]}:{x_lims_pix[1]}, {y_lims_pix[0]}:{y_lims_pix[1]}] px
 
-磁力線統計:
-• 総磁力線数: {len(field_lines)}
-• 開いた磁力線: {open_lines} ({open_lines/len(field_lines)*100:.1f}%)
-• 閉じた磁力線: {closed_lines} ({closed_lines/len(field_lines)*100:.1f}%)
-• 正極性開始: {positive_start}
-• 負極性開始: {negative_start}
+Field Line Statistics:
+- Total Lines: {len(field_lines)}
+- Open Lines: {open_lines} ({open_lines/len(field_lines)*100:.1f}%)
+- Closed Lines: {closed_lines} ({closed_lines/len(field_lines)*100:.1f}%)
+- Start from N-pole: {positive_start}
+- Start from S-pole: {negative_start}
 
-PFSS設定:
-• ソース面: {pfss_output.source_surface_radius:.1f} Rs
-• 動径格子点: {pfss_output.nr}
+PFSS Settings:
+- Source Surface: {rss:.1f} Rs
+- Radial Grid Pts: {nrho}
 
-色分け:
-• 黄色: 正極性から出る開いた磁力線
-• 水色: 負極性から出る開いた磁力線  
-• 白色: 閉じた磁力線
+Color Legend:
+- Yellow: Open (from N-pole)
+- Cyan: Open (from S-pole)
+- White: Closed
 """
+    # ======================= ここまでが修正部分 =======================
     
     ax4.text(0.05, 0.95, stats_text, fontsize=11, fontfamily='monospace',
              transform=ax4.transAxes, verticalalignment='top')
     
-    # メインタイトル
     fig.suptitle(f'SDO/HMI PFSS Analysis\n{hmi_data["time"]}', fontsize=16)
-    
-    plt.tight_layout()
-    
-    # 保存
+    plt.tight_layout(pad=1.0, w_pad=1.5, h_pad=1.5)
+    fig.subplots_adjust(top=0.92)
+
     if save_filename is None:
         save_filename = '/mnt/d/wsl/home/kinno-7010/Research/PFSS/hmi_pfss_overlay.png'
     
     plt.savefig(save_filename, dpi=300, bbox_inches='tight')
     print(f"  プロットを保存: {save_filename}")
-    
     plt.show()
     
     return fig
-
 
 def main():
     """
@@ -455,6 +436,12 @@ def main():
     # HMIファイルパス
     hmi_file = "/mnt/d/wsl/home/kinno-7010/Research/SDO/HMI/Rawdata/hmi.M_720s.20220613_030000_TAI.fits"
     
+    # ======================= ここからが修正部分 =======================
+    # PFSSパラメータを定数として定義
+    RSS_VAL = 2.5
+    NRHO_VAL = 25
+    # ======================= ここまでが修正部分 =======================
+    
     try:
         # 1. HMIデータの準備
         print("\n--- Step 1: HMIデータ準備 ---")
@@ -462,28 +449,18 @@ def main():
         
         # 2. PFSS解の計算（全球データ使用）
         print("\n--- Step 2: PFSS計算 ---")
-        pfss_output = compute_pfss_solution(hmi_data['full_map'], nrho=25, rss=2.5)
+        pfss_output = compute_pfss_solution(hmi_data['full_map'], nrho=NRHO_VAL, rss=RSS_VAL)
         
         # 3. 磁力線の開始点を定義（表示範囲内）
         print("\n--- Step 3: 磁力線開始点定義 ---")
-        # オプション1: 均等グリッド
-        # seeds = define_field_line_seeds(
-        #     hmi_data['full_map'], 
-        #     hmi_data['x_lims_pix'], 
-        #     hmi_data['y_lims_pix'],
-        #     n_seeds_x=7,  # X方向の開始点数
-        #     n_seeds_y=7   # Y方向の開始点数
-        # )
-        
-        # オプション2: 強い磁場領域から選択
         seeds = define_field_line_seeds(
             hmi_data['full_map'], 
             hmi_data['x_lims_pix'], 
             hmi_data['y_lims_pix'],
-            n_seeds_x=10,  # 最大開始点数
+            n_seeds_x=10,
             n_seeds_y=10,
-            use_strong_field=True,  # 強い磁場領域を使用
-            field_threshold=150     # 磁場強度閾値 (Gauss)
+            use_strong_field=True,
+            field_threshold=150
         )
         
         # 4. 磁力線をトレース
@@ -492,7 +469,10 @@ def main():
         
         # 5. プロット作成
         print("\n--- Step 5: プロット作成 ---")
-        fig = plot_hmi_with_pfss(hmi_data, pfss_output, field_lines)
+        # ======================= ここからが修正部分 =======================
+        # plot関数にrssとnrhoの値を渡す
+        fig = plot_hmi_with_pfss(hmi_data, pfss_output, field_lines, rss=RSS_VAL, nrho=NRHO_VAL)
+        # ======================= ここまでが修正部分 =======================
         
         print("\n=== 処理完了 ===")
         print("✓ HMI + PFSS 磁力線重ね合わせプロットが完了しました")
@@ -501,7 +481,6 @@ def main():
         print(f"\nエラーが発生しました: {e}")
         import traceback
         traceback.print_exc()
-
 
 if __name__ == "__main__":
     main()

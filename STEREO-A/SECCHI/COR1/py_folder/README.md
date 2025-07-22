@@ -39,34 +39,98 @@ STEREO（Solar Terrestrial Relations Observatory）は、太陽コロナや太�
 
 ### データ処理・解析スクリプト
 
-5. **cor1_plot.py** - COR1データの可視化
-   - FITSファイルの読み込み（read_cor1_data関数）
-   - 太陽半径の計算（calculate_solar_radius_pixel関数）
-   - 太陽半径円の描画（1Rs, 2Rs, 3Rs）
-   - 画像統計情報の表示
+5. **cor1_plot.py** - COR1プロフェッショナル天体画像プロット【SSWIDL統合版】
+   - **SSWIDL準拠**: IDL版 `secchi_colors.pro`, `scc_add_datetime.pro`, `drawcoordgrid.pro` 統合
+   - **プロ仕様**: 天文学的可視化標準に準拠した高品質出力
+   - **動的スケーリング**: ZScale/パーセンタイルアルゴリズム実装
+   - **自動アノテーション**: 日時スタンプ・検出器情報・ロゴ配置（画像サイズ適応）
+   - **測定機能**: 距離・角度測定、座標変換（HPC/HCR座標系）
+   - **コマンドライン制御**: 柔軟な機能選択・カスタマイズ
+   
+6. **cor1_colors.py** - SECCHI専用カラーテーブルシステム【新規】
+   - IDL版 `secchi_colors.pro` の完全Python移植
+   - COR1/COR2（白コロナ）、EUVI（波長別）、HI（太陽圏撮像）専用色定義
+   - ZScaleアルゴリズム: 動的コントラスト最適化
+   - SECCHIColorsクラス: 検出器・波長自動識別
 
-6. **cor1_data_download.py** - データダウンロード
+7. **cor1_annotations.py** - 画像アノテーション統合システム【新規】
+   - IDL版アノテーション機能群の統合Python実装
+   - 画像サイズ別動的調整: 2048/1024/512/256ピクセル対応
+   - 天体座標グリッド: HCR/HAE座標系描画
+   - COR1Annotationsクラス: STEREO宇宙機準拠処理
+
+8. **cor1_solar_utils.py** - 太陽物理学計算ライブラリ【新規】
+   - IDL版 `stereo_rsun.pro`, `scc_sun_center.pro` 移植
+   - 太陽半径計算: 距離補正・arcsec精度
+   - 座標変換: ピクセル↔arcsec↔HCR（Heliocentric Radial）
+   - COR1SolarUtilsクラス: 測定・解析ツール統合
+
+9. **cor1_data_download.py** - データダウンロード
    - SunPy/Fidoを使用したSTEREO-Aデータの自動取得
    - 指定時間範囲のCOR1データ検索・ダウンロード
 
 ### ユーティリティ・デバッグスクリプト
 
-7. **check_header.py** - FITSヘッダーの検証
+10. **check_header.py** - FITSヘッダーの検証
    - ヘッダー情報の確認
    - 太陽半径関連パラメータの抽出
    - 重要なキーワードの一覧表示
 
-8. **check_datetime.py** - 日時情報の確認
+11. **check_datetime.py** - 日時情報の確認
    - 元ファイルと処理済みファイルの日時比較
    - 処理履歴（HISTORY）の確認
    - データ統計情報の表示
 
-9. **debug_header.py** - ヘッダー情報の転送デバッグ
+12. **debug_header.py** - ヘッダー情報の転送デバッグ
    - CORPrep処理前後のヘッダー比較
    - データ転送の整合性確認
    - 欠損キーの特定
 
 ## 使用方法
+
+### 🚀 【新機能】プロフェッショナル天体画像プロット
+
+**Enhanced版（SSWIDL準拠・全機能有効）:**
+```bash
+python3 cor1_plot.py --enhanced
+# 出力: 高品質天体画像（300 DPI、プロ仕様レイアウト）
+```
+
+**機能別の使用例:**
+```bash
+# SECCHI専用カラーテーブル + 自動アノテーション
+python3 cor1_plot.py --colors --annotations
+
+# 動的スケーリング（ZScale/パーセンタイル）
+python3 cor1_plot.py --scaling percentile --colors
+
+# 座標グリッド + 測定ツール表示
+python3 cor1_plot.py --measurements --grid --enhanced
+
+# カスタムファイル処理
+python3 cor1_plot.py --file /path/to/custom.fits --enhanced
+```
+
+**Python API使用:**
+```python
+# 1. SECCHI専用カラーテーブル
+from cor1_colors import SECCHIColors
+colors = SECCHIColors()
+cor1_cmap = colors.get_colormap('COR1')
+vmin, vmax = colors.calculate_scaling(data, method='zscale')
+
+# 2. 天体アノテーション
+from cor1_annotations import COR1Annotations
+annotations = COR1Annotations()
+datetime_str, detector_info = annotations.format_datetime_string(header)
+
+# 3. 太陽物理学計算
+from cor1_solar_utils import COR1SolarUtils
+solar_utils = COR1SolarUtils()
+sun_center = solar_utils.get_sun_center(header)
+rsun_arcsec = solar_utils.calculate_solar_radius_arcsec(date_obs, 'A')
+distance_rsun = solar_utils.calculate_distance(point1, point2, header, 'rsun')
+```
 
 ### 1. 統合パイプラインの使用（推奨）
 

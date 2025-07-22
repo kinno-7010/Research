@@ -1,0 +1,42 @@
+{
+  "input_file": "/mnt/d/wsl/home/kinno-7010/Research/STEREO-A/SECCHI/COR1/Rawdata/20220613_034136_n4c1A.fts",
+  "timestamp": "2025-07-18T17:04:59.952705",
+  "success": true,
+  "message": "COR processing completed successfully",
+  "processing_info": {
+    "calibration_applied": true,
+    "rotation_applied": true,
+    "mask_applied": true,
+    "cosmic_ray_removal": true,
+    "final_shape": [
+      512,
+      512
+    ],
+    "data_range": [
+      0.0,
+      5965.661374035314
+    ],
+    "data_mean": 1216.7964591242076,
+    "data_std": 1571.1537745605756,
+    "detector": "COR1",
+    "processing_time": 0.28435,
+    "options_used": {
+      "calibrate": true,
+      "rotate": true,
+      "trim": true,
+      "mask": true,
+      "cosmic_ray_removal": true,
+      "background_subtraction": false,
+      "vignetting_correction": true,
+      "flat_field_correction": true,
+      "dark_current_subtraction": true,
+      "output_format": [
+        "fits",
+        "png"
+      ],
+      "save_processing_log": true
+    },
+    "input_file": "/mnt/d/wsl/home/kinno-7010/Research/STEREO-A/SECCHI/COR1/Rawdata/20220613_034136_n4c1A.fts"
+  },
+  "pipeline_version": "STEREO Pipeline v1.0"
+}

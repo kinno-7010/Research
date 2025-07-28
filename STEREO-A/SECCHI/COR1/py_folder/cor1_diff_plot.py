@@ -11,8 +11,13 @@ from matplotlib.colors import TwoSlopeNorm
 from astropy.io import fits
 import astropy.units as u
 from astropy.coordinates import SkyCoord
+from astropy.wcs import WCS
 import sunpy.map
 import warnings
+
+# 新しい校正システムのインポート
+from stereo_cor1_calibration import STEREOCOR1Calibration, STEREOCoordinates
+from stereo_coordinates import STEREOCoordinateTransform
 
 # カスタムモジュールのインポート
 try:
@@ -119,41 +124,68 @@ def create_symmetric_colormap_norm(data, method='percentile', percentile=99, min
 
 
 def load_and_preprocess_data(fits_filepath):
-    """既存の関数をそのまま使用"""
+    """
+    COR1 FITSファイルを読み込み、前処理を行う関数（新校正システム使用）
+
+    Parameters:
+    -----------
+    fits_filepath : str
+        読み込むFITSファイルのパス
+
+    Returns:
+    --------
+    processed_data : numpy.ndarray or None
+        前処理済みの画像データ
+    processed_header : astropy.io.fits.Header or None
+        処理済みのヘッダー情報
+    """
     if not os.path.exists(fits_filepath):
         print(f"エラー: 指定されたFITSファイルが見つかりません: {fits_filepath}")
         return None, None
 
     print(f"データ読み込み・前処理: {os.path.basename(fits_filepath)}")
 
-    preprocessor = CORPrep(silent=True)
-    processed_data, processed_header_dict = preprocessor.cor_prep(
-        filepath=fits_filepath,
-        rotate_on=False,
-        smask_on=True,
-        calibrate_off=False,
-        discri_pobj_on=True
-    )
-    
-    if processed_data is None:
-        print(f"エラー: {fits_filepath} の前処理に失敗しました。")
+    try:
+        # 旧システム（CORPrep）を直接使用
+        preprocessor = CORPrep(silent=True)
+        processed_data, processed_header_dict = preprocessor.cor_prep(
+            filepath=fits_filepath,
+            rotate_on=False,  # CORPrepでの回転を無効化（差分データレベルで統一的に回転）
+            smask_on=True,
+            calibrate_off=False,
+            discri_pobj_on=True
+        )
+        
+        if processed_data is None:
+            print(f"エラー: {fits_filepath} の前処理に失敗しました。")
+            return None, None
+
+        # ヘッダー処理
+        history_list = processed_header_dict.pop('HISTORY', [])
+        processed_header = fits.Header(processed_header_dict)
+        if history_list:
+            for history_entry in history_list:
+                sanitized_lines = str(history_entry).split('\n')
+                for line in sanitized_lines:
+                    clean_line = line.strip()
+                    if clean_line:
+                        ascii_line = ''.join(c for c in clean_line if ord(c) < 128)
+                        processed_header.add_history(ascii_line)
+        
+        # デバッグ用データ統計
+        print(f"Debug: Processed data shape={processed_data.shape}, min={np.nanmin(processed_data):.3f}, max={np.nanmax(processed_data):.3f}")
+        # 回転角の確認
+        crota_angle = STEREOCoordinateTransform.get_crota_angle(processed_header)
+        print(f"Debug: CORPrep後の回転角={crota_angle:.3f}度")
+        print(f"✓ CORPrep前処理完了: {os.path.basename(fits_filepath)}")
+        return processed_data, processed_header
+        
+    except Exception as e:
+        print(f"エラー: {fits_filepath} の前処理に失敗しました: {e}")
         return None, None
 
-    history_list = processed_header_dict.pop('HISTORY', [])
-    processed_header = fits.Header(processed_header_dict)
-    if history_list:
-        for history_entry in history_list:
-            sanitized_lines = str(history_entry).split('\n')
-            for line in sanitized_lines:
-                clean_line = line.strip()
-                if clean_line:
-                    ascii_line = ''.join(c for c in clean_line if ord(c) < 128)
-                    processed_header.add_history(ascii_line)
 
-    return processed_data, processed_header
-
-
-def create_cor1_difference_plot(target_fits_filepath, output_dir=".", base_time_file=BASE_TIME_FILE, 
+def create_cor1_difference_plot(ax, target_fits_filepath, output_dir=".", base_time_file=BASE_TIME_FILE, 
                               colormap_method='percentile', apply_median_correction=False):
     """
     改良版: 0を確実に白で表示する差分プロット作成
@@ -206,8 +238,8 @@ def create_cor1_difference_plot(target_fits_filepath, output_dir=".", base_time_
     print(f"  平均={stats['mean']:.3f}, 中央値={stats['median']:.3f}, 標準偏差={stats['std']:.3f}")
     print(f"  最小={stats['min']:.3f}, 最大={stats['max']:.3f}")
 
-    # sunpy.map.Mapオブジェクトの作成
-    print("\nsunpy.map.Mapオブジェクトの作成...")
+    # STEREO-A軌道の傾き補正：太陽北極を真上に向ける
+    print("\nSTEREO-A軌道傾き補正を適用...")
     diff_header = target_header.copy()
     diff_header.add_history("DIFFERENCE IMAGE: Target - Base")
     diff_header.add_history(f"Base time file: {os.path.basename(base_time_file)}")
@@ -215,21 +247,50 @@ def create_cor1_difference_plot(target_fits_filepath, output_dir=".", base_time_
     if apply_median_correction:
         diff_header.add_history(f"Median correction applied: {median_offset:.3f}")
     
-    diff_map = sunpy.map.Map((diff_data, diff_header))
-    diff_map = diff_map.rotate()
+    # グリッド表示用のWCS座標系補正（データは回転しない）
+    current_rotation = STEREOCoordinateTransform.get_crota_angle(diff_header)
+    print(f"Debug: データの回転角={current_rotation:.3f}度（データ回転は無効、グリッドのみ補正）")
+    
+    # 新しい座標変換システムを使用してWCS座標系のみを補正
+    corrected_wcs = STEREOCoordinateTransform.create_stereo_wcs(diff_header, diff_data.shape)
+    corrected_diff_header = diff_header.copy()
+    corrected_diff_header.update(corrected_wcs.to_header())
+    
+    # sunpy.map.Mapオブジェクトの作成（データはそのまま、WCSのみ補正）
+    print("\nsunpy.map.Mapオブジェクトの作成...")
+    diff_map = sunpy.map.Map((diff_data, corrected_diff_header))
+    
+    print(f"✓ グリッド座標系のみ回転補正適用: データ回転なし、WCS補正済み")
     
     # カラーマップと正規化の設定
     print("\nカラーマップの設定...")
     cmap = plt.get_cmap('RdBu_r')
     norm, vmin, vmax = create_symmetric_colormap_norm(diff_data, method=colormap_method)
     
-    # プロット作成
+    # プロット作成（回転補正済みWCS座標系を使用）
     print("\nプロット作成...")
-    fig = plt.figure(figsize=(14, 12))
-    ax = fig.add_subplot(projection=diff_map)
+    
+    # WCSAxesを使用してsubplotを再作成（回転補正済み座標系を反映）
+    if hasattr(ax, 'figure') and ax.figure is not None:
+        # 既存のfigureがある場合は再作成
+        fig = ax.figure
+        subplot_spec = ax.get_subplotspec()
+        if hasattr(ax, 'remove'):
+            ax.remove()  # 既存のaxesがある場合は削除
+        # 回転補正済みのWCS情報でAxesを作成
+        ax = fig.add_subplot(subplot_spec, projection=diff_map.wcs)
+    else:
+        # figureがない場合は新規作成
+        fig = plt.figure(figsize=(14, 12))
+        ax = fig.add_subplot(projection=diff_map.wcs)
     
     # normパラメータを明示的に指定して差分画像をプロット
     im = diff_map.plot(axes=ax, cmap=cmap, norm=norm, title=False)
+    
+    # 太陽の輪郭と座標グリッド（WCS座標系のみ回転補正済み）
+    print("✓ WCS座標系でグリッド回転補正、データは元の向きを維持")
+    diff_map.draw_limb(axes=ax, color='yellow', linewidth=2, alpha=0.9)
+    diff_map.draw_grid(axes=ax, grid_spacing=(15, 15) * u.deg, color='black', alpha=0.6, linestyle=':', linewidth=0.8)
     
     # カラーバーの追加（目盛りを対称的に配置）
     # cbar = plt.colorbar(im, ax=ax, shrink=0.8, pad=0.05)
@@ -240,10 +301,6 @@ def create_cor1_difference_plot(target_fits_filepath, output_dir=".", base_time_
     ticks = np.arange(-int(vmax), int(vmax) + 1, tick_interval)
     ticks = np.append(ticks[ticks < 0], [0] + list(ticks[ticks > 0]))  # 0を確実に含める
     # cbar.set_ticks(ticks)
-    
-    # 太陽の輪郭と座標グリッド
-    diff_map.draw_limb(color='yellow', linewidth=2, alpha=0.9)
-    diff_map.draw_grid(grid_spacing=(15, 15) * u.deg, color='black', alpha=0.6, linestyle=':', linewidth=0.8)
     
     # 太陽半径の円
     sun_center = SkyCoord(0*u.arcsec, 0*u.arcsec, frame=diff_map.coordinate_frame)
@@ -267,43 +324,66 @@ def create_cor1_difference_plot(target_fits_filepath, output_dir=".", base_time_
         base_time_str = "Base Time"
     
     title_line1 = f'STEREO-A/SECCHI/COR1 - Difference Image'
-    title_line2 = f'Target: {target_time_str}'
-    title_line3 = f'Base: {base_time_str}'
+    title_line2 = f'Target: {target_time_str}\nBase: {base_time_str}'
 
-    full_title = f'{title_line1}\n{title_line2}\n{title_line3}'
+    full_title = f'{title_line1}\n{title_line2}'
     
     ax.set_title(full_title, fontsize=16)
+    # WCS座標系でのラベル設定（グリッドのみ回転補正）
     ax.set_xlabel('Solar X [arcsec]', fontsize=14)
     ax.set_ylabel('Solar Y [arcsec]', fontsize=14)
     
-    # 画像の保存
-    print("\nプロットの保存...")
-    base_name = os.path.splitext(os.path.basename(target_fits_filepath))[0]
-    base_time_name = os.path.splitext(os.path.basename(base_time_file))[0]
-    output_filename = f"{base_name}_diff_from_{base_time_name}_zerocenter.png"
-    save_path = os.path.join(output_dir, output_filename)
-    
-    plt.savefig(save_path, dpi=300, bbox_inches='tight')
-    plt.show()
-    plt.close(fig)
-    print(f"✓ 差分プロットが正常に保存されました: {save_path}")
-    print("=" * 60)
 
-    return save_path
 
 
 if __name__ == '__main__':
-    target_fits_file = "/mnt/d/wsl/home/kinno-7010/Research/STEREO-A/SECCHI/COR1/Rawdata/20220613_032136_n4c1A.fts"
+    target_time = ['20220613_030136',
+                   '20220613_030636',
+                   '20220613_031136',
+                   '20220613_031636',
+                   '20220613_032136',
+                   '20220613_032636',
+                   '20220613_033136',
+                   '20220613_033636',
+                   '20220613_034136',
+                   '20220613_034636',
+                   '20220613_035136',
+                   '20220613_035636',
+                   '20220613_040136',
+                   '20220613_040636',
+                   '20220613_041136']
+    target_fits_file = [f"/mnt/d/wsl/home/kinno-7010/Research/STEREO-A/SECCHI/COR1/Rawdata/{time}_n4c1A.fts" for time in target_time]
     output_directory = "/mnt/d/wsl/home/kinno-7010/Research/STEREO-A/SECCHI/COR1"
     
-    print("=== 改良版COR1差分プロット作成プログラム ===")
-    print(f"Base time: {os.path.basename(BASE_TIME_FILE)}")
-    print(f"Target file: {os.path.basename(target_fits_file)}")
+    fig = plt.figure(figsize=(35, 24))
     
-    # 異なる正規化方法を試す
-    create_cor1_difference_plot(
-        target_fits_file, 
-        output_directory,
-        colormap_method='fixed',  # 'percentile', 'std', 'fixed' から選択
-        apply_median_correction=True   # 系統的バイアスの補正
-    )
+    for i, target_fits_file in enumerate(target_fits_file):
+        print("=== 改良版COR1差分プロット作成プログラム ===")
+        print(f"Base time: {os.path.basename(BASE_TIME_FILE)}")
+        print(f"Target file: {os.path.basename(target_fits_file)}")
+        
+        # 各サブプロットでWCSAxesを作成するためにまずデータを読み込む
+        from astropy.io import fits
+        with fits.open(target_fits_file) as hdul:
+            header = hdul[0].header
+        
+        # WCSを使用してサブプロットを作成
+        ax = fig.add_subplot(3, 5, i+1, projection=WCS(header))
+        
+        create_cor1_difference_plot(
+            ax, target_fits_file, 
+            output_directory,
+            colormap_method='fixed',  # 'percentile', 'std', 'fixed' から選択
+            apply_median_correction=True   # 系統的バイアスの補正
+        )
+        # 画像の保存
+    print("\nプロットの保存...")
+    plt.tight_layout()
+    output_filename = f"cor1_diff_from_0200.png"
+    save_path = os.path.join(output_directory, output_filename)
+    
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.show()
+    # plt.close(fig)
+    print(f"✓ 差分プロットが正常に保存されました: {save_path}")
+    print("=" * 60)

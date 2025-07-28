@@ -297,13 +297,12 @@ def create_cor1_difference_plot(ax, target_fits_filepath, output_dir=".", base_t
     # cbar.set_label(f"Difference Intensity [{diff_map.unit}]", fontsize=12)
     
     # カラーバーの目盛りを対称的に設定
-    tick_interval = max(1, int(vmax / 5))  # 適切な間隔を計算
+    tick_interval = max(1, int(vmax / 5))  # 適切な間隙を計算
     ticks = np.arange(-int(vmax), int(vmax) + 1, tick_interval)
     ticks = np.append(ticks[ticks < 0], [0] + list(ticks[ticks > 0]))  # 0を確実に含める
     # cbar.set_ticks(ticks)
     
-    # 太陽半径の円
-    sun_center = SkyCoord(0*u.arcsec, 0*u.arcsec, frame=diff_map.coordinate_frame)
+    # 太陽半径の円（WCS座標系で太陽中心を自動処理）
     for radius_factor in [1, 2, 3, 4]:
         radius_coord = radius_factor * diff_map.rsun_obs
         circle_coord = SkyCoord(

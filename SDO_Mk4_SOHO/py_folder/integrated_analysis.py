@@ -501,7 +501,7 @@ def create_single_integrated_image(ax, target_time_str: str):
     lasco_norm = ImageNormalize(lasco_map.data, vmin=lasco_vmin, vmax=lasco_vmax, stretch=LinearStretch(), clip=True)
     n_lasco = lasco_norm(lasco_map.data)
 
-    # AIA RGB 合成用正規化
+    # AIA 193差分画像用正規化
     def normalize_linear_stretch(arr, vmin, vmax):
         norm = ImageNormalize(arr, vmin=vmin, vmax=vmax, stretch=LinearStretch(), clip=True)
         return norm(arr)
@@ -510,13 +510,15 @@ def create_single_integrated_image(ax, target_time_str: str):
         mn, mx = np.nanmin(a), np.nanmax(a)
         return (a - mn) / (mx - mn) if mx > mn else np.zeros_like(a)
     
-    r_ch = normalize_linear_stretch(aia211_map.data, vmin=aia_norm_ranges[0], vmax=aia_norm_ranges[1])
-    g_ch = normalize_linear_stretch(aia193_map.data, vmin=aia_norm_ranges[0], vmax=aia_norm_ranges[1])
-    b_ch = normalize_linear_stretch(aia171_map.data, vmin=aia_norm_ranges[0], vmax=aia_norm_ranges[1])
+    # AIA 193差分画像のみを使用（ベース画像を取得して差分計算）
+    aia193_base_map, _ = select_by_midpoint(Time("2022-06-13T02:00:00"), aia193_list)
+    aia193_diff = aia193_map.data - aia193_base_map.data
+    
+    aia193_ch = normalize_linear_stretch(aia193_diff, vmin=aia_norm_ranges[0], vmax=aia_norm_ranges[1])
+    aia193_scaled = scale01(aia193_ch)
 
-    r01, g01, b01 = map(scale01, (r_ch, g_ch, b_ch))
-
-    rgb_image = np.stack([r01, g01, b01], axis=-1)
+    # 単色差分画像として使用
+    aia193_image = aia193_scaled
 
     # 半径マップ・合成
     r_map = calculate_r_map(p_lasco)
@@ -524,7 +526,7 @@ def create_single_integrated_image(ax, target_time_str: str):
     composite, imk4, ia = combine_corona_data(
         n_lasco, p_lasco,
         n_mk4, p_mk4,
-        rgb_image[...,0], p_aia,  # dummy for combine
+        aia193_image, p_aia,  # AIA 193差分画像を使用
         r_map, ranges
     )
     # MK4/LASCO 合成
@@ -537,7 +539,7 @@ def create_single_integrated_image(ax, target_time_str: str):
     # ──────────────── 描画 ────────────────
     # fig, ax = plt.subplots(figsize=(6, 10))
 
-    # 1) AIA RGB を RGBA に変換
+    # 1) AIA 193画像を背景として変換
     ny, nx = p_lasco['ny'], p_lasco['nx']
     y_idx, x_idx = np.indices((ny, nx))
     x_norm = (x_idx - p_lasco['cx']) / p_lasco['px_per_rsun']
@@ -547,14 +549,23 @@ def create_single_integrated_image(ax, target_time_str: str):
         (x_norm * p_aia['px_per_rsun'] + p_aia['cx']).ravel()
     ])
     
-    color_list = []
-    for i_ch in [r_ch, g_ch, b_ch]:
-        color_list.append(map_coordinates(i_ch, coords, order=1, mode='constant', cval=np.nan).reshape((ny, nx)))
-    color_list.append((r_map < ranges['mk4_inner']).astype(float))
-    rgba = np.stack(color_list, axis=-1)
+    # AIA 193画像のみを座標変換
+    aia193_background = map_coordinates(aia193_ch, coords, order=1, mode='constant', cval=np.nan).reshape((ny, nx))
+    
+    # 太陽半径1.1Rs以内で切り取り
+    aia193_background[r_map > 1.1] = np.nan
 
-    # 背景 AIA
-    ax.imshow(rgba, origin='lower', extent=extent_global, aspect='equal', zorder=0)
+    # 背景 AIA 193差分画像（専用カラーマップ使用）
+    try:
+        # sunpyのAIA 193専用カラーマップを使用
+        import sunpy.visualization.colormaps as cm
+        aia193_cmap = cm.cm.sdoaia193
+    except Exception as e:
+        print(f"AIA 193カラーマップの読み込みに失敗: {e}")
+        # フォールバック：標準カラーマップ
+        aia193_cmap = plt.cm.plasma
+    
+    ax.imshow(aia193_background, origin='lower', extent=extent_global, cmap=aia193_cmap, aspect='equal', zorder=0)
     ax.imshow(combined_ml, origin='lower', cmap=plt.cm.plasma,
              norm=Normalize(0,1), extent=extent_global, alpha=0.7, zorder=1)
 
@@ -685,6 +696,12 @@ def determine_aia_diff_ranges(aia211_list, aia193_list, aia171_list, base_time_s
 
 def create_single_diff_image(ax, target_time_str: str):
     """差分統合画像作成関数"""
+    
+    # sunpyの警告を抑制
+    import warnings
+    from sunpy.util.exceptions import SunpyMetadataWarning
+    warnings.filterwarnings('ignore', category=SunpyMetadataWarning)
+    
     base_time_str = "2022-06-13T02:00:00"
     out_dir_str = "/mnt/d/wsl/home/kinno-7010/Research/SDO_Mk4_SOHO/diff"
     # --- 1. 時刻パースとデータリスト取得 (変更なし) ---
@@ -808,7 +825,7 @@ def create_single_diff_image(ax, target_time_str: str):
     lasco_norm = ImageNormalize(lasco_diff, vmin=lasco_vmin, vmax=lasco_vmax, stretch=LinearStretch(), clip=True)
     n_lasco = lasco_norm(lasco_diff)
 
-    # AIA RGB 合成用正規化
+    # AIA 193 差分画像用正規化
     def normalize_linear_stretch(arr, vmin, vmax):
         norm = ImageNormalize(arr, vmin=vmin, vmax=vmax, stretch=LinearStretch(), clip=True)
         return norm(arr)
@@ -817,13 +834,12 @@ def create_single_diff_image(ax, target_time_str: str):
         mn, mx = np.nanmin(a), np.nanmax(a)
         return (a - mn) / (mx - mn) if mx > mn else np.zeros_like(a)
     
-    r_ch = normalize_linear_stretch(aia211_diff, vmin=aia_norm_ranges[0], vmax=aia_norm_ranges[1])
-    g_ch = normalize_linear_stretch(aia193_diff, vmin=aia_norm_ranges[0], vmax=aia_norm_ranges[1])
-    b_ch = normalize_linear_stretch(aia171_diff, vmin=aia_norm_ranges[0], vmax=aia_norm_ranges[1])
+    # AIA 193差分画像のみを使用
+    aia193_ch = normalize_linear_stretch(aia193_diff, vmin=aia_norm_ranges[0], vmax=aia_norm_ranges[1])
+    aia193_scaled = scale01(aia193_ch)
 
-    r01, g01, b01 = map(scale01, (r_ch, g_ch, b_ch))
-
-    rgb_image = np.stack([r01, g01, b01], axis=-1)
+    # 単色画像として使用（グレースケール）
+    aia193_image = aia193_scaled
 
     # 半径マップ・合成
     r_map = calculate_r_map(p_lasco)
@@ -831,7 +847,7 @@ def create_single_diff_image(ax, target_time_str: str):
     composite, imk4, ia = combine_corona_data(
         n_lasco, p_lasco,
         n_mk4, p_mk4,
-        rgb_image[...,0], p_aia,  # dummy for combine
+        aia193_image, p_aia,  # AIA 193差分画像を使用
         r_map, ranges
     )
     # MK4/LASCO 合成
@@ -844,7 +860,7 @@ def create_single_diff_image(ax, target_time_str: str):
     # ──────────────── 描画 ────────────────
     # fig, ax = plt.subplots(figsize=(6, 10))
 
-    # 1) AIA RGB を RGBA に変換
+    # 1) AIA 193差分画像を背景として変換
     ny, nx = p_lasco['ny'], p_lasco['nx']
     y_idx, x_idx = np.indices((ny, nx))
     x_norm = (x_idx - p_lasco['cx']) / p_lasco['px_per_rsun']
@@ -854,14 +870,23 @@ def create_single_diff_image(ax, target_time_str: str):
         (x_norm * p_aia['px_per_rsun'] + p_aia['cx']).ravel()
     ])
     
-    color_list = []
-    for i_ch in [r_ch, g_ch, b_ch]:
-        color_list.append(map_coordinates(i_ch, coords, order=1, mode='constant', cval=np.nan).reshape((ny, nx)))
-    color_list.append((r_map < ranges['mk4_inner']).astype(float))
-    rgba = np.stack(color_list, axis=-1)
+    # AIA 193差分画像のみを座標変換
+    aia193_background = map_coordinates(aia193_ch, coords, order=1, mode='constant', cval=np.nan).reshape((ny, nx))
+    
+    # 太陽半径1.1Rs以内で切り取り
+    aia193_background[r_map > 1.1] = np.nan
 
-    # 背景 AIA
-    ax.imshow(rgba, origin='lower', extent=extent_global, cmap=plt.cm.seismic, aspect='equal', zorder=0)
+    # 背景 AIA 193差分画像（専用カラーマップ使用）
+    try:
+        # sunpyのAIA 193専用カラーマップを使用
+        import sunpy.visualization.colormaps as cm
+        aia193_cmap = cm.cm.sdoaia193
+    except Exception as e:
+        print(f"AIA 193カラーマップの読み込みに失敗: {e}")
+        # フォールバック：標準カラーマップ
+        aia193_cmap = plt.cm.plasma
+    
+    ax.imshow(aia193_background, origin='lower', extent=extent_global, cmap=aia193_cmap, aspect='equal', zorder=0)
     ax.imshow(combined_ml, origin='lower', cmap=plt.cm.seismic,
              norm=Normalize(0,1), extent=extent_global, alpha=0.7, zorder=1)
 

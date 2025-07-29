@@ -202,7 +202,7 @@ def plot_cme_height_evolution(times, heights, fit_params=None, fit_func=None):
                 label=f"Fit: v₀={fit_params['v0_km_s']:.0f} km/s, a={fit_params['a_km_s2']:.1f} km/s²")
     
     ax1.set_xlabel('Time (min) since ' + times[0].iso)
-    ax1.set_ylabel('CME nose height ($R_\odot$)')
+    ax1.set_ylabel('CME nose height ($R_\\odot$)')
     ax1.set_title('CME height evolution')
     ax1.grid(True, alpha=0.3)
     ax1.legend()
@@ -700,8 +700,10 @@ def analyze_single_time_cme_multi_points(target_time_str: str,
             df.to_csv(csv_filename, index=False)
             print(f"\nデータを保存: {csv_filename}")
             
-            # プロットを保存
-            plot_filename = os.path.join(output_dir, f'cme_analysis_{time_label}.png')
+            # プロットを保存（analysis_pngフォルダに保存）
+            png_dir = '/mnt/d/wsl/home/kinno-7010/Research/SDO_Mk4_SOHO/CME_measurement/analysis_png'
+            os.makedirs(png_dir, exist_ok=True)
+            plot_filename = os.path.join(png_dir, f'cme_analysis_{time_label}.png')
             fig2.savefig(plot_filename, dpi=300, bbox_inches='tight')
             print(f"プロットを保存: {plot_filename}")
         

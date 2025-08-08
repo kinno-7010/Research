@@ -97,11 +97,11 @@ def analyze_single_time_cme_with_diff_image(target_time_str: str,
         for r in [2, 3, 4, 5, 6]:
             height_circle = Circle((params['cx'], params['cy']), 
                                  r * params['px_per_rsun'], 
-                                 fill=False, color='white', linewidth=1, 
+                                 fill=False, color='black', linewidth=1, 
                                  linestyle='--', alpha=0.5)
             ax.add_patch(height_circle)
             ax.text(params['cx'], params['cy'] + r * params['px_per_rsun'], 
-                   f'{r} R☉', color='white', ha='center', va='bottom')
+                   f'{r} R☉', color='black', ha='center', va='bottom')
         
         ax.set_xlim(-256, 256)
         ax.set_ylim(-256, 256)
@@ -122,7 +122,7 @@ def analyze_single_time_cme_with_diff_image(target_time_str: str,
         save_dir.mkdir(parents=True, exist_ok=True)
         
         # ファイル名を生成
-        save_filename = f'integrated_coronagraph_{mk4_time}.png'
+        save_filename = f'nose_image_{mk4_time}.png'
         save_path = save_dir / save_filename
         
         # 画像を保存
@@ -184,6 +184,388 @@ def analyze_single_time_cme_with_diff_image(target_time_str: str,
         
         results = {
             'time': target_time_str,
+            'mk4_time': mk4_map.date.iso,
+            'heights': heights,
+            'positions': positions,
+            'angles': angles,
+            'statistics': stats,
+            'dataframe': df
+        }
+        
+        return results
+    
+    else:
+        print("測定点が選択されませんでした。")
+        return None
+
+
+def analyze_single_time_cme_with_diff_from_min_image(target_time_str: str, 
+                                                    save_results: bool = True,
+                                                    output_dir: str = './cme_analysis/'):
+    """
+    特定時刻の統合差分画像を背景にCME高度を複数点で計測し解析（2分前データから差分を作成）
+    
+    Parameters:
+    -----------
+    target_time_str : str
+        対象時刻 'YYYY-MM-DDTHH:MM:SS'
+    save_results : bool
+        結果を保存するかどうか
+    output_dir : str
+        出力ディレクトリ
+        
+    Returns:
+    --------
+    results : dict
+        解析結果
+    """
+    
+    print(f"\n=== CME高度の複数点計測（2分前差分画像使用） ===")
+    print(f"対象時刻: {target_time_str}")
+    
+    # 2分前の時刻を計算
+    from astropy.time import Time
+    import astropy.units as u
+    
+    target_t = Time(target_time_str)
+    base_t = target_t - 2 * u.min
+    base_time_str = base_t.iso
+    
+    print(f"ベース時刻（2分前）: {base_time_str}")
+    
+    # GUIリソースの初期化とクリーンアップ
+    try:
+        # 既存の全てのfigureを閉じる
+        plt.close('all')
+        # インタラクティブモードをリセット
+        plt.ioff()
+        plt.ion()  # 新しいセッション用に再度有効化
+    except Exception as e:
+        print(f"GUI初期化警告: {e}")
+    
+    # 統合差分画像を作成し、実際のパラメータを取得
+    fig, ax = plt.subplots(figsize=(12, 12))
+    
+    # create_single_diff_from_time_image関数を使用して2分前から差分を作成
+    try:
+        from integrated_analysis import select_by_midpoint, get_params, create_single_diff_from_time_image
+        
+        # 実際のデータを取得してパラメータを計算
+        target_time_obj = Time(target_time_str)
+        
+        # 2分前ベース統合差分画像を作成（1回のスキャンでパラメータも取得）
+        image_info = create_single_diff_from_time_image(ax, target_time_str, base_time_str)
+        
+        # 戻り値からパラメータを取得（重複スキャン回避）
+        params_lasco = image_info['params_lasco']
+        params_mk4 = image_info['params_mk4']
+        lasco_map = image_info['lasco_map']
+        mk4_map = image_info['mk4_map']
+        
+        print(f"LASCOパラメータ: cx={params_lasco['cx']:.1f}, cy={params_lasco['cy']:.1f}, px_per_rsun={params_lasco['px_per_rsun']:.1f}")
+        print(f"MK4パラメータ: cx={params_mk4['cx']:.1f}, cy={params_mk4['cy']:.1f}, px_per_rsun={params_mk4['px_per_rsun']:.1f}")
+        
+        # 統合画像の基準となるパラメータを使用
+        params = params_lasco
+        mk4_time = mk4_map.date.strftime('%Y%m%d_%H%M%S')
+        
+        print("2分前ベース統合差分画像の作成が完了しました。")
+        
+    except Exception as e:
+        print(f"2分前ベース統合差分画像作成でエラー: {e}")
+        # フォールバック：ダミー画像を使用
+        dummy_image = np.random.rand(512, 512)
+        ax.imshow(dummy_image, cmap='gray', extent=[-256, 256, -256, 256])
+        
+        # 太陽円盤と高度円を描画
+        params = {'cx': 0, 'cy': 0, 'px_per_rsun': 80}
+        mk4_time = target_time_str.replace(':', '').replace('-', '')
+        
+        # 太陽円盤
+        sun_circle = Circle((params['cx'], params['cy']), params['px_per_rsun'], 
+                           fill=False, color='yellow', linewidth=2)
+        ax.add_patch(sun_circle)
+        
+        # 高度円
+        for r in [2, 3, 4, 5, 6]:
+            height_circle = Circle((params['cx'], params['cy']), 
+                                 r * params['px_per_rsun'], 
+                                 fill=False, color='black', linewidth=1, 
+                                 linestyle='--', alpha=0.5)
+            ax.add_patch(height_circle)
+            ax.text(params['cx'], params['cy'] + r * params['px_per_rsun'], 
+                   f'{r} R☉', color='black', ha='center', va='bottom')
+        
+        ax.set_xlim(-256, 256)
+        ax.set_ylim(-256, 256)
+        ax.set_xlabel('X (pixels)')
+        ax.set_ylabel('Y (pixels)')
+        ax.set_title(f'CME Multi-point Measurement (2min diff) - {target_time_str}\nBase: {base_time_str}')
+    
+    # CME高度を複数点で計測（r_mapは実際には使用されない）
+    r_map = None  # measure_cme_height_manual_multi_pointsでは使用されない
+    heights, positions, angles = measure_cme_height_manual_multi_points(
+        ax, None, params, r_map, 'combined'
+    )
+    
+    # クリック後の画像を保存
+    if len(heights) > 0:
+        # 保存ディレクトリを作成
+        save_dir = Path('/mnt/d/wsl/home/kinno-7010/Research/SDO_Mk4_SOHO/CME_measurement/nose_integrated_coronagraph_2min')
+        save_dir.mkdir(parents=True, exist_ok=True)
+        
+        # ファイル名を生成（2分前差分であることを明示）
+        save_filename = f'nose_image_2min_{mk4_time}.png'
+        save_path = save_dir / save_filename
+        
+        # 画像を保存
+        fig.savefig(save_path, dpi=300, bbox_inches='tight')
+        print(f"クリック後の画像を保存しました: {save_path}")
+    
+    # クリック操作後にGUIリソースを適切にクリーンアップ
+    try:
+        plt.close(fig)
+        # matplotlibのGUIリソースをクリーンアップ
+        import matplotlib
+        if matplotlib.get_backend() != 'Agg':
+            matplotlib.pyplot.ioff()  # インタラクティブモードをオフ
+            matplotlib.pyplot.close('all')  # 全てのfigureを閉じる
+    except Exception as e:
+        print(f"GUI クリーンアップ警告: {e}")
+    
+    if len(heights) > 0:
+        # 結果をプロット
+        fig2 = plot_cme_height_distribution(heights, angles, f"{target_time_str} (2min diff)")
+        plt.close(fig2)  # 結果プロットは保存後に閉じる
+        
+        # 統計情報を計算
+        stats = {
+            'n_points': len(heights),
+            'mean_height': np.mean(heights),
+            'std_height': np.std(heights),
+            'min_height': np.min(heights),
+            'max_height': np.max(heights),
+            'height_range': np.max(heights) - np.min(heights)
+        }
+        
+        print(f"\n=== 測定結果の統計（2分前差分） ===")
+        print(f"測定点数: {stats['n_points']}")
+        print(f"平均高度: {stats['mean_height']:.2f} ± {stats['std_height']:.2f} R☉")
+        print(f"最小高度: {stats['min_height']:.2f} R☉")
+        print(f"最大高度: {stats['max_height']:.2f} R☉")
+        print(f"高度範囲: {stats['height_range']:.2f} R☉")
+        
+        # 結果を保存
+        if save_results:
+            os.makedirs(output_dir, exist_ok=True)
+            
+            # データをCSVで保存
+            df = pd.DataFrame({
+                'point_id': range(1, len(heights) + 1),
+                'x_pixel': [p[0] for p in positions],
+                'y_pixel': [p[1] for p in positions],
+                'height_rsun': heights,
+                'position_angle_deg': angles
+            })
+            
+            time_label = target_time_str.replace(':', '').replace('-', '')
+            
+            # プロットを保存（2分前差分であることを明示）
+            plot_filename = os.path.join(output_dir, f'cme_analysis_2min_{time_label}.png')
+            fig2.savefig(plot_filename, dpi=300, bbox_inches='tight')
+            print(f"プロットを保存: {plot_filename}")
+        
+        results = {
+            'time': target_time_str,
+            'base_time': base_time_str,
+            'mk4_time': mk4_map.date.iso if 'mk4_map' in locals() else target_time_str,
+            'heights': heights,
+            'positions': positions,
+            'angles': angles,
+            'statistics': stats,
+            'dataframe': df
+        }
+        
+        return results
+    
+    else:
+        print("測定点が選択されませんでした。")
+        return None
+
+
+def analyze_single_time_cme_with_raw_image(target_time_str: str, 
+                                          save_results: bool = True,
+                                          output_dir: str = './cme_analysis/'):
+    """
+    特定時刻の生データ統合画像を背景にCME高度を複数点で計測し解析（差分なし）
+    
+    Parameters:
+    -----------
+    target_time_str : str
+        対象時刻 'YYYY-MM-DDTHH:MM:SS'
+    save_results : bool
+        結果を保存するかどうか
+    output_dir : str
+        出力ディレクトリ
+        
+    Returns:
+    --------
+    results : dict
+        解析結果
+    """
+    
+    print(f"\n=== CME高度の複数点計測（生データ統合画像使用） ===")
+    print(f"対象時刻: {target_time_str}")
+    
+    # GUIリソースの初期化とクリーンアップ
+    try:
+        # 既存の全てのfigureを閉じる
+        plt.close('all')
+        # インタラクティブモードをリセット
+        plt.ioff()
+        plt.ion()  # 新しいセッション用に再度有効化
+    except Exception as e:
+        print(f"GUI初期化警告: {e}")
+    
+    # 統合生データ画像を作成し、実際のパラメータを取得
+    fig, ax = plt.subplots(figsize=(12, 12))
+    
+    # create_single_raw_image関数を使用して実際の太陽観測データを表示
+    try:
+        # create_single_raw_image関数をインポート
+        import sys
+        from pathlib import Path
+        sys.path.append(str(Path(__file__).parent))
+        from create_single_raw_image import create_single_raw_image
+        
+        # 実際のデータを取得してパラメータを計算
+        target_time_obj = Time(target_time_str)
+        
+        # 統合生データ画像を作成（1回のスキャンでパラメータも取得）
+        image_info = create_single_raw_image(ax, target_time_str)
+        
+        # 戻り値からパラメータを取得（重複スキャン回避）
+        params_lasco = image_info['params_lasco']
+        params_mk4 = image_info['params_mk4']
+        lasco_map = image_info['lasco_map']
+        mk4_map = image_info['mk4_map']
+        
+        print(f"LASCOパラメータ: cx={params_lasco['cx']:.1f}, cy={params_lasco['cy']:.1f}, px_per_rsun={params_lasco['px_per_rsun']:.1f}")
+        print(f"MK4パラメータ: cx={params_mk4['cx']:.1f}, cy={params_mk4['cy']:.1f}, px_per_rsun={params_mk4['px_per_rsun']:.1f}")
+        
+        # 統合画像の基準となるパラメータを使用
+        params = params_lasco
+        mk4_time = mk4_map.date.strftime('%Y%m%d_%H%M%S')
+        
+        print("統合生データ画像の作成が完了しました。")
+        
+    except Exception as e:
+        print(f"統合生データ画像作成でエラー: {e}")
+        # フォールバック：ダミー画像を使用
+        dummy_image = np.random.rand(512, 512)
+        ax.imshow(dummy_image, cmap='gray', extent=[-256, 256, -256, 256])
+        
+        # 太陽円盤と高度円を描画
+        params = {'cx': 0, 'cy': 0, 'px_per_rsun': 80}
+        mk4_time = target_time_str.replace(':', '').replace('-', '')
+        
+        # 太陽円盤
+        sun_circle = Circle((params['cx'], params['cy']), params['px_per_rsun'], 
+                           fill=False, color='yellow', linewidth=2)
+        ax.add_patch(sun_circle)
+        
+        # 高度円
+        for r in [2, 3, 4, 5, 6]:
+            height_circle = Circle((params['cx'], params['cy']), 
+                                 r * params['px_per_rsun'], 
+                                 fill=False, color='black', linewidth=1, 
+                                 linestyle='--', alpha=0.5)
+            ax.add_patch(height_circle)
+            ax.text(params['cx'], params['cy'] + r * params['px_per_rsun'], 
+                   f'{r} R☉', color='black', ha='center', va='bottom')
+        
+        ax.set_xlim(-256, 256)
+        ax.set_ylim(-256, 256)
+        ax.set_xlabel('X (pixels)')
+        ax.set_ylabel('Y (pixels)')
+        ax.set_title(f'CME Multi-point Measurement (Raw Data) - {target_time_str}')
+    
+    # CME高度を複数点で計測（r_mapは実際には使用されない）
+    r_map = None  # measure_cme_height_manual_multi_pointsでは使用されない
+    heights, positions, angles = measure_cme_height_manual_multi_points(
+        ax, None, params, r_map, 'combined'
+    )
+    
+    # クリック後の画像を保存
+    if len(heights) > 0:
+        # 保存ディレクトリを作成
+        save_dir = Path('/mnt/d/wsl/home/kinno-7010/Research/SDO_Mk4_SOHO/CME_measurement/raw_integrated_coronagraph')
+        save_dir.mkdir(parents=True, exist_ok=True)
+        
+        # ファイル名を生成（生データであることを明示）
+        save_filename = f'raw_image_{mk4_time}.png'
+        save_path = save_dir / save_filename
+        
+        # 画像を保存
+        fig.savefig(save_path, dpi=300, bbox_inches='tight')
+        print(f"クリック後の画像を保存しました: {save_path}")
+    
+    # クリック操作後にGUIリソースを適切にクリーンアップ
+    try:
+        plt.close(fig)
+        # matplotlibのGUIリソースをクリーンアップ
+        import matplotlib
+        if matplotlib.get_backend() != 'Agg':
+            matplotlib.pyplot.ioff()  # インタラクティブモードをオフ
+            matplotlib.pyplot.close('all')  # 全てのfigureを閉じる
+    except Exception as e:
+        print(f"GUI クリーンアップ警告: {e}")
+    
+    if len(heights) > 0:
+        # 結果をプロット
+        fig2 = plot_cme_height_distribution(heights, angles, f"{target_time_str} (raw data)")
+        plt.close(fig2)  # 結果プロットは保存後に閉じる
+        
+        # 統計情報を計算
+        stats = {
+            'n_points': len(heights),
+            'mean_height': np.mean(heights),
+            'std_height': np.std(heights),
+            'min_height': np.min(heights),
+            'max_height': np.max(heights),
+            'height_range': np.max(heights) - np.min(heights)
+        }
+        
+        print(f"\n=== 測定結果の統計（生データ） ===")
+        print(f"測定点数: {stats['n_points']}")
+        print(f"平均高度: {stats['mean_height']:.2f} ± {stats['std_height']:.2f} R☉")
+        print(f"最小高度: {stats['min_height']:.2f} R☉")
+        print(f"最大高度: {stats['max_height']:.2f} R☉")
+        print(f"高度範囲: {stats['height_range']:.2f} R☉")
+        
+        # 結果を保存
+        if save_results:
+            os.makedirs(output_dir, exist_ok=True)
+            
+            # データをCSVで保存
+            df = pd.DataFrame({
+                'point_id': range(1, len(heights) + 1),
+                'x_pixel': [p[0] for p in positions],
+                'y_pixel': [p[1] for p in positions],
+                'height_rsun': heights,
+                'position_angle_deg': angles
+            })
+            
+            time_label = target_time_str.replace(':', '').replace('-', '')
+            
+            # プロットを保存（生データであることを明示）
+            plot_filename = os.path.join(output_dir, f'raw_cme_analysis_{time_label}.png')
+            fig2.savefig(plot_filename, dpi=300, bbox_inches='tight')
+            print(f"プロットを保存: {plot_filename}")
+        
+        results = {
+            'time': target_time_str,
+            'mk4_time': mk4_map.date.iso if 'mk4_map' in locals() else target_time_str,
             'heights': heights,
             'positions': positions,
             'angles': angles,
@@ -202,7 +584,7 @@ def compare_cme_heights_multiple_times(time_list: list,
                                      save_comparison: bool = True,
                                      output_dir: str = './cme_analysis/'):
     """
-    複数時刻のCME高度測定結果を比較（最適化版）
+    複数時刻のCME高度測定結果を比較（最適化版・スマートスキャン使用）
     
     Parameters:
     -----------
@@ -217,20 +599,28 @@ def compare_cme_heights_multiple_times(time_list: list,
     print(f"\n=== 複数時刻解析開始 ({len(time_list)}時刻) ===")
     print(get_cache_info())
     
+    # 全時刻を含む範囲で1回だけスキャンを実行（効率化）
+    try:
+        from integrated_analysis import get_data_list_smart_range, clear_scan_cache
+        print("スマートスキャン範囲でデータを事前取得中...")
+        # 既存のキャッシュをクリアしてからスマートスキャン実行
+        clear_scan_cache()
+        mk4_list, lasco_list, aia193_list = get_data_list_smart_range(time_list)
+        print(f"事前スキャン完了: MK4={len(mk4_list)}, LASCO={len(lasco_list)}, AIA193={len(aia193_list)}")
+        use_smart_scan = True
+    except Exception as e:
+        print(f"スマートスキャン失敗、個別スキャンにフォールバック: {e}")
+        use_smart_scan = False
+    
     all_results = []
     
-    # 各時刻を単一時刻解析として処理（キャッシュクリア付き）
+    # 各時刻を単一時刻解析として処理
     for i, time_str in enumerate(time_list, 1):
         print(f"\n{'='*50}")
         print(f"解析進行状況: {i}/{len(time_list)} ({time_str})")
         
-        # 各時刻でキャッシュとGUIリソースをクリア（メモリ効率化）
+        # GUIリソースのクリーンアップ
         if i > 1:
-            from integrated_analysis import clear_scan_cache
-            clear_scan_cache()
-            print("前回のキャッシュをクリアしました")
-            
-            # GUIリソースの完全クリーンアップ
             try:
                 import matplotlib
                 matplotlib.pyplot.close('all')  # 全てのfigureを閉じる
@@ -244,11 +634,22 @@ def compare_cme_heights_multiple_times(time_list: list,
             except Exception as e:
                 print(f"GUIクリーンアップ警告: {e}")
         
-        # 単一時刻解析と同じ処理を実行
+        # スマートスキャンが成功した場合は再スキャンを防ぐため、キャッシュクリアしない
         print(f"単一時刻解析を開始します（時刻 {i}/{len(time_list)}）...")
         try:
-            result = analyze_single_time_cme_with_diff_image(time_str, save_results=True, 
-                                                            output_dir=output_dir)
+            if use_smart_scan and i == 1:
+                # 最初の時刻のみ通常実行（既にスキャン済み）
+                result = analyze_single_time_cme_with_diff_image(time_str, save_results=True, 
+                                                                output_dir=output_dir)
+            elif use_smart_scan and i > 1:
+                # 2回目以降はキャッシュクリアせずに実行
+                result = analyze_single_time_cme_with_diff_image(time_str, save_results=True, 
+                                                                output_dir=output_dir)
+            else:
+                # フォールバック: 通常の個別スキャン
+                result = analyze_single_time_cme_with_diff_image(time_str, save_results=True, 
+                                                                output_dir=output_dir)
+            
             if result:
                 all_results.append(result)
             else:
@@ -297,7 +698,7 @@ def compare_cme_heights_multiple_times(time_list: list,
                 label='Mean height')
         ax2.set_xticks(range(len(times)))
         ax2.set_xticklabels([t.split('T')[1][:5] for t in times], rotation=45)
-        ax2.set_ylabel('CME Height ($R_\odot$)')
+        ax2.set_ylabel('CME Height ($R_\\odot$)')
         ax2.set_xlabel('Time (UT)')
         ax2.legend()
         ax2.grid(True, alpha=0.3)

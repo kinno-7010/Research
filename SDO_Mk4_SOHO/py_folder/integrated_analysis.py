@@ -41,8 +41,8 @@ def get_data_list(scan_start, scan_end, use_cache=True):
     if not any(map_lists_dict.values()):
         raise FileNotFoundError("指定範囲に必要なデータが一つも見つかりませんでした。")
     
-    mk4_list, lasco_list, aia211_list, aia193_list, aia171_list = map_lists_dict.values()
-    return mk4_list, lasco_list, aia211_list, aia193_list, aia171_list
+    mk4_list, lasco_list, aia193_list = map_lists_dict.values()
+    return mk4_list, lasco_list, aia193_list
 
 
 def get_data_list_smart_range(time_list):
@@ -404,8 +404,8 @@ def create_single_integrated_image(ax, target_time_str: str):
     aia_norm_ranges = determine_aia_ranges(scan_start.iso, scan_end.iso, target_time_str, percentile_range=[1, 99.9])
 
     # データリスト取得
-    mk4_list, lasco_list, aia211_list, aia193_list, aia171_list = get_data_list(scan_start, scan_end)
-    data_dict = {'mk4': mk4_list, 'lasco': lasco_list, 'aia211': aia211_list, 'aia193': aia193_list, 'aia171': aia171_list}
+    mk4_list, lasco_list, aia193_list = get_data_list(scan_start, scan_end)
+    data_dict = {'mk4': mk4_list, 'lasco': lasco_list, 'aia193': aia193_list}
 
     # LASCO マップのサンプルを読み込んで最大shapeを特定（メモリ効率化）
     lasco_shapes = []
@@ -482,13 +482,13 @@ def create_single_integrated_image(ax, target_time_str: str):
         del data_selected_dict[key]
         gc.collect()
         
-    mk4_map, lasco_map, aia211_map, aia193_map, aia171_map = data_dict_resampled.values()
-    p_mk4, p_lasco, p_aia, _, _ = p_dict.values()
+    mk4_map, lasco_map, aia193_map = data_dict_resampled.values()
+    p_mk4, p_lasco, p_aia = p_dict.values()
 
     # 正規化（Mk4 / LASCO）
     # mk4_map_mean, mk4_map_std = np.nanmean(mk4_map.data), np.nanstd(mk4_map.data)
     # mk4_vmin, mk4_vmax = mk4_map_mean, mk4_map_mean + 1*mk4_map_std
-    mk4_vmin, mk4_vmax = -1, 4
+    mk4_vmin, mk4_vmax = -1, 3
     mk4_norm = ImageNormalize(mk4_map.data, vmin=mk4_vmin, vmax=mk4_vmax, stretch=LinearStretch(), clip=True)
     n_mk4 = mk4_norm(mk4_map.data)
 
@@ -497,7 +497,7 @@ def create_single_integrated_image(ax, target_time_str: str):
     lasco_vmin, lasco_vmax = lasco_map_mean, lasco_map_mean + 5*lasco_map_std
     print('lasco_vmin', lasco_vmin, 'lasco_vmax', lasco_vmax)
     # lasco_vmin, lasco_vmax = np.nanpercentile(lasco_map.data, [1, 99])
-    lasco_vmin, lasco_vmax = 60, 380
+    lasco_vmin, lasco_vmax = 50, 350
     lasco_norm = ImageNormalize(lasco_map.data, vmin=lasco_vmin, vmax=lasco_vmax, stretch=LinearStretch(), clip=True)
     n_lasco = lasco_norm(lasco_map.data)
 
@@ -510,7 +510,7 @@ def create_single_integrated_image(ax, target_time_str: str):
         mn, mx = np.nanmin(a), np.nanmax(a)
         return (a - mn) / (mx - mn) if mx > mn else np.zeros_like(a)
     
-    # AIA 193差分画像のみを使用（ベース画像を取得して差分計算）
+    # AIA193差分画像を使用（ベース画像を取得して差分計算）
     aia193_base_map, _ = select_by_midpoint(Time("2022-06-13T02:00:00"), aia193_list)
     aia193_diff = aia193_map.data - aia193_base_map.data
     
@@ -526,7 +526,7 @@ def create_single_integrated_image(ax, target_time_str: str):
     composite, imk4, ia = combine_corona_data(
         n_lasco, p_lasco,
         n_mk4, p_mk4,
-        aia193_image, p_aia,  # AIA 193差分画像を使用
+        aia193_image, p_aia,  # AIA193差分画像を使用
         r_map, ranges
     )
     # MK4/LASCO 合成
@@ -549,19 +549,19 @@ def create_single_integrated_image(ax, target_time_str: str):
         (x_norm * p_aia['px_per_rsun'] + p_aia['cx']).ravel()
     ])
     
-    # AIA 193画像のみを座標変換
+    # AIA193画像のみを座標変換
     aia193_background = map_coordinates(aia193_ch, coords, order=1, mode='constant', cval=np.nan).reshape((ny, nx))
     
     # 太陽半径1.1Rs以内で切り取り
     aia193_background[r_map > 1.1] = np.nan
 
-    # 背景 AIA 193差分画像（専用カラーマップ使用）
+    # 背景 AIA193差分画像（専用カラーマップ使用）
     try:
-        # sunpyのAIA 193専用カラーマップを使用
+        # sunpyのAIA193専用カラーマップを使用
         import sunpy.visualization.colormaps as cm
         aia193_cmap = cm.cm.sdoaia193
     except Exception as e:
-        print(f"AIA 193カラーマップの読み込みに失敗: {e}")
+        print(f"AIA193カラーマップの読み込みに失敗: {e}")
         # フォールバック：標準カラーマップ
         aia193_cmap = plt.cm.plasma
     
@@ -575,7 +575,7 @@ def create_single_integrated_image(ax, target_time_str: str):
     for i in range(2, int(ranges['lasco_outer'])+1):
         ax.plot(p_lasco['px_per_rsun']*i*np.cos(theta),
                 p_lasco['px_per_rsun']*i*np.sin(theta),
-                ':', color='white', linewidth=0.8)
+                ':', color='black', linewidth=0.8)
 
     # 境界円＆凡例
     r1 = ranges['mk4_inner']*scale
@@ -591,7 +591,7 @@ def create_single_integrated_image(ax, target_time_str: str):
     ax.set_xlim(-400, 0); ax.set_ylim(-200, 300)
     # ax.set_xlabel('X [pixel]'); ax.set_ylabel('Y [pixel]'); ax.set_facecolor('gray')
     ax.set_title(
-        f"SDO/AIA 211+193+171 Å: {aia211_map.date.strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"SDO/AIA 193 Å: {aia193_map.date.strftime('%Y-%m-%d %H:%M:%S')}\n"
         f"Mk4: {mk4_map.date.strftime('%H:%M:%S')} | LASCO-C2: {lasco_map.date.strftime('%H:%M:%S')}"
     )
     ax.legend(loc='best')
@@ -608,6 +608,25 @@ def select_by_midpoint(target_time: Time, map_list: list[tuple]):
         delta = times[i+1] - times[i]
         mids.append(times[i] + delta/2)
     idx = bisect.bisect_left(mids, target_time)
+    return map_list[idx]
+
+
+def select_lasco_by_time_threshold(target_time: Time, map_list: list[tuple]):
+    """LASCO専用：指定時間を超えてから次の画像に移り変わる選択"""
+    # map_list already sorted by m.date
+    times = [m.date for m, _ in map_list]
+    if len(times) == 1:
+        return map_list[0]
+    
+    # 指定時間以前で最も近い画像を選択（指定時間を超えるまで同じ画像を使用）
+    idx = 0
+    for i, obs_time in enumerate(times):
+        if obs_time <= target_time:
+            idx = i
+        else:
+            break
+    
+    print(f"LASCO画像選択: 指定時刻={target_time.iso}, 選択画像時刻={times[idx].iso}")
     return map_list[idx]
 
     
@@ -633,6 +652,53 @@ def scale01(a):
     return (a - mn) / (mx - mn) if mx > mn else np.zeros_like(a)
 
 
+def determine_aia193_diff_ranges(aia193_list, base_time_str: str, percentile_range=[1, 99.9]):
+    """
+    AIA193差分画像の最適なグレースケール表示範囲(vmin, vmax)を自動で決定する。
+    """
+    print("最適なAIA193差分画像表示範囲を計算中...")
+    base_time_obj = Time(base_time_str)
+    
+    # AIA193データリストを使用（スキャン重複を回避）
+    aia_lists = {
+        '193': aia193_list
+    }
+
+    # 実際の観測データから差分画像範囲を計算
+    diff_values = []
+    
+    for wl, map_list in aia_lists.items():
+        if not map_list:
+            print(f"警告: {wl}Å のデータが見つかりません。スキップします。")
+            continue
+        
+        base_map, _ = select_by_midpoint(base_time_obj, map_list)
+        
+        # 実際のデータを使用（最大3個のマップで計算効率化）
+        limited_map_list = map_list[:3] if len(map_list) > 3 else map_list
+        
+        for aia_map, _ in tqdm(limited_map_list, desc=f"AIA {wl}Å diffs (full data)"):
+            try:
+                diff = aia_map.data - base_map.data
+                # 差分データから有効値のみを取得
+                valid_diff = diff[np.isfinite(diff)]
+                if len(valid_diff) > 0:
+                    diff_values.extend(valid_diff.flatten())
+            except Exception as e:
+                print(f"差分計算エラー {wl}Å: {e}")
+                continue
+    
+    if not diff_values:
+        print("警告: 差分データが計算できませんでした。デフォルト範囲を使用します。")
+        return (-100, 100)
+    
+    # パーセンタイル範囲を計算
+    vmin, vmax = np.percentile(diff_values, percentile_range)
+    ranges = (vmin, vmax)
+    print("計算完了:", ranges)
+    return ranges
+
+# RGB画像用（現在はコメントアウト）
 def determine_aia_diff_ranges(aia211_list, aia193_list, aia171_list, base_time_str: str, percentile_range=[1, 99.9]):
     """
     指定された期間のデータから、3つのAIA波長を統合した差分画像の
@@ -711,15 +777,17 @@ def create_single_diff_image(ax, target_time_str: str):
     scan_end = max(target_time_obj, base_time_obj)
     out_dir = Path(out_dir_str)
     
+    print(f"LASCO選択ロジック: 指定時間を超えてから次の画像に移り変わる方式を使用")
+    
     # 出力ディレクトリを作成
     out_dir.mkdir(parents=True, exist_ok=True)
     
     # データリスト取得（スキャン重複回避のため先に実行）
-    mk4_list, lasco_list, aia211_list, aia193_list, aia171_list = get_data_list(scan_start, scan_end)
+    mk4_list, lasco_list, aia193_list = get_data_list(scan_start, scan_end)
     
-    # AIA差分範囲計算（既取得データを再利用）
-    aia_norm_ranges = determine_aia_diff_ranges(aia211_list, aia193_list, aia171_list, base_time_str, percentile_range=[1, 99.9])
-    data_dict = {'mk4': mk4_list, 'lasco': lasco_list, 'aia211': aia211_list, 'aia193': aia193_list, 'aia171': aia171_list}
+    # AIA193差分範囲計算（既取得データを再利用）
+    aia_norm_ranges = determine_aia193_diff_ranges(aia193_list, base_time_str, percentile_range=[1, 99.9])
+    data_dict = {'mk4': mk4_list, 'lasco': lasco_list, 'aia193': aia193_list}
 
     # LASCO マップのサンプルを読み込んで最大shapeを特定（メモリ効率化）
     lasco_shapes = []
@@ -782,8 +850,18 @@ def create_single_diff_image(ax, target_time_str: str):
     data_selected_dict, data_selected_base_dict, data_dict_resampled, data_dict_base_resampled, p_dict, diff_dict = {}, {}, {}, {}, {}, {}
     # 各波長・Instrument のマップ取得
     for key, value in data_dict.items():
-        data_selected_dict[key], _ = select_by_midpoint(target_time_obj, value)
-        data_selected_base_dict[key], _ = select_by_midpoint(base_time_obj, value)
+        # LASCOは指定時間を超えてから次の画像に移り変わる専用関数を使用
+        if key == 'lasco':
+            data_selected_dict[key], _ = select_lasco_by_time_threshold(target_time_obj, value)
+            # LASCOの場合は常に02:00:00UTを基準時刻として使用（固定）
+            lasco_base_time = Time('2022-06-13T02:00:00')
+            data_selected_base_dict[key], _ = select_lasco_by_time_threshold(lasco_base_time, value)
+            print(f"LASCO: 02:00:00UT固定ベース時刻使用: {lasco_base_time.iso}")
+            print(f"LASCO target時刻: {data_selected_dict[key].date.iso}")
+            print(f"LASCO base時刻: {data_selected_base_dict[key].date.iso}")
+        else:
+            data_selected_dict[key], _ = select_by_midpoint(target_time_obj, value)
+            data_selected_base_dict[key], _ = select_by_midpoint(base_time_obj, value)
         
         if key == 'lasco':
             print(f"INFO: Processing full correction for LASCO target map ({data_selected_dict[key].date})...")
@@ -803,15 +881,15 @@ def create_single_diff_image(ax, target_time_str: str):
         del data_selected_dict[key], data_selected_base_dict[key]
         gc.collect()
         
-    mk4_map, lasco_map, aia211_map, _, _ = data_dict_resampled.values()
-    p_mk4, p_lasco, p_aia, _, _ = p_dict.values()
-    mk4_diff, lasco_diff, aia211_diff, aia193_diff, aia171_diff = diff_dict.values()
+    mk4_map, lasco_map, aia193_map = data_dict_resampled.values()
+    p_mk4, p_lasco, p_aia = p_dict.values()
+    mk4_diff, lasco_diff, aia193_diff = diff_dict.values()
 
     # 正規化（Mk4 / LASCO）
     # mk4_map_mean, mk4_map_std = np.nanmean(mk4_map.data), np.nanstd(mk4_map.data)
     # mk4_vmin, mk4_vmax = mk4_map_mean - 2*mk4_map_std, mk4_map_mean
     mk4_vmin, mk4_vmax = np.percentile(mk4_diff, [0.1, 99.9])
-    mk4_vmin, mk4_vmax = -2, 1.5
+    mk4_vmin, mk4_vmax = -2.0, 2.0
     print('mk4_vmin', mk4_vmin, 'mk4_vmax', mk4_vmax)
     mk4_norm = ImageNormalize(mk4_diff, vmin=mk4_vmin, vmax=mk4_vmax, stretch=LinearStretch(), clip=True)
     n_mk4 = mk4_norm(mk4_diff)
@@ -819,7 +897,7 @@ def create_single_diff_image(ax, target_time_str: str):
     # lasco_map_mean, lasco_map_std = np.nanmean(lasco_map.data), np.nanstd(lasco_map.data)
     # lasco_vmin, lasco_vmax = lasco_map_mean - lasco_map_std, lasco_map_mean + lasco_map_std
     # lasco_vmin, lasco_vmax = np.percentile(lasco_diff, [1, 99.9])
-    lasco_vmin, lasco_vmax = -5, 50
+    lasco_vmin, lasco_vmax = -50, 50
     print('lasco_vmin', lasco_vmin, 'lasco_vmax', lasco_vmax)
     
     lasco_norm = ImageNormalize(lasco_diff, vmin=lasco_vmin, vmax=lasco_vmax, stretch=LinearStretch(), clip=True)
@@ -834,7 +912,7 @@ def create_single_diff_image(ax, target_time_str: str):
         mn, mx = np.nanmin(a), np.nanmax(a)
         return (a - mn) / (mx - mn) if mx > mn else np.zeros_like(a)
     
-    # AIA 193差分画像のみを使用
+    # AIA193差分画像のみを使用
     aia193_ch = normalize_linear_stretch(aia193_diff, vmin=aia_norm_ranges[0], vmax=aia_norm_ranges[1])
     aia193_scaled = scale01(aia193_ch)
 
@@ -843,11 +921,11 @@ def create_single_diff_image(ax, target_time_str: str):
 
     # 半径マップ・合成
     r_map = calculate_r_map(p_lasco)
-    ranges = dict(mk4_inner=1.1, mk4_outer_lasco_inner=3, lasco_outer=6.0)
+    ranges = dict(mk4_inner=1.1, mk4_outer_lasco_inner=2.1, lasco_outer=6.0)
     composite, imk4, ia = combine_corona_data(
         n_lasco, p_lasco,
         n_mk4, p_mk4,
-        aia193_image, p_aia,  # AIA 193差分画像を使用
+        aia193_image, p_aia,  # AIA193差分画像を使用
         r_map, ranges
     )
     # MK4/LASCO 合成
@@ -870,19 +948,19 @@ def create_single_diff_image(ax, target_time_str: str):
         (x_norm * p_aia['px_per_rsun'] + p_aia['cx']).ravel()
     ])
     
-    # AIA 193差分画像のみを座標変換
+    # AIA193差分画像のみを座標変換
     aia193_background = map_coordinates(aia193_ch, coords, order=1, mode='constant', cval=np.nan).reshape((ny, nx))
     
     # 太陽半径1.1Rs以内で切り取り
     aia193_background[r_map > 1.1] = np.nan
 
-    # 背景 AIA 193差分画像（専用カラーマップ使用）
+    # 背景 AIA193差分画像（専用カラーマップ使用）
     try:
-        # sunpyのAIA 193専用カラーマップを使用
+        # sunpyのAIA193専用カラーマップを使用
         import sunpy.visualization.colormaps as cm
         aia193_cmap = cm.cm.sdoaia193
     except Exception as e:
-        print(f"AIA 193カラーマップの読み込みに失敗: {e}")
+        print(f"AIA193カラーマップの読み込みに失敗: {e}")
         # フォールバック：標準カラーマップ
         aia193_cmap = plt.cm.plasma
     
@@ -896,7 +974,7 @@ def create_single_diff_image(ax, target_time_str: str):
     for i in range(2, int(ranges['lasco_outer'])+1):
         ax.plot(p_lasco['px_per_rsun']*i*np.cos(theta),
                 p_lasco['px_per_rsun']*i*np.sin(theta),
-                ':', color='white', linewidth=0.8)
+                ':', color='black', linewidth=0.8)
 
     # 境界円＆凡例
     r1 = ranges['mk4_inner']*scale
@@ -913,7 +991,256 @@ def create_single_diff_image(ax, target_time_str: str):
     # ax.set_xlabel('X [pixel]'); ax.set_ylabel('Y [pixel]'); ax.set_facecolor('gray')
     ax.set_title(
         f"Difference | Base: {base_time_str.replace('T', ' ')} \n"
-        f"SDO/AIA 211+193+171 Å: {aia211_map.date.strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"SDO/AIA 193 Å: {aia193_map.date.strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"Mk4: {mk4_map.date.strftime('%H:%M:%S')} | LASCO-C2: {lasco_map.date.strftime('%H:%M:%S')}"
+    )
+    ax.legend(loc='best')
+    
+    # パラメータ情報を返す（重複スキャン回避のため）
+    return {
+        'params_lasco': p_lasco,
+        'params_mk4': p_mk4,
+        'lasco_map': lasco_map,
+        'mk4_map': mk4_map
+    }
+
+
+def create_single_diff_from_time_image(ax, target_time_str: str, base_time_str: str):
+    """2分前ベース差分統合画像作成関数（LASCOのみ02:00固定）"""
+    
+    # sunpyの警告を抑制
+    import warnings
+    from sunpy.util.exceptions import SunpyMetadataWarning
+    warnings.filterwarnings('ignore', category=SunpyMetadataWarning)
+    
+    out_dir_str = "/mnt/d/wsl/home/kinno-7010/Research/SDO_Mk4_SOHO/diff"
+    # --- 1. 時刻パースとデータリスト取得 ---
+    base_time_obj = Time(base_time_str)
+    target_time_obj = Time(target_time_str)
+    
+    # LASCOの固定ベース時刻を定義
+    lasco_base_time = Time('2022-06-13T02:00:00')
+    
+    # スキャン範囲を計算（LASCOのベース時刻も考慮）
+    # Time オブジェクトのリストを作成してmin/maxを計算
+    time_list = [target_time_obj, base_time_obj, lasco_base_time]
+    earliest_time = min(time_list)
+    latest_time = max([target_time_obj, base_time_obj])
+    
+    scan_start = earliest_time - 10*u.min
+    scan_end = latest_time + 10*u.min
+    
+    out_dir = Path(out_dir_str)
+    
+    print(f"2分前ベース差分画像作成: target={target_time_str}, base={base_time_str}")
+    print(f"LASCO用固定基準時刻: {target_time_obj.datetime.strftime('%Y-%m-%dT02:00:00')}")
+    print(f"LASCO選択ロジック: 指定時間を超えてから次の画像に移り変わる方式を使用")
+    
+    # 出力ディレクトリを作成
+    out_dir.mkdir(parents=True, exist_ok=True)
+    
+    # データリスト取得（スキャン重複回避のため先に実行）
+    mk4_list, lasco_list, aia193_list = get_data_list(scan_start, scan_end)
+    
+    # AIA193差分範囲計算（既取得データを再利用）
+    aia_norm_ranges = determine_aia193_diff_ranges(aia193_list, base_time_str, percentile_range=[1, 99.9])
+    data_dict = {'mk4': mk4_list, 'lasco': lasco_list, 'aia193': aia193_list}
+
+    # LASCO マップのサンプルを読み込んで最大shapeを特定（メモリ効率化）
+    lasco_shapes = []
+    ref_map = None
+    
+    # 最初の数個のマップのみでshapeを確認
+    sample_size = min(3, len(lasco_list))
+    for i, (_, path) in enumerate(lasco_list[:sample_size]):
+        try:
+            temp_map = sunpy.map.Map(path)
+            lasco_shapes.append(temp_map.data.shape)
+            if ref_map is None:
+                ref_map = temp_map
+            else:
+                # より大きいshapeを基準にする
+                if temp_map.data.shape[0] * temp_map.data.shape[1] > ref_map.data.shape[0] * ref_map.data.shape[1]:
+                    ref_map = temp_map
+            # メモリ解放
+            del temp_map
+            gc.collect()
+        except Exception as e:
+            print(f"警告: LASCOマップ読み込みエラー {path}: {e}")
+    
+    if not lasco_shapes:
+        raise ValueError("利用可能なLASCOデータが見つかりません")
+    
+    # 最大shapeを決定
+    max_ny = max(shape[0] for shape in lasco_shapes)
+    max_nx = max(shape[1] for shape in lasco_shapes)
+    global_shape = (max_ny, max_nx)
+    target_wcs = ref_map.wcs
+
+    # グローバル extent 固定
+    def get_params(m):
+        px = m.rsun_obs.to_value(u.arcsec) / m.scale.axis1.to_value(u.arcsec/u.pix)
+        # ゼロ除算を回避
+        if px <= 0:
+            print(f"警告: px_per_rsun が無効な値です: {px}")
+            px = 1  # デフォルト値を設定
+        return dict(nx=m.data.shape[1],
+                   ny=m.data.shape[0],
+                   cx=m.meta['crpix1']-1,
+                   cy=m.meta['crpix2']-1,
+                   px_per_rsun=px)
+
+    p_glob = get_params(ref_map)
+    extent_global = [
+        -p_glob['cx'], p_glob['nx'] - p_glob['cx'],
+        -p_glob['cy'], p_glob['ny'] - p_glob['cy']
+    ]
+
+    # フレームごとに処理
+    def resample_map(m):
+        try:
+            return m.resample(global_shape * u.pix)
+        except AttributeError:
+            data, _ = reproject_interp((m.data, m.wcs), target_wcs, global_shape)
+            return sunpy.map.Map(data, ref_map.meta)
+        
+    data_selected_dict, data_selected_base_dict, data_dict_resampled, data_dict_base_resampled, p_dict, diff_dict = {}, {}, {}, {}, {}, {}
+    # 各波長・Instrument のマップ取得
+    for key, value in data_dict.items():
+        # LASCOは指定時間を超えてから次の画像に移り変わる専用関数を使用
+        if key == 'lasco':
+            data_selected_dict[key], _ = select_lasco_by_time_threshold(target_time_obj, value)
+            # LASCOの場合は常に02:00:00UTを基準時刻として使用（固定）
+            lasco_base_time = Time('2022-06-13T02:00:00')
+            data_selected_base_dict[key], _ = select_lasco_by_time_threshold(lasco_base_time, value)
+            print(f"LASCO: 02:00:00UT固定ベース時刻使用: {lasco_base_time.iso}")
+            print(f"LASCO target時刻: {data_selected_dict[key].date.iso}")
+            print(f"LASCO base時刻: {data_selected_base_dict[key].date.iso}")
+        else:
+            data_selected_dict[key], _ = select_by_midpoint(target_time_obj, value)
+            data_selected_base_dict[key], _ = select_by_midpoint(base_time_obj, value)
+        
+        if key == 'lasco':
+            print(f"INFO: Processing full correction for LASCO target map ({data_selected_dict[key].date})...")
+            data_selected_dict[key] = create_fully_corrected_lasco_map(data_selected_dict[key])
+            
+            print(f"INFO: Processing full correction for LASCO base map ({data_selected_base_dict[key].date})...")
+            data_selected_base_dict[key] = create_fully_corrected_lasco_map(data_selected_base_dict[key])
+            print("INFO: LASCO correction complete.")
+            
+        data_dict_resampled[key] = resample_map(data_selected_dict[key])
+        data_dict_base_resampled[key] = resample_map(data_selected_base_dict[key])
+        
+        p_dict[key] = get_params(data_dict_resampled[key])
+        diff_dict[key] = data_dict_resampled[key].data - data_dict_base_resampled[key].data
+        
+        # メモリ効率化：元のマップは差分計算後に削除
+        del data_selected_dict[key], data_selected_base_dict[key]
+        gc.collect()
+        
+    mk4_map, lasco_map, aia193_map = data_dict_resampled.values()
+    p_mk4, p_lasco, p_aia = p_dict.values()
+    mk4_diff, lasco_diff, aia193_diff = diff_dict.values()
+
+    # 正規化（Mk4 / LASCO）
+    mk4_vmin, mk4_vmax = -2.0, 2.0
+    print('mk4_vmin', mk4_vmin, 'mk4_vmax', mk4_vmax)
+    mk4_norm = ImageNormalize(mk4_diff, vmin=mk4_vmin, vmax=mk4_vmax, stretch=LinearStretch(), clip=True)
+    n_mk4 = mk4_norm(mk4_diff)
+
+    lasco_vmin, lasco_vmax = -50, 50
+    print('lasco_vmin', lasco_vmin, 'lasco_vmax', lasco_vmax)
+    
+    lasco_norm = ImageNormalize(lasco_diff, vmin=lasco_vmin, vmax=lasco_vmax, stretch=LinearStretch(), clip=True)
+    n_lasco = lasco_norm(lasco_diff)
+
+    # AIA 193 差分画像用正規化
+    def normalize_linear_stretch(arr, vmin, vmax):
+        norm = ImageNormalize(arr, vmin=vmin, vmax=vmax, stretch=LinearStretch(), clip=True)
+        return norm(arr)
+
+    def scale01(a):
+        mn, mx = np.nanmin(a), np.nanmax(a)
+        return (a - mn) / (mx - mn) if mx > mn else np.zeros_like(a)
+    
+    # AIA193差分画像のみを使用
+    aia193_ch = normalize_linear_stretch(aia193_diff, vmin=aia_norm_ranges[0], vmax=aia_norm_ranges[1])
+    aia193_scaled = scale01(aia193_ch)
+
+    # 単色画像として使用（グレースケール）
+    aia193_image = aia193_scaled
+
+    # 半径マップ・合成
+    r_map = calculate_r_map(p_lasco)
+    ranges = dict(mk4_inner=1.1, mk4_outer_lasco_inner=3.0, lasco_outer=6.0)
+    composite, imk4, ia = combine_corona_data(
+        n_lasco, p_lasco,
+        n_mk4, p_mk4,
+        aia193_image, p_aia,  # AIA193差分画像を使用
+        r_map, ranges
+    )
+    # MK4/LASCO 合成
+    mask_mk4 = (r_map >= ranges['mk4_inner']) & (r_map < ranges['mk4_outer_lasco_inner'])
+    mask_lasco = (r_map >= ranges['mk4_outer_lasco_inner']) & (r_map <= ranges['lasco_outer'])
+    combined_ml = np.full_like(composite, np.nan)
+    combined_ml[mask_mk4] = imk4[mask_mk4]
+    combined_ml[mask_lasco] = n_lasco[mask_lasco]
+
+    # ──────────────── 描画 ────────────────
+    # 1) AIA 193差分画像を背景として変換
+    ny, nx = p_lasco['ny'], p_lasco['nx']
+    y_idx, x_idx = np.indices((ny, nx))
+    x_norm = (x_idx - p_lasco['cx']) / p_lasco['px_per_rsun']
+    y_norm = (y_idx - p_lasco['cy']) / p_lasco['px_per_rsun']
+    coords = np.vstack([
+        (y_norm * p_aia['px_per_rsun'] + p_aia['cy']).ravel(),
+        (x_norm * p_aia['px_per_rsun'] + p_aia['cx']).ravel()
+    ])
+    
+    # AIA193差分画像のみを座標変換
+    aia193_background = map_coordinates(aia193_ch, coords, order=1, mode='constant', cval=np.nan).reshape((ny, nx))
+    
+    # 太陽半径1.1Rs以内で切り取り
+    aia193_background[r_map > 1.1] = np.nan
+
+    # 背景 AIA193差分画像（専用カラーマップ使用）
+    try:
+        # sunpyのAIA193専用カラーマップを使用
+        import sunpy.visualization.colormaps as cm
+        aia193_cmap = cm.cm.sdoaia193
+    except Exception as e:
+        print(f"AIA193カラーマップの読み込みに失敗: {e}")
+        # フォールバック：標準カラーマップ
+        aia193_cmap = plt.cm.plasma
+    
+    ax.imshow(aia193_background, origin='lower', extent=extent_global, cmap=aia193_cmap, aspect='equal', zorder=0)
+    ax.imshow(combined_ml, origin='lower', cmap=plt.cm.seismic,
+             norm=Normalize(0,1), extent=extent_global, alpha=0.7, zorder=1)
+
+    # 境界円
+    scale = p_lasco['px_per_rsun']
+    theta = np.linspace(0, 2*np.pi, 400)
+    for i in range(2, int(ranges['lasco_outer'])+1):
+        ax.plot(p_lasco['px_per_rsun']*i*np.cos(theta),
+                p_lasco['px_per_rsun']*i*np.sin(theta),
+                ':', color='black', linewidth=0.8)
+
+    # 境界円＆凡例
+    r1 = ranges['mk4_inner']*scale
+    ax.plot(r1*np.cos(theta), r1*np.sin(theta),
+            '--',color='yellow',linewidth=1.5,
+            label=f"{ranges['mk4_inner']} $R_\\odot$")
+    r2 = ranges['mk4_outer_lasco_inner']*scale
+    ax.plot(r2*np.cos(theta), r2*np.sin(theta),
+            '--',color='cyan',linewidth=1.5,
+            label=f"{ranges['mk4_outer_lasco_inner']} $R_\\odot$")
+
+    # 軸範囲を global に固定
+    ax.set_xlim(-400, 0); ax.set_ylim(-200, 300)
+    # ax.set_xlabel('X [pixel]'); ax.set_ylabel('Y [pixel]'); ax.set_facecolor('gray')
+    ax.set_title(
+        f"12min Diff | Base: {base_time_str.replace('T', ' ')} \n"
+        f"SDO/AIA 193 Å: {aia193_map.date.strftime('%Y-%m-%d %H:%M:%S')}\n"
         f"Mk4: {mk4_map.date.strftime('%H:%M:%S')} | LASCO-C2: {lasco_map.date.strftime('%H:%M:%S')}"
     )
     ax.legend(loc='best')

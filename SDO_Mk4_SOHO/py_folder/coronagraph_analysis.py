@@ -18,6 +18,8 @@ try:
     import config
     from claude_analysis_utils import (
         analyze_single_time_cme_with_diff_image,
+        analyze_single_time_cme_with_diff_from_min_image,
+        analyze_single_time_cme_with_raw_image,
         compare_cme_heights_multiple_times,
         run_cme_analysis_workflow
     )
@@ -73,8 +75,11 @@ def main():
                 print(f"  平均高度: {stats['mean_height']:.2f} ± {stats['std_height']:.2f} R☉")
                 print(f"  高度範囲: {stats['min_height']:.2f} - {stats['max_height']:.2f} R☉")
                 
-                # CSV保存を実行
-                csv_files = save_cme_measurements_to_csv(result, time_str)
+                # CSV保存を実行（MK4時刻を取得して渡す）
+                mk4_time_str = None
+                if hasattr(result, 'get') and result.get('mk4_time'):
+                    mk4_time_str = result['mk4_time']
+                csv_files = save_cme_measurements_to_csv(result, time_str, mk4_time_str=mk4_time_str)
                 if csv_files:
                     obs_file, stats_file, png_dir = csv_files
                     print(f"  観測量CSV保存: {obs_file}")
@@ -87,7 +92,7 @@ def main():
         print("ログを確認してトラブルシューティングを行ってください。")
 
 
-def save_cme_measurements_to_csv(result, target_time_str, base_dir='/mnt/d/wsl/home/kinno-7010/Research/SDO_Mk4_SOHO/CME_measurement/'):
+def save_cme_measurements_to_csv(result, target_time_str, base_dir='/mnt/d/wsl/home/kinno-7010/Research/SDO_Mk4_SOHO/CME_measurement/', mk4_time_str=None):
     """
     CME測定結果をCSVファイルに保存（観測量と統計量を分離）
     
@@ -96,12 +101,15 @@ def save_cme_measurements_to_csv(result, target_time_str, base_dir='/mnt/d/wsl/h
     result : dict
         analyze_single_time_cme_multi_points からの結果（Noneまたは空の場合も対応）
     target_time_str : str
-        対象時刻文字列
+        対象時刻文字列（fallback用）
     base_dir : str
         ベースディレクトリ
+    mk4_time_str : str, optional
+        MK4データの実際の時刻文字列（優先使用）
     """
     
     import os
+    from astropy.time import Time
     
     # 出力ディレクトリを設定
     obs_dir = os.path.join(base_dir, 'csv_folder', 'obs')
@@ -113,10 +121,22 @@ def save_cme_measurements_to_csv(result, target_time_str, base_dir='/mnt/d/wsl/h
     os.makedirs(stats_dir, exist_ok=True)
     os.makedirs(png_dir, exist_ok=True)
     
-    # ファイル名を生成
-    time_label = target_time_str.replace(':', '').replace('-', '').replace('T', '_')
-    obs_filename = os.path.join(obs_dir, f'cme_observations_{time_label}.csv')
-    stats_filename = os.path.join(stats_dir, f'cme_statistics_{time_label}.csv')
+    # 使用する時刻を決定（MK4時刻が優先、なければtarget_time）
+    use_time_str = mk4_time_str if mk4_time_str else target_time_str
+    
+    # ファイル名用の時刻ラベルを生成（YYMMDD-HHMMSS形式）
+    try:
+        time_obj = Time(use_time_str)
+        time_label = time_obj.datetime.strftime('%y%m%d-%H%M%S')
+    except:
+        # フォールバック：従来の方式
+        time_label = target_time_str.replace(':', '').replace('-', '').replace('T', '_')
+    
+    # obs_filename = os.path.join(obs_dir, f'nose_cme_observations_{time_label}.csv')
+    # stats_filename = os.path.join(stats_dir, f'nose_cme_statistics_{time_label}.csv')
+    obs_filename = os.path.join(obs_dir, f'cme_observations_{time_label}_1min_diff.csv')
+    stats_filename = os.path.join(stats_dir, f'cme_statistics_{time_label}_1min_diff.csv')
+    
     
     # データが無い場合はNaNで埋める
     if not result or not result.get('heights') or len(result.get('heights', [])) == 0:
@@ -125,7 +145,7 @@ def save_cme_measurements_to_csv(result, target_time_str, base_dir='/mnt/d/wsl/h
         # 観測量データ（NaN）
         obs_data = [{
             'point_id': 1,
-            'time': target_time_str,
+            'time': use_time_str,
             'x_arcsec': np.nan,
             'y_arcsec': np.nan,
             'x_pixel': np.nan,
@@ -136,12 +156,12 @@ def save_cme_measurements_to_csv(result, target_time_str, base_dir='/mnt/d/wsl/h
         
         # 統計量データ（NaN）
         stats_data = [
-            {'metric': 'mean_height_rsun', 'value': np.nan, 'time': target_time_str},
-            {'metric': 'std_height_rsun', 'value': np.nan, 'time': target_time_str},
-            {'metric': 'min_height_rsun', 'value': np.nan, 'time': target_time_str},
-            {'metric': 'max_height_rsun', 'value': np.nan, 'time': target_time_str},
-            {'metric': 'height_range_rsun', 'value': np.nan, 'time': target_time_str},
-            {'metric': 'n_points', 'value': 0, 'time': target_time_str}
+            {'metric': 'mean_height_rsun', 'value': np.nan, 'time': use_time_str},
+            {'metric': 'std_height_rsun', 'value': np.nan, 'time': use_time_str},
+            {'metric': 'min_height_rsun', 'value': np.nan, 'time': use_time_str},
+            {'metric': 'max_height_rsun', 'value': np.nan, 'time': use_time_str},
+            {'metric': 'height_range_rsun', 'value': np.nan, 'time': use_time_str},
+            {'metric': 'n_points', 'value': 0, 'time': use_time_str}
         ]
         
         obs_df = pd.DataFrame(obs_data)
@@ -163,7 +183,7 @@ def save_cme_measurements_to_csv(result, target_time_str, base_dir='/mnt/d/wsl/h
         
         obs_data.append({
             'point_id': i + 1,
-            'time': target_time_str,
+            'time': use_time_str,
             'x_arcsec': x_arcsec,
             'y_arcsec': y_arcsec,
             'x_pixel': position[0],
@@ -177,12 +197,12 @@ def save_cme_measurements_to_csv(result, target_time_str, base_dir='/mnt/d/wsl/h
     # 統計量データフレームを作成
     stats = result['statistics']
     stats_data = [
-        {'metric': 'mean_height_rsun', 'value': stats['mean_height'], 'time': target_time_str},
-        {'metric': 'std_height_rsun', 'value': stats['std_height'], 'time': target_time_str},
-        {'metric': 'min_height_rsun', 'value': stats['min_height'], 'time': target_time_str},
-        {'metric': 'max_height_rsun', 'value': stats['max_height'], 'time': target_time_str},
-        {'metric': 'height_range_rsun', 'value': stats['height_range'], 'time': target_time_str},
-        {'metric': 'n_points', 'value': stats['n_points'], 'time': target_time_str}
+        {'metric': 'mean_height_rsun', 'value': stats['mean_height'], 'time': use_time_str},
+        {'metric': 'std_height_rsun', 'value': stats['std_height'], 'time': use_time_str},
+        {'metric': 'min_height_rsun', 'value': stats['min_height'], 'time': use_time_str},
+        {'metric': 'max_height_rsun', 'value': stats['max_height'], 'time': use_time_str},
+        {'metric': 'height_range_rsun', 'value': stats['height_range'], 'time': use_time_str},
+        {'metric': 'n_points', 'value': stats['n_points'], 'time': use_time_str}
     ]
     
     stats_df = pd.DataFrame(stats_data)
@@ -218,7 +238,10 @@ def single_time_analysis(target_time: str, show_diff_image: bool = True):
             )
         
         # CSVファイルに保存（結果がNoneでも実行）
-        csv_files = save_cme_measurements_to_csv(result, target_time)
+        mk4_time_str = None
+        if result and hasattr(result, 'get') and result.get('mk4_time'):
+            mk4_time_str = result['mk4_time']
+        csv_files = save_cme_measurements_to_csv(result, target_time, mk4_time_str=mk4_time_str)
         if csv_files:
             obs_file, stats_file, png_dir = csv_files
             print(f"観測量CSV保存完了: {obs_file}")
@@ -242,12 +265,289 @@ def single_time_analysis(target_time: str, show_diff_image: bool = True):
     except Exception as e:
         print(f"単一時刻解析でエラー: {e}")
         # エラーの場合でもCSVファイルにNaNを保存
-        csv_files = save_cme_measurements_to_csv(None, target_time)
+        csv_files = save_cme_measurements_to_csv(None, target_time, mk4_time_str=None)
         if csv_files:
             obs_file, stats_file, png_dir = csv_files
             print(f"エラー時観測量CSV保存完了: {obs_file}")
             print(f"エラー時統計量CSV保存完了: {stats_file}")
         return None
+
+
+def single_time_analysis_from_min(target_time: str, show_diff_image: bool = True):
+    """
+    単一時刻の解析を実行（2分前のデータから差分を作成）
+    
+    Parameters:
+    -----------
+    target_time : str
+        解析対象時刻
+    show_diff_image : bool
+        差分画像を表示するかどうか
+        
+    Returns:
+    --------
+    dict or None
+        解析結果
+    """
+    
+    print(f"\n=== 単一時刻解析（2分前差分）: {target_time} ===")
+    
+    try:
+        from astropy.time import Time
+        import astropy.units as u
+        
+        # 2分前の時刻を計算
+        target_t = Time(target_time)
+        base_t = target_t - 2 * u.min
+        base_time = base_t.iso
+        
+        print(f"対象時刻: {target_time}")
+        print(f"ベース時刻（2分前）: {base_time}")
+        
+        if show_diff_image:
+            # 差分画像表示付きの解析を実行（2分前専用関数を使用）
+            print("2分前ベース差分画像表示付きCME解析を開始します...")
+            result = analyze_single_time_cme_with_diff_from_min_image(
+                target_time, 
+                save_results=True,
+                output_dir='./cme_analysis/'
+            )
+        else:
+            # CME複数点測定のみを実行（2分前をベース時刻として指定）
+            print("2分前ベース単一時刻CME複数点測定を開始します...")
+            result = analyze_single_time_cme_multi_points(
+                target_time, 
+                save_results=True,
+                output_dir='./cme_analysis/',
+                base_time=base_time
+            )
+        
+        # CSVファイルに保存（結果がNoneでも実行）
+        mk4_time_str = None
+        if result and hasattr(result, 'get') and result.get('mk4_time'):
+            mk4_time_str = result['mk4_time']
+        csv_files = save_cme_measurements_to_csv(result, target_time, mk4_time_str=mk4_time_str)
+        if csv_files:
+            obs_file, stats_file, png_dir = csv_files
+            print(f"観測量CSV保存完了: {obs_file}")
+            print(f"統計量CSV保存完了: {stats_file}")
+            print(f"PNGファイル保存先: {png_dir}")
+        
+        if result:
+            stats = result['statistics']
+            print(f"\n解析結果:")
+            print(f"  測定点数: {stats['n_points']}")
+            print(f"  平均高度: {stats['mean_height']:.2f} ± {stats['std_height']:.2f} R☉")
+            print(f"  最小高度: {stats['min_height']:.2f} R☉")
+            print(f"  最大高度: {stats['max_height']:.2f} R☉")
+            print(f"  高度範囲: {stats['height_range']:.2f} R☉")
+            
+            return result
+        else:
+            print("測定データが取得できませんでした。")
+            return None
+            
+    except Exception as e:
+        print(f"単一時刻解析（2分前差分）でエラー: {e}")
+        # エラーの場合でもCSVファイルにNaNを保存
+        csv_files = save_cme_measurements_to_csv(None, target_time, mk4_time_str=None)
+        if csv_files:
+            obs_file, stats_file, png_dir = csv_files
+            print(f"エラー時観測量CSV保存完了: {obs_file}")
+            print(f"エラー時統計量CSV保存完了: {stats_file}")
+        return None
+
+
+def raw_data_analysis(target_time: str, show_raw_image: bool = True):
+    """
+    単一時刻の生データ解析を実行（差分なし）
+    
+    Parameters:
+    -----------
+    target_time : str
+        解析対象時刻
+    show_raw_image : bool
+        生データ画像を表示するかどうか
+        
+    Returns:
+    --------
+    dict or None
+        解析結果
+    """
+    
+    print(f"\n=== 単一時刻解析（生データ）: {target_time} ===")
+    
+    try:
+        if show_raw_image:
+            # 生データ画像表示付きの解析を実行
+            print("生データ画像表示付きCME解析を開始します...")
+            result = analyze_single_time_cme_with_raw_image(
+                target_time, 
+                save_results=True,
+                output_dir='./cme_analysis/'
+            )
+        else:
+            # CME複数点測定のみを実行（生データ用）
+            print("生データ単一時刻CME複数点測定を開始します...")
+            result = analyze_single_time_cme_multi_points(
+                target_time, 
+                save_results=True,
+                output_dir='./cme_analysis/'
+            )
+        
+        # CSVファイルに保存（結果がNoneでも実行）- raw_プレフィックス付き
+        mk4_time_str = None
+        if result and hasattr(result, 'get') and result.get('mk4_time'):
+            mk4_time_str = result['mk4_time']
+        
+        # raw用CSV保存関数を呼び出し
+        csv_files = save_raw_cme_measurements_to_csv(result, target_time, mk4_time_str=mk4_time_str)
+        if csv_files:
+            obs_file, stats_file, png_dir = csv_files
+            print(f"観測量CSV保存完了: {obs_file}")
+            print(f"統計量CSV保存完了: {stats_file}")
+            print(f"PNGファイル保存先: {png_dir}")
+        
+        if result:
+            stats = result['statistics']
+            print(f"\n解析結果:")
+            print(f"  測定点数: {stats['n_points']}")
+            print(f"  平均高度: {stats['mean_height']:.2f} ± {stats['std_height']:.2f} R☉")
+            print(f"  最小高度: {stats['min_height']:.2f} R☉")
+            print(f"  最大高度: {stats['max_height']:.2f} R☉")
+            print(f"  高度範囲: {stats['height_range']:.2f} R☉")
+            
+            return result
+        else:
+            print("測定データが取得できませんでした。")
+            return None
+            
+    except Exception as e:
+        print(f"単一時刻解析（生データ）でエラー: {e}")
+        # エラーの場合でもCSVファイルにNaNを保存
+        csv_files = save_raw_cme_measurements_to_csv(None, target_time, mk4_time_str=None)
+        if csv_files:
+            obs_file, stats_file, png_dir = csv_files
+            print(f"エラー時観測量CSV保存完了: {obs_file}")
+            print(f"エラー時統計量CSV保存完了: {stats_file}")
+        return None
+
+
+def save_raw_cme_measurements_to_csv(result, target_time_str, base_dir='/mnt/d/wsl/home/kinno-7010/Research/SDO_Mk4_SOHO/CME_measurement/', mk4_time_str=None):
+    """
+    CME測定結果をCSVファイルに保存（生データ用・raw_プレフィックス付き）
+    
+    Parameters:
+    -----------
+    result : dict
+        analyze_single_time_cme_with_raw_image からの結果
+    target_time_str : str
+        対象時刻文字列
+    base_dir : str
+        ベースディレクトリ
+    mk4_time_str : str, optional
+        MK4データの実際の時刻文字列
+    """
+    
+    import os
+    from astropy.time import Time
+    
+    # 出力ディレクトリを設定
+    obs_dir = os.path.join(base_dir, 'csv_folder', 'obs')
+    stats_dir = os.path.join(base_dir, 'csv_folder', 'sta')
+    png_dir = os.path.join(base_dir, 'analysis_png')
+    
+    # ディレクトリを作成（既に存在する場合はスキップ）
+    os.makedirs(obs_dir, exist_ok=True)
+    os.makedirs(stats_dir, exist_ok=True)
+    os.makedirs(png_dir, exist_ok=True)
+    
+    # 使用する時刻を決定
+    use_time_str = mk4_time_str if mk4_time_str else target_time_str
+    
+    # ファイル名用の時刻ラベルを生成
+    try:
+        time_obj = Time(use_time_str)
+        time_label = time_obj.datetime.strftime('%y%m%d-%H%M%S')
+    except:
+        time_label = target_time_str.replace(':', '').replace('-', '').replace('T', '_')
+    
+    obs_filename = os.path.join(obs_dir, f'raw_cme_observations_{time_label}.csv')
+    stats_filename = os.path.join(stats_dir, f'raw_cme_statistics_{time_label}.csv')
+    
+    # データが無い場合はNaNで埋める
+    if not result or not result.get('heights') or len(result.get('heights', [])) == 0:
+        print("測定データがありません。NaNでCSVを作成します。")
+        
+        # 観測量データ（NaN）
+        obs_data = [{
+            'point_id': 1,
+            'time': use_time_str,
+            'x_arcsec': np.nan,
+            'y_arcsec': np.nan,
+            'x_pixel': np.nan,
+            'y_pixel': np.nan,
+            'height_rsun': np.nan,
+            'position_angle_deg': np.nan
+        }]
+        
+        # 統計量データ（NaN）
+        stats_data = [
+            {'metric': 'mean_height_rsun', 'value': np.nan, 'time': use_time_str},
+            {'metric': 'std_height_rsun', 'value': np.nan, 'time': use_time_str},
+            {'metric': 'min_height_rsun', 'value': np.nan, 'time': use_time_str},
+            {'metric': 'max_height_rsun', 'value': np.nan, 'time': use_time_str},
+            {'metric': 'height_range_rsun', 'value': np.nan, 'time': use_time_str},
+            {'metric': 'n_points', 'value': 0, 'time': use_time_str}
+        ]
+        
+        obs_df = pd.DataFrame(obs_data)
+        stats_df = pd.DataFrame(stats_data)
+        
+        # CSVファイルに保存
+        obs_df.to_csv(obs_filename, index=False, float_format='%.3f')
+        stats_df.to_csv(stats_filename, index=False, float_format='%.3f')
+        
+        return obs_filename, stats_filename, png_dir
+    
+    # 観測量データフレームを作成
+    obs_data = []
+    for i, (height, position, angle) in enumerate(zip(result['heights'], result['positions'], result['angles'])):
+        # arcsec座標に変換
+        x_arcsec = position[0] * 959.63 / 80
+        y_arcsec = position[1] * 959.63 / 80
+        
+        obs_data.append({
+            'point_id': i + 1,
+            'time': use_time_str,
+            'x_arcsec': x_arcsec,
+            'y_arcsec': y_arcsec,
+            'x_pixel': position[0],
+            'y_pixel': position[1],
+            'height_rsun': height,
+            'position_angle_deg': angle
+        })
+    
+    obs_df = pd.DataFrame(obs_data)
+    
+    # 統計量データフレームを作成
+    stats = result['statistics']
+    stats_data = [
+        {'metric': 'mean_height_rsun', 'value': stats['mean_height'], 'time': use_time_str},
+        {'metric': 'std_height_rsun', 'value': stats['std_height'], 'time': use_time_str},
+        {'metric': 'min_height_rsun', 'value': stats['min_height'], 'time': use_time_str},
+        {'metric': 'max_height_rsun', 'value': stats['max_height'], 'time': use_time_str},
+        {'metric': 'height_range_rsun', 'value': stats['height_range'], 'time': use_time_str},
+        {'metric': 'n_points', 'value': stats['n_points'], 'time': use_time_str}
+    ]
+    
+    stats_df = pd.DataFrame(stats_data)
+    
+    # CSVファイルに保存
+    obs_df.to_csv(obs_filename, index=False, float_format='%.3f')
+    stats_df.to_csv(stats_filename, index=False, float_format='%.3f')
+    
+    return obs_filename, stats_filename, png_dir
 
 
 def interactive_analysis():
@@ -340,7 +640,10 @@ def interactive_analysis():
                             if result:
                                 results.append(result)
                                 # 各時刻でCSV保存を実行
-                                csv_files = save_cme_measurements_to_csv(result, target_time)
+                                mk4_time_str = None
+                                if hasattr(result, 'get') and result.get('mk4_time'):
+                                    mk4_time_str = result['mk4_time']
+                                csv_files = save_cme_measurements_to_csv(result, target_time, mk4_time_str=mk4_time_str)
                                 if csv_files:
                                     obs_file, stats_file, png_dir = csv_files
                                     print(f"観測量CSV保存完了: {obs_file}")

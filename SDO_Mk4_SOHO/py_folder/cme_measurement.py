@@ -643,11 +643,11 @@ def analyze_single_time_cme_multi_points(target_time_str: str,
     for r in [2, 3, 4, 5, 6]:
         height_circle = Circle((params['cx'], params['cy']), 
                              r * params['px_per_rsun'], 
-                             fill=False, color='white', linewidth=1, 
+                             fill=False, color='black', linewidth=1, 
                              linestyle='--', alpha=0.5)
         ax.add_patch(height_circle)
         ax.text(params['cx'], params['cy'] + r * params['px_per_rsun'], 
-               f'{r} R☉', color='white', ha='center', va='bottom')
+               f'{r} R☉', color='black', ha='center', va='bottom')
     
     ax.set_xlim(-256, 256)
     ax.set_ylim(-256, 256)

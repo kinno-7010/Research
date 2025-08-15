@@ -6,10 +6,16 @@ from matplotlib.dates import SecondLocator
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from scipy.ndimage import median_filter
 from scipy.stats import zscore
-from .utils import _to_datetime, _slice_data
+
+try:
+    from .utils import _to_datetime, _slice_data
+    from .spectrum_plot import time, frequency_mhz, data
+except ImportError:
+    from utils import _to_datetime, _slice_data
+    from spectrum_plot import time, frequency_mhz, data
 
 def calculate_dynamic_spectrum_with_peak(
-    fig, ax, time_array, freq_mhz, data,
+    fig, ax,
     start_time, end_time,
     freq_min, freq_max,
     time_tick_sec, freq_tick_mhz,
@@ -29,8 +35,8 @@ def calculate_dynamic_spectrum_with_peak(
 
     # Slice data
     t_sel, f_sel, d_sel = _slice_data(
-        time_array, data, start_dt, end_dt,
-        freq_mhz, freq_min, freq_max
+        time, data, start_dt, end_dt,
+        frequency_mhz, freq_min, freq_max
     )
 
     # Median filter to reduce noise
@@ -95,7 +101,6 @@ def calculate_dynamic_spectrum_with_peak(
 
 
 def calculate_peak_time_and_freq(
-    time_array, freq_mhz, data,
     start_time, end_time,
     freq_min, freq_max,
     med_filter_size,
@@ -113,11 +118,11 @@ def calculate_peak_time_and_freq(
     t1 = _to_datetime(end_time)
 
     # 2) スライス
-    mask_t = (time_array >= t0) & (time_array <= t1)
-    t_sel = time_array[mask_t]
+    mask_t = (time >= t0) & (time <= t1)
+    t_sel = time[mask_t]
     d_sel = data[mask_t, :]
-    mask_f = (freq_mhz >= freq_min) & (freq_mhz <= freq_max)
-    f_sel = freq_mhz[mask_f]
+    mask_f = (frequency_mhz >= freq_min) & (frequency_mhz <= freq_max)
+    f_sel = frequency_mhz[mask_f]
     d_sel = d_sel[:, mask_f]
 
     # 3) メディアンフィルタ
@@ -149,7 +154,7 @@ def calculate_peak_time_and_freq(
 
 
 def plot_removed_dynamic_spectrum_with_peak(
-    fig, ax, time_array, freq_mhz, data,
+    fig, ax,
     start_time, end_time,
     freq_min, freq_max,
     time_tick_sec, freq_tick_mhz,
@@ -160,7 +165,7 @@ def plot_removed_dynamic_spectrum_with_peak(
     Apply 3σ cleaning in 35–40 MHz, then plot dynamic spectrum with peaks.
     """
     # 3σ cleaning in specified band
-    mask_band = (freq_mhz >= 35) & (freq_mhz <= 40)
+    mask_band = (frequency_mhz >= 35) & (frequency_mhz <= 40)
     band_data = data[:, mask_band]
     flat = band_data.flatten()
     mu, sigma = np.mean(flat), np.std(flat)
@@ -170,9 +175,13 @@ def plot_removed_dynamic_spectrum_with_peak(
     # Mask data below threshold
     masked_data = np.where(data > threshold, data, np.nan)
 
+    # Temporarily save original data and use masked data
+    original_data = data
+    globals()['data'] = masked_data
+    
     # Delegate to calculate_dynamic_spectrum_with_peak
     calculate_dynamic_spectrum_with_peak(
-        fig, ax, time_array, freq_mhz, masked_data,
+        fig, ax,
         start_time, end_time,
         freq_min, freq_max,
         time_tick_sec, freq_tick_mhz,
@@ -181,3 +190,6 @@ def plot_removed_dynamic_spectrum_with_peak(
         title, scatter_color,
         outlier_z
     )
+    
+    # Restore original data
+    globals()['data'] = original_data

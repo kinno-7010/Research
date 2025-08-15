@@ -1,7 +1,12 @@
 import numpy as np
 import matplotlib.dates as mdates
-from .utils import _to_datetime
-from .spectrum_plot import plot_drift_line
+
+try:
+    from .utils import _to_datetime
+    from .spectrum_plot import plot_drift_line, time, frequency_mhz, data
+except ImportError:
+    from utils import _to_datetime
+    from spectrum_plot import plot_drift_line, time, frequency_mhz, data
 
 def time_weighted_average(segments):
     """

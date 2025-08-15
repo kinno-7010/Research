@@ -1,6 +1,11 @@
 import numpy as np
 from scipy.optimize import root_scalar
 
+try:
+    from .spectrum_plot import time, frequency_mhz, data
+except ImportError:
+    from spectrum_plot import time, frequency_mhz, data
+
 def Saito1970(rho, phi: float=0):
     """
     Saito1970 solar corona density model

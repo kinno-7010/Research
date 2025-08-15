@@ -1,9 +1,9 @@
 import numpy as np
 
-# Physical constants
-_e = 1.60217662e-19    # C
-_m_e = 9.10938356e-31   # kg
-_eps0 = 8.854187817e-12  # F/m
+try:
+    from .spectrum_plot import time, frequency_mhz, data, _e, _m_e, _eps0
+except ImportError:
+    from spectrum_plot import time, frequency_mhz, data, _e, _m_e, _eps0
 
 def density_from_frequency(freq_mhz):
     """

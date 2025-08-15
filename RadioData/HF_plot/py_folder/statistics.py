@@ -2,6 +2,11 @@ import numpy as np
 import matplotlib.dates as mdates
 from scipy.stats import zscore, linregress
 
+try:
+    from .spectrum_plot import time, frequency_mhz, data
+except ImportError:
+    from spectrum_plot import time, frequency_mhz, data
+
 def compute_drift_stats(times, freqs, outlier_z):
     """
     times: np.ndarray of datetime

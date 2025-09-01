@@ -5,6 +5,8 @@ from astropy.io import fits
 import gc
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from scipy import ndimage
+import matplotlib.pyplot as plt
+from datetime import timedelta
 
 def plot_single_extension(ax, target_time, start_time, end_time, extension_num=12, 
                          wavelength=DEFAULT_WAVELENGTH, save_path=None, 
@@ -57,7 +59,11 @@ def plot_single_extension(ax, target_time, start_time, end_time, extension_num=1
     
     data, header = extensions[extension_num]
     
-    rsun_obs, cdelt1, crpix1, crpix2 = get_header_info(file_path)
+    header = get_header_info(file_path)
+    rsun_obs = header['RSUN_OBS']
+    cdelt1 = header['CDELT1']
+    crpix1 = header['CRPIX1']
+    crpix2 = header['CRPIX2']
     
     # 正確な太陽半径をピクセル単位で計算
     solar_radius_pixels = rsun_obs / cdelt1
@@ -135,7 +141,7 @@ def plot_single_extension(ax, target_time, start_time, end_time, extension_num=1
     # return fig
 
 def plot_ext_12_diff(ax, target_start_time, target_end_time, start_time, end_time, extension_num=12, 
-                         wavelength=DEFAULT_WAVELENGTH, save_path='/mnt/d/wsl/home/kinno-7010/Research/MK4_coronagraph/UCOMP/ucomp_diff_plot.png', 
+                         wavelength=DEFAULT_WAVELENGTH, 
                          smooth_ext12=False, ext12_sigma=1.0):
     
     # 最も近いデータを見つける
@@ -153,7 +159,11 @@ def plot_ext_12_diff(ax, target_start_time, target_end_time, start_time, end_tim
     end_data, end_header = end_extensions[extension_num]
     
     # メインヘッダーから太陽半径情報を取得
-    rsun_obs, cdelt1, crpix1, crpix2 = get_header_info(start_file_path)
+    header = get_header_info(start_file_path)
+    rsun_obs = header['RSUN_OBS']
+    cdelt1 = header['CDELT1']
+    crpix1 = header['CRPIX1']
+    crpix2 = header['CRPIX2']
     
     # 正確な太陽半径をピクセル単位で計算
     solar_radius_pixels = rsun_obs / cdelt1
@@ -219,9 +229,9 @@ def plot_ext_12_diff(ax, target_start_time, target_end_time, start_time, end_tim
     plt.tight_layout()
     
     # 保存
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        print(f"Plot saved: {save_path}")
+    save_path = f'/mnt/d/wsl/home/kinno-7010/Research/MK4_coronagraph/UCOMP/ucomp_diff_plot_{target_start_time.replace(":", "")}_{target_end_time.replace(":", "")}.png'
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    print(f"Plot saved: {save_path}")
 
 
 if __name__ == "__main__":
@@ -231,10 +241,13 @@ if __name__ == "__main__":
     smooth_ext12 = True
     ext12_sigma = 1.0
     
+    target_start_time = "2022-06-13T03:09:00"
+    target_end_time = "2022-06-13T03:34:00"
+    
     fig, axes = plt.subplots(1,3,figsize=(27,8),tight_layout=True)
-    for ax, target_time in zip(axes[0:2], ["2022-06-13T03:06:00", "2022-06-13T03:36:00"]):
+    for ax, target_time in zip(axes[0:2], [target_start_time, target_end_time]):
         plot_single_extension(ax, target_time, start_time, end_time, ext_num, None,
                                 smooth_ext12=smooth_ext12, ext12_sigma=ext12_sigma)
 
-    plot_ext_12_diff(axes[2], "2022-06-13T03:06:00", "2022-06-13T03:36:00", start_time, end_time, extension_num=ext_num, wavelength=None, smooth_ext12=smooth_ext12, ext12_sigma=ext12_sigma)
+    plot_ext_12_diff(axes[2], target_start_time, target_end_time, start_time, end_time, extension_num=ext_num, wavelength=None, smooth_ext12=smooth_ext12, ext12_sigma=ext12_sigma)
     plt.show()

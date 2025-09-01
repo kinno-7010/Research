@@ -68,6 +68,12 @@ UCOMP_COLORBAR_LABELS = {
 # デフォルト波長
 DEFAULT_WAVELENGTH = 1074
 
+def get_header_info(file_path):
+    """ヘッダー情報を取得"""
+    with fits.open(file_path) as hdul:
+        header = hdul[0].header
+    return header
+
 def get_ucomp_data_path():
     """UCOMPデータディレクトリのパスを取得"""
     return Path(UCOMP_DATA_DIR)

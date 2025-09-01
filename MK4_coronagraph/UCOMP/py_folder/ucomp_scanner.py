@@ -113,7 +113,7 @@ def scan_ucomp_data(start_time, end_time, wavelength=None, use_cache=True):
                             'wavelength': file_wavelength
                         }
                         maps_with_paths.append((file_info, file_path))
-                        print(f"  Added: {filename} ({file_time.iso})")
+                        # print(f"  Added: {filename} ({file_time.iso})")
                         
             except ValueError as e:
                 # UCOMPファイル名でない場合はスキップ

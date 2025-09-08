@@ -15,6 +15,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from scipy.ndimage import median_filter, gaussian_filter1d
 import warnings
+from matplotlib.ticker import MultipleLocator, LogLocator, FuncFormatter
+from matplotlib.dates import SecondLocator
 
 class eCallistoSpectrum:
     """e-Callistoデータの処理とダイナミックスペクトル生成クラス"""
@@ -219,37 +221,86 @@ class eCallistoSpectrum:
         
         print(f"  - 処理後のデータ範囲: {self.processed_data.min():.2f} - {self.processed_data.max():.2f}")
     
-    def plot_dynamic_spectrum(self):
+    def plot_dynamic_spectrum(self, start_time, end_time, max_frequency, min_frequency, time_tick_sec, freq_tick_mhz):
         """
         ダイナミックスペクトルをプロット
+        
+        Parameters
+        ----------
+        start_time : str or datetime, optional
+            プロット開始時刻
+        end_time : str or datetime, optional  
+            プロット終了時刻
+        max_frequency : float, optional
+            最大周波数 [MHz]
+        min_frequency : float, optional
+            最小周波数 [MHz]
         """
         
         # 時間軸を生成
         self.create_time_axis()
         
         # データの前処理
-        background_method = 'percentile'
+        background_method = 'median_time'
         self.preprocess_data(background_method)
+        
+        # 時間・周波数範囲でデータをスライス（HF_plot方式に合わせる）
+        if isinstance(start_time, str):
+            start_dt = datetime.fromisoformat(start_time)
+        else:
+            start_dt = start_time
+            
+        if isinstance(end_time, str):
+            end_dt = datetime.fromisoformat(end_time)
+        else:
+            end_dt = end_time
+        
+        # 時間範囲でスライス
+        time_mask = [(t >= start_dt and t <= end_dt) for t in self.time_axis]
+        time_indices = [i for i, mask in enumerate(time_mask) if mask]
+        
+        if time_indices:
+            time_selected = [self.time_axis[i] for i in time_indices]
+            data_selected = self.processed_data[:, time_indices]
+        else:
+            time_selected = self.time_axis
+            data_selected = self.processed_data
+        
+        # 周波数範囲でスライス
+        freq_mask = [(f >= min_frequency and f <= max_frequency) for f in self.freq_axis]
+        freq_indices = [i for i, mask in enumerate(freq_mask) if mask]
+        
+        if freq_indices:
+            freq_selected = [self.freq_axis[i] for i in freq_indices]
+            data_selected = data_selected[freq_indices, :]
+        else:
+            freq_selected = self.freq_axis
+        
+        # 実際に使用する範囲を取得
+        actual_time_min = time_selected[0]
+        actual_time_max = time_selected[-1] 
+        actual_freq_min = min(freq_selected)
+        actual_freq_max = max(freq_selected)
         
         # 図を作成
         fig, ax = plt.subplots(figsize=(14, 8))
         
         # データの統計情報からカラースケールを設定
-        valid_data = self.processed_data[self.processed_data > 0]
+        valid_data = data_selected[data_selected > 0]
         if len(valid_data) > 0:
             vmin = 18
             vmax = 0
         else:
             vmin, vmax = 0, 1
             
-        # ダイナミックスペクトルをプロット
+        # ダイナミックスペクトルをプロット（ユーザー設定範囲を表示範囲に使用）
         # extent: [xmin, xmax, ymin, ymax]
-        extent = [mdates.date2num(self.time_axis[0]), 
-                 mdates.date2num(self.time_axis[-1]),
-                 self.freq_axis_min,
-                 self.freq_axis_max]
+        extent = [mdates.date2num(start_dt), 
+                 mdates.date2num(end_dt),
+                 min_frequency,
+                 max_frequency]
         
-        im = ax.imshow(self.processed_data, 
+        im = ax.imshow(data_selected, 
                       aspect='auto',
                       extent=extent,
                       cmap='viridis',
@@ -265,14 +316,20 @@ class eCallistoSpectrum:
         
         # x軸を時刻形式で表示
         ax.xaxis_date()
+        ax.yaxis.set_major_locator(LogLocator(base=10))
+        ax.yaxis.set_major_formatter(FuncFormatter(lambda x, _: f"{x:.0f}"))
+        ax.xaxis.set_major_locator(SecondLocator(interval=time_tick_sec))
         ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
-        ax.xaxis.set_major_locator(mdates.MinuteLocator(interval=2))
-        ax.xaxis.set_minor_locator(mdates.MinuteLocator(interval=1))
+        ax.yaxis.set_major_locator(MultipleLocator(freq_tick_mhz))
+        ax.tick_params(axis='both', which='major', labelsize=14)
         
         # ラベルとタイトル
         ax.set_xlabel('Time [UT]', fontsize=12)
         ax.set_ylabel('Frequency [MHz]', fontsize=12)
         
+        # 軸範囲をユーザー設定範囲に設定
+        ax.set_xlim(mdates.date2num(start_dt), mdates.date2num(end_dt))
+        ax.set_ylim(min_frequency, max_frequency)
         
         # タイトル
         title = f"e-Callisto Dynamic Spectrum (Background Subtracted {background_method})\n"
@@ -285,21 +342,15 @@ class eCallistoSpectrum:
         # グリッド
         ax.grid(True, alpha=0.3, linestyle='--', color='white')
         
-        # 観測地点情報
-        if self.obs_lat and self.obs_lon:
-            info_text = f"Location: {abs(self.obs_lat):.2f}°{'N' if self.obs_lat > 0 else 'S'}, "
-            info_text += f"{abs(self.obs_lon):.2f}°{'E' if self.obs_lon > 0 else 'W'}"
-            if self.obs_alt:
-                info_text += f", Alt: {self.obs_alt:.1f}m"
-            info_text += f"\nData: {'Calibrated' if self.is_calibrated else 'Uncalibrated'}"
-            ax.text(0.02, 0.98, info_text, transform=ax.transAxes,
-                   fontsize=9, va='top', ha='left',
-                   bbox=dict(boxstyle='round', facecolor='white', alpha=0.7))
-        
-        # x軸ラベルを回転
-        # plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right')
-        
         # レイアウトを調整
+        # ファイル名用の日時文字列を作成（ファイルシステムに適した形式に変換）
+        date_str = self.date_obs.replace('/', '')  # 2022/06/13 → 20220613
+        time_start_str = self.time_obs.split('.')[0].replace(':', '')  # 03:14:58.217 → 031458
+        time_end_str = self.time_end.split('.')[0].replace(':', '')    # 03:29:58 → 032958
+        
+        filename = f'/mnt/d/wsl/home/kinno-7010/Research/RadioData/e-Callisto/output/e-Callisto_{date_str}_{time_start_str}_{time_end_str}.png'
+        fig.savefig(filename, dpi=300, bbox_inches='tight')
+        print(f'画像を保存しました: {filename}')
         plt.tight_layout()
         
         # 表示
@@ -307,40 +358,6 @@ class eCallistoSpectrum:
         
         return fig, ax
         
-    # def analyze_burst_statistics(self):
-    #     """バースト統計情報の解析"""
-        
-    #     # 背景除去済みデータを使用
-    #     if not hasattr(self, 'processed_data'):
-    #         self.create_time_axis()
-    #         self.preprocess_data(background_method)
-        
-    #     # 統計情報を計算
-    #     stats = {
-    #         'max_intensity': np.max(self.processed_data),
-    #         'mean_intensity': np.mean(self.processed_data),
-    #         'std_intensity': np.std(self.processed_data),
-    #         'snr_max': np.max(self.processed_data) / (np.std(self.processed_data) + 1e-10)
-    #     }
-        
-    #     # 最大強度の時刻と周波数
-    #     max_idx = np.unravel_index(np.argmax(self.processed_data), self.processed_data.shape)
-    #     stats['max_freq'] = self.freq_axis[max_idx[0]]
-    #     stats['max_time'] = self.time_axis[max_idx[1]]
-        
-    #     unit_label = 'SFU' if self.is_calibrated else 'digits'
-        
-    #     print("\n" + "=" * 60)
-    #     print("バースト統計情報")
-    #     print("=" * 60)
-    #     print(f"最大強度: {stats['max_intensity']:.1f} {unit_label}")
-    #     print(f"平均強度: {stats['mean_intensity']:.1f} {unit_label}")
-    #     print(f"標準偏差: {stats['std_intensity']:.1f} {unit_label}")
-    #     print(f"最大S/N比: {stats['snr_max']:.1f}")
-    #     print(f"最大強度の周波数: {stats['max_freq']:.2f} MHz")
-    #     print(f"最大強度の時刻: {stats['max_time'].strftime('%H:%M:%S.%f')[:-3]} UT")
-        
-    #     return stats
         
     def close(self):
         """FITSファイルを閉じる"""
@@ -365,8 +382,49 @@ def main():
         # バースト統計情報を解析
         # stats = spectrum.analyze_burst_statistics()
         
+        # プロットパラメータの入力
+        print("\n" + "-" * 60)
+        print("プロットパラメータの設定")
+        print("-" * 60)
+        
+        start_time = input("開始時刻を入力 [default: 2022-06-13T03:25:00]: ").strip()
+        if start_time == '':
+            start_time = "2022-06-13T03:25:00"
+        
+        end_time = input("終了時刻を入力 [default: 2022-06-13T03:29:58]: ").strip()
+        if end_time == '':
+            end_time = "2022-06-13T03:29:58"
+            
+        min_frequency = input("最小周波数を入力 (MHz) [default: 25 MHz]: ").strip()
+        if min_frequency == '':
+            min_frequency = 25
+        else:
+            min_frequency = float(min_frequency)
+            
+        max_frequency = input("最大周波数を入力 (MHz) [default: 45 MHz]: ").strip()
+        if max_frequency == '':
+            max_frequency = 45
+        else:
+            max_frequency = float(max_frequency)
+            
+        time_tick_sec = 30
+        freq_tick_mhz = 1
+        
+        print(f"\n設定されたパラメータ:")
+        print(f"  開始時刻: {start_time if start_time else 'フル範囲'}")
+        print(f"  終了時刻: {end_time if end_time else 'フル範囲'}")
+        print(f"  最小周波数: {min_frequency if min_frequency else 'フル範囲'} MHz")
+        print(f"  最大周波数: {max_frequency if max_frequency else 'フル範囲'} MHz")
+        
         # ダイナミックスペクトルをプロット
-        fig, ax = spectrum.plot_dynamic_spectrum()
+        fig, ax = spectrum.plot_dynamic_spectrum(
+            start_time=start_time,
+            end_time=end_time,
+            max_frequency=max_frequency,
+            min_frequency=min_frequency,
+            time_tick_sec=time_tick_sec,
+            freq_tick_mhz=freq_tick_mhz
+        )
         
         # クリーンアップ
         spectrum.close()

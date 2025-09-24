@@ -155,6 +155,10 @@ def plot_ext_12_diff(ax, target_start_time, target_end_time, start_time, end_tim
     start_extensions = read_ucomp_extensions(start_file_path, max_extensions=extension_num)
     end_extensions = read_ucomp_extensions(end_file_path, max_extensions=extension_num)
     
+    if extension_num not in start_extensions or extension_num not in end_extensions:
+        print(f"Extension {extension_num} not found in one or both files")
+        return
+    
     start_data, start_header = start_extensions[extension_num]
     end_data, end_header = end_extensions[extension_num]
     
@@ -244,10 +248,26 @@ if __name__ == "__main__":
     target_start_time = "2022-06-13T03:09:00"
     target_end_time = "2022-06-13T03:34:00"
     
-    fig, axes = plt.subplots(1,3,figsize=(27,8),tight_layout=True)
-    for ax, target_time in zip(axes[0:2], [target_start_time, target_end_time]):
-        plot_single_extension(ax, target_time, start_time, end_time, ext_num, None,
-                                smooth_ext12=smooth_ext12, ext12_sigma=ext12_sigma)
+    # fig, axes = plt.subplots(1,3,figsize=(27,8),tight_layout=True)
+    # for ax, target_time in zip(axes[0:2], [target_start_time, target_end_time]):
+    #     plot_single_extension(ax, target_time, start_time, end_time, ext_num, None,
+    #                             smooth_ext12=smooth_ext12, ext12_sigma=ext12_sigma)
 
-    plot_ext_12_diff(axes[2], target_start_time, target_end_time, start_time, end_time, extension_num=ext_num, wavelength=None, smooth_ext12=smooth_ext12, ext12_sigma=ext12_sigma)
-    plt.show()
+    # plot_ext_12_diff(axes[2], target_start_time, target_end_time, start_time, end_time, extension_num=ext_num, wavelength=None, smooth_ext12=smooth_ext12, ext12_sigma=ext12_sigma)
+    # plt.show()
+    
+    # 01:00:00から04:30:00までの全データ時刻をリスト化
+    import pandas as pd
+
+    # データの時刻リストを取得（例: 1分ごとにサンプリング）
+    time_range = pd.date_range("2022-06-13T01:00:00", "2022-06-13T04:30:00", freq="1min")
+    target_start_time_list = [t.strftime("%Y-%m-%dT%H:%M:%S") for t in time_range]
+    target_end_time_list = [(Time(target_start_time) + timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%S") for target_start_time in target_start_time_list]
+    
+    for target_start_time, target_end_time in zip(target_start_time_list, target_end_time_list):
+        fig, axes = plt.subplots(1,3,figsize=(10, 8))
+        plot_single_extension(axes[0], target_start_time, start_time, end_time, ext_num, None, smooth_ext12=smooth_ext12, ext12_sigma=ext12_sigma)
+        plot_single_extension(axes[1], target_end_time, start_time, end_time, ext_num, None, smooth_ext12=smooth_ext12, ext12_sigma=ext12_sigma)
+        plot_ext_12_diff(axes[2], target_start_time, target_end_time, start_time, end_time, extension_num=ext_num, wavelength=None, smooth_ext12=smooth_ext12, ext12_sigma=ext12_sigma)
+        plt.tight_layout()
+        plt.show()

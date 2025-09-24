@@ -112,8 +112,8 @@ def create_professional_cor1_plot(fits_filepath, output_dir="."):
     im = cor1_map.plot(axes=ax, cmap=cor1_cmap, vmin=vmin, vmax=vmax, title=False)
     # <<<<< ここまで修正 <<<<<
 
-    # cbar = plt.colorbar(im, ax=ax, shrink=0.8, pad=0.05)
-    # cbar.set_label(f"Intensity [{cor1_map.unit}]", fontsize=12)
+    cbar = plt.colorbar(im, ax=ax, shrink=0.8, pad=0.05)
+    cbar.set_label(f"Intensity [{cor1_map.unit}]", fontsize=12)
     cor1_map.draw_limb(color='yellow', linewidth=2, alpha=0.8)
     cor1_map.draw_grid(grid_spacing=(10, 10) * u.deg, color='white', alpha=0.5, linestyle=':')
     

@@ -314,8 +314,8 @@ def analyze_single_time_cme_with_diff_from_min_image(target_time_str: str,
         save_dir = Path('/mnt/d/wsl/home/kinno-7010/Research/SDO_Mk4_SOHO/CME_measurement/nose_integrated_coronagraph_2min')
         save_dir.mkdir(parents=True, exist_ok=True)
         
-        # ファイル名を生成（2分前差分であることを明示）
-        save_filename = f'nose_image_2min_{mk4_time}.png'
+        # ファイル名を生成（2分前差分+30°直線であることを明示）
+        save_filename = f'nose_image_2min_with_line_{mk4_time}.png'
         save_path = save_dir / save_filename
         
         # 画像を保存

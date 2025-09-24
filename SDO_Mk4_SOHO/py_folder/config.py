@@ -48,9 +48,11 @@ OUTPUT_DIR = Path("/mnt/d/wsl/home/kinno-7010/Research/SDO/AIA/output")
 data_folder_dict = {
     'mk4': '/mnt/d/wsl/home/kinno-7010/Research/MK4_coronagraph/MK4_coronagraph_KCOR/Subtraction_data/Rawdata/kcor_nrgf',
     'lasco': '/mnt/d/wsl/home/kinno-7010/Research/SOHO/LASCO-C2_rawdata',
-    'aia211': '/mnt/d/wsl/home/kinno-7010/Research/SDO/AIA/Rawdata/211',
-    'aia193': '/mnt/d/wsl/home/kinno-7010/Research/SDO/AIA/Rawdata/193',
-    'aia171': '/mnt/d/wsl/home/kinno-7010/Research/SDO/AIA/Rawdata/171'
+    'aia193': '/mnt/d/wsl/home/kinno-7010/Research/SDO/AIA/Rawdata/193'
+    # RGB画像用（現在はコメントアウト）
+    # 'aia211': '/mnt/d/wsl/home/kinno-7010/Research/SDO/AIA/Rawdata/211',
+    # 'aia304': '/mnt/d/wsl/home/kinno-7010/Research/SDO/AIA/Rawdata/304',
+    # 'aia171': '/mnt/d/wsl/home/kinno-7010/Research/SDO/AIA/Rawdata/171'
 }
 
 # MK4データ設定（WSLパス）

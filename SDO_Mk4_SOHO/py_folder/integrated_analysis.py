@@ -921,7 +921,7 @@ def create_single_diff_image(ax, target_time_str: str):
 
     # 半径マップ・合成
     r_map = calculate_r_map(p_lasco)
-    ranges = dict(mk4_inner=1.1, mk4_outer_lasco_inner=2.1, lasco_outer=6.0)
+    ranges = dict(mk4_inner=1.1, mk4_outer_lasco_inner=3.0, lasco_outer=6.0)
     composite, imk4, ia = combine_corona_data(
         n_lasco, p_lasco,
         n_mk4, p_mk4,
@@ -1235,11 +1235,30 @@ def create_single_diff_from_time_image(ax, target_time_str: str, base_time_str: 
             '--',color='cyan',linewidth=1.5,
             label=f"{ranges['mk4_outer_lasco_inner']} $R_\\odot$")
 
+    # 太陽中心を通る30°直線を描画（北側0°から反時計回り）
+    theta_line_deg = 152.0
+    theta_line_rad = np.radians(theta_line_deg)
+    
+    # 線の描画範囲（太陽半径単位）
+    r_line_min_rsun = 0  # 中心から描画開始
+    r_line_max_rsun = ranges['lasco_outer']  # LASCO外側まで線を伸ばす
+    
+    r_coords_rsun = np.array([r_line_min_rsun, r_line_max_rsun])
+    
+    # ピクセル座標へ変換
+    x_line_pix = r_coords_rsun * p_lasco['px_per_rsun'] * np.cos(theta_line_rad)
+    y_line_pix = r_coords_rsun * p_lasco['px_per_rsun'] * np.sin(theta_line_rad)
+    
+    # 直線を描画
+    ax.plot(x_line_pix, y_line_pix, 
+            color='red', linestyle='-', linewidth=2, 
+            label=f'θ={theta_line_deg:.0f}°')
+
     # 軸範囲を global に固定
     ax.set_xlim(-400, 0); ax.set_ylim(-200, 300)
     # ax.set_xlabel('X [pixel]'); ax.set_ylabel('Y [pixel]'); ax.set_facecolor('gray')
     ax.set_title(
-        f"12min Diff | Base: {base_time_str.replace('T', ' ')} \n"
+        f"2min Diff | Base: {base_time_str.replace('T', ' ')} \n"
         f"SDO/AIA 193 Å: {aia193_map.date.strftime('%Y-%m-%d %H:%M:%S')}\n"
         f"Mk4: {mk4_map.date.strftime('%H:%M:%S')} | LASCO-C2: {lasco_map.date.strftime('%H:%M:%S')}"
     )

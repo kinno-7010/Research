@@ -23,7 +23,8 @@ def plot_dynamic_spectrum(
     time_tick_sec, freq_tick_mhz,
     med_filter_size,
     vmin, vmax,
-    title
+    title,
+    background_method
 ):
     """
     Plot a dynamic spectrum between start_time and end_time.
@@ -34,6 +35,14 @@ def plot_dynamic_spectrum(
         time, data, start_dt, end_dt,
         frequency_mhz, freq_min, freq_max
     )
+
+    # Background removal processing
+    if background_method == 'median_time':
+        print("  - 各周波数での時間中央値を減算")
+        background = np.median(d_sel, axis=0, keepdims=True)
+        d_sel = d_sel - background
+    else:
+        print("  - 背景除去処理をスキップします")
 
     # Noise reduction
     d_filt = median_filter(d_sel.astype(float), size=med_filter_size)
@@ -71,39 +80,79 @@ def plot_removed_dynamic_spectrum(
     start_time, end_time,
     freq_min, freq_max,
     time_tick_sec, freq_tick_mhz,
-    med_filter_size, vmin, vmax
+    med_filter_size, vmin, vmax,
+    background_method
 ):
     """
     Remove 3σ outliers in 35–40 MHz band and plot the cleaned dynamic spectrum.
     """
     global data
-    # 35–40 MHz band extraction
-    mask_band = (frequency_mhz >= 35) & (frequency_mhz <= 40)
-    band_data = data[:, mask_band]
-    flat = band_data.flatten()
-    mu, sigma = np.mean(flat), np.std(flat)
-    lower, upper = mu - 3*sigma, mu + 3*sigma
-    clean = flat[(flat > lower) & (flat < upper)]
-    clean_mean = np.mean(clean)
-
-    # Mask below threshold
-    threshold = clean_mean*1.05
-    masked = np.where(data > threshold, data, np.nan)
-
-    # Temporarily save original data and use masked data
-    original_data = data
-    data = masked
     
-    # Delegate to plot_dynamic_spectrum
-    plot_dynamic_spectrum(
-        fig, ax,
-        start_time, end_time,
-        freq_min, freq_max,
-        time_tick_sec, freq_tick_mhz,
-        med_filter_size,
-        vmin, vmax,
-        title='Second Harmonic Dynamic Spectrum (removed)'
-    )
+    # Apply background removal if median_time is selected
+    if background_method == 'median_time':
+        print("  - median_time処理後のデータからclean_meanを計算")
+        # Apply median_time background removal to get processed data
+        background_removed_data = data - np.median(data, axis=0, keepdims=True)
+        # 35–40 MHz band extraction from processed data
+        mask_band = (frequency_mhz >= 35) & (frequency_mhz <= 40)
+        band_data = background_removed_data[:, mask_band]
+        
+        flat = band_data.flatten()
+        mu, sigma = np.mean(flat), np.std(flat)
+        lower, upper = mu - 3*sigma, mu + 3*sigma
+        clean = flat[(flat > lower) & (flat < upper)]
+        clean_mean = np.mean(clean)
+        
+        # Mask below threshold using background_removed_data
+        threshold = 2
+        masked = np.where(background_removed_data >= threshold, background_removed_data, np.nan)
+        
+        # Temporarily save original data and use masked data
+        original_data = data
+        data = masked
+        
+        # Delegate to plot_dynamic_spectrum
+        plot_dynamic_spectrum(
+            fig, ax,
+            start_time, end_time,
+            freq_min, freq_max,
+            time_tick_sec, freq_tick_mhz,
+            med_filter_size,
+            vmin, vmax,
+            title='Second Harmonic Dynamic Spectrum (removed) (median_time)',
+            background_method='none'
+        )
+    else:
+        print("  - 元データからclean_meanを計算")
+        # 35–40 MHz band extraction from original data
+        mask_band = (frequency_mhz >= 35) & (frequency_mhz <= 40)
+        band_data = data[:, mask_band]
+        
+        flat = band_data.flatten()
+        mu, sigma = np.mean(flat), np.std(flat)
+        lower, upper = mu - 3*sigma, mu + 3*sigma
+        clean = flat[(flat > lower) & (flat < upper)]
+        clean_mean = np.mean(clean)
+        
+        # Mask below threshold using original data
+        threshold = clean_mean * 1.05
+        masked = np.where(data > threshold, data, np.nan)
+
+        # Temporarily save original data and use masked data
+        original_data = data
+        data = masked
+        
+        # Delegate to plot_dynamic_spectrum
+        plot_dynamic_spectrum(
+            fig, ax,
+            start_time, end_time,
+            freq_min, freq_max,
+            time_tick_sec, freq_tick_mhz,
+            med_filter_size,
+            vmin, vmax,
+            title='Second Harmonic Dynamic Spectrum (removed)',
+            background_method=background_method
+        )
     
     # Restore original data
     data = original_data
@@ -172,20 +221,30 @@ if __name__ == "__main__":
     print("1. plot_dynamic_spectrum: Basic Dynamic Spectrum - Full time range view")
     print("2. plot_removed_dynamic_spectrum: Cleaned Dynamic Spectrum - Background noise removed (3σ method)")
     print("3. plot_drift_line: Dynamic Spectrum with Drift Lines - Type II burst drift analysis")
-    print("4. Exit")
+    print("0. Exit")
     print("-" * 60)
     
 
     
     while True:
         try:
-            choice = input("Enter your choice (1-4): ").strip()
+            choice = input("Enter your choice (0-3): ").strip()
             
             if choice == '1':
                 print("\nPlotting basic dynamic spectrum...")
                 start_time, end_time, freq_min, freq_max, time_tick_sec, freq_tick_mhz, med_filter_size, vmin, vmax, title = _initialize_plot_parameters()
                 
                 fig, ax = plt.subplots(figsize=(12, 8))
+                
+                background_method_value = input("Background method (0: none, 1: median_time): ")
+                if background_method_value == '1':
+                    background_method = 'median_time'
+                    vmin = 0
+                    vmax = 10
+                    # titleにbackground_methodを追記
+                    title = f"{title} ({background_method})"
+                else:
+                    background_method = 'none'
                 
                 plot_dynamic_spectrum(
                     fig, ax,
@@ -194,32 +253,58 @@ if __name__ == "__main__":
                     time_tick_sec, freq_tick_mhz,
                     med_filter_size,
                     vmin, vmax,
-                    title
+                    title,
+                    background_method
                 )
                 ax.set_xlabel('Time (UTC)', fontsize=16)
                 plt.tight_layout()
                 # 4. Use the new path variable to save the file
-                plt.savefig(f'{output_dir}/HF_dynamic_spectrum_{start_time}-{end_time}_{freq_min}-{freq_max}MHz.png')
-                print(f'{output_dir}/HF_dynamic_spectrum_{start_time}-{end_time}_{freq_min}-{freq_max}MHz.png')
+                # start_time, end_timeの":"を消去し空白を詰める
+                start_time = start_time.replace(":", "")
+                end_time = end_time.replace(":", "")
+                if background_method == 'median_time':
+                    plt.savefig(f'{output_dir}/HF_dynamic_spectrum_{start_time}-{end_time}_{freq_min}-{freq_max}MHz_{background_method}.png')
+                else:
+                    plt.savefig(f'{output_dir}/HF_dynamic_spectrum_{start_time}-{end_time}_{freq_min}-{freq_max}MHz_none.png')
+                print(f'{output_dir}/HF_dynamic_spectrum_{start_time}-{end_time}_{freq_min}-{freq_max}MHz_{background_method}.png')
                 plt.show()
                 
             elif choice == '2':
-                print("\nPlotting cleaned dynamic spectrum...")
+                print("\nPlotting removed dynamic spectrum...")
                 start_time, end_time, freq_min, freq_max, time_tick_sec, freq_tick_mhz, med_filter_size, vmin, vmax, title = _initialize_plot_parameters()
                 
                 fig, ax = plt.subplots(figsize=(12, 8))
+                
+                background_method_value = input("Background method (0: none, 1: median_time): ")
+                if background_method_value == '1':
+                    background_method = 'median_time'
+                    vmin = 3
+                    vmax = 10
+                    # titleにbackground_methodを追記
+                    title = f"{title} (removed) ({background_method})"
+                else:
+                    background_method = 'none'
+                
                 plot_removed_dynamic_spectrum(
                     fig, ax,
                     start_time, end_time,
                     freq_min, freq_max,
                     time_tick_sec, freq_tick_mhz,
-                    med_filter_size, vmin, vmax
+                    med_filter_size, vmin, vmax,
+                    background_method
                 )
                 ax.set_xlabel('Time (UTC)', fontsize=16)
                 plt.tight_layout()
                 # 4. Use the new path variable here as well
-                plt.savefig(f'{output_dir}/removed_HF_dynamic_spectrum_{start_time}-{end_time}_{freq_min}-{freq_max}MHz.png')
-                print(f'{output_dir}/removed_HF_dynamic_spectrum_{start_time}-{end_time}_{freq_min}-{freq_max}MHz.png')
+                # start_time, end_timeの":"を消去し空白を詰める
+                start_time = start_time.replace(":", "")
+                end_time = end_time.replace(":", "")
+                if background_method == 'median_time':
+                    plt.savefig(f'{output_dir}/removed_HF_dynamic_spectrum_{start_time}-{end_time}_{freq_min}-{freq_max}MHz_{background_method}.png')
+                    print(f'{output_dir}/removed_HF_dynamic_spectrum_{start_time}-{end_time}_{freq_min}-{freq_max}MHz_{background_method}.png')
+                else:
+                    plt.savefig(f'{output_dir}/removed_HF_dynamic_spectrum_{start_time}-{end_time}_{freq_min}-{freq_max}MHz_none.png')
+                    print(f'{output_dir}/removed_HF_dynamic_spectrum_{start_time}-{end_time}_{freq_min}-{freq_max}MHz_none.png')
                 plt.show()
                 
                                 
@@ -233,6 +318,16 @@ if __name__ == "__main__":
                 fig, axes = plt.subplots(2, 1, figsize=(12, 10), gridspec_kw={'height_ratios': [3, 1]})
                 ax0, ax1 = axes
                 
+                background_method_value = input("Background method (0: none, 1: median_time): ")
+                if background_method_value == '1':
+                    background_method = 'median_time'
+                    vmin = 0
+                    vmax = 10
+                    # titleにbackground_methodを追記
+                    title = f"{title} (removed) ({background_method})"
+                else:
+                    background_method = 'none'
+                
                 # --------------------- ax[0] ---------------------
                 # Plot the base dynamic spectrum just once on ax0
                 plot_removed_dynamic_spectrum(
@@ -241,7 +336,8 @@ if __name__ == "__main__":
                     freq_min, freq_max,
                     time_tick_sec, freq_tick_mhz,
                     med_filter_size,
-                    vmin, vmax
+                    vmin, vmax,
+                    background_method
                 )
 
                 # Define segments
@@ -320,17 +416,23 @@ if __name__ == "__main__":
 
 
                 plt.tight_layout()
-                plt.savefig(f'{output_dir}/manual_drift_line_HF_dynamic_spectrum_{start_time}-{end_time}_{freq_min}-{freq_max}MHz.png')
-                print(f'{output_dir}/manual_drift_line_HF_dynamic_spectrum_{start_time}-{end_time}_{freq_min}-{freq_max}MHz.png')
+                # start_time, end_timeの":"を消去し空白を詰める
+                start_time = start_time.replace(":", "")
+                end_time = end_time.replace(":", "")
+                if background_method == 'median_time':
+                    plt.savefig(f'{output_dir}/manual_drift_line_HF_dynamic_spectrum_{start_time}-{end_time}_{freq_min}-{freq_max}MHz_{background_method}.png')
+                else:
+                    plt.savefig(f'{output_dir}/manual_drift_line_HF_dynamic_spectrum_{start_time}-{end_time}_{freq_min}-{freq_max}MHz_none.png')
+                print(f'{output_dir}/manual_drift_line_HF_dynamic_spectrum_{start_time}-{end_time}_{freq_min}-{freq_max}MHz_{background_method}.png')
                 plt.show()
                 
                                 
-            elif choice == '4':
+            elif choice == '0':
                 print("Exiting...")
                 break
                 
             else:
-                print("Invalid choice. Please enter 1-4.")
+                print("Invalid choice. Please enter 0-3.")
                 
         except KeyboardInterrupt:
             print("\nExiting...")

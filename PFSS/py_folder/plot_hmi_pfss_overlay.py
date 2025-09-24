@@ -4,10 +4,18 @@ HMIデータの指定範囲にPFSS磁力線を重ねてプロット
 plot_aia_overplotting.pyの手法をHMIデータに適用
 """
 
+import sys
+
 import numpy as np
 import matplotlib.pyplot as plt
-import os
-import sys
+from collections import defaultdict
+from datetime import datetime
+from pathlib import Path
+
+from astropy.time import Time
+from matplotlib.ticker import FuncFormatter
+from tqdm import tqdm
+
 
 # 必要なパッケージのインポート
 import astropy.units as u
@@ -15,6 +23,10 @@ from astropy.coordinates import SkyCoord
 import sunpy.map
 import pfsspy
 import pfsspy.tracing as tracing
+
+import astropy.visualization as vis
+
+
 
 # HMI解析モジュールのインポート
 sys.path.append('/mnt/d/wsl/home/kinno-7010/Research/SDO/HMI/py_folder')
@@ -214,8 +226,12 @@ def define_field_line_seeds(hmi_map, x_lims_pix, y_lims_pix, n_seeds_x=7, n_seed
         
         print(f"  均等グリッドで {len(x_pixels)} 点を配置")
     
-    # ピクセル座標から世界座標（太陽座標）に変換
+    # ピクセル座標から世界座標（太陽座標）に変換（sunpy WCS機能を活用）
     seeds = hmi_map.pixel_to_world(x_pixels * u.pixel, y_pixels * u.pixel)
+    
+    # sunpyのSkyCoordを使用して座標系の統一性を確保
+    if not isinstance(seeds, SkyCoord):
+        seeds = SkyCoord(seeds)
     
     print(f"  開始点数: {len(seeds)}")
     print(f"  座標系: {seeds[0].frame}")
@@ -240,20 +256,30 @@ def trace_field_lines(seeds, pfss_output):
     """
     print(f"\n磁力線をトレース中...")
     
-    # トレーサーを初期化
-    tracer = tracing.FortranTracer()
+    # トレーサーを初期化（改善されたパラメータ）
+    tracer = tracing.FortranTracer(
+        max_steps=50000,    # ステップ数をさらに増加（警告対応）
+        step_size=0.01      # より小さなステップサイズで精度向上
+    )
     
     # 磁力線をトレース
     field_lines = tracer.trace(seeds, pfss_output)
     
     print(f"  トレース完了: {len(field_lines)} 本")
     
-    # 磁力線の統計情報
+    # 磁力線の統計情報（pfsspyの分類機能を活用）
     if len(field_lines) > 0:
         n_open = 0
         n_closed = 0
         for fline in field_lines:
-            if hasattr(fline.coords, 'radius'):
+            # pfsspyの磁力線オブジェクトのプロパティを利用
+            if hasattr(fline, 'is_open'):
+                if fline.is_open:
+                    n_open += 1
+                else:
+                    n_closed += 1
+            elif hasattr(fline.coords, 'radius'):
+                # フォールバック: 半径による判定
                 end_r = fline.coords.radius[-1].to(u.Rsun).value
                 if end_r > 2.0:
                     n_open += 1
@@ -265,8 +291,240 @@ def trace_field_lines(seeds, pfss_output):
     
     return field_lines
 
+def normalize_log_stretch(data):
+    """Applies LogStretch normalization to the data."""
+    # LogStretchは負の値を扱えないため、ゼロや負の値を避けるためにクリッピングする
+    data_clipped = np.maximum(data, 1e-5)
+    normalizer = vis.ImageNormalize(data_clipped, stretch=vis.LogStretch(), clip=True)
+    return normalizer(data_clipped)
 
-def plot_hmi_with_pfss(hmi_data, pfss_output, field_lines, rss, nrho, save_filename=None):
+def plot_sdo_aia_rgb(datetime_str,
+                     channel_r_str="211",
+                     channel_g_str="193",
+                     channel_b_str="171",
+                     return_data=False):
+    """
+    指定された日時のSDO/AIAデータ (3波長) を読み込み、RGB合成画像をWCSベースでプロットします。
+    軸の目盛りラベルは太陽中心を(0,0)とするピクセル単位で表示します。
+    
+    Parameters:
+    -----------
+    datetime_str : str
+        日時文字列
+    channel_r_str, channel_g_str, channel_b_str : str
+        各チャンネルの波長
+    return_data : bool
+        TrueならRGB画像データを返す、Falseならプロットのみ
+        
+    Returns:
+    --------
+    tuple or None : return_data=Trueの場合、(rgb_image, reference_map, success)
+    """
+    BASE_DATA_DIR = Path('/mnt/d/wsl/home/kinno-7010/Research/SDO/AIA/Rawdata')
+    # 1. 日時文字列のパース
+    try:
+        dt_obj = datetime.strptime(datetime_str, "%Y-%m-%d %H:%M")
+        date_fmtd_for_fname = dt_obj.strftime("%Y%m%d")
+        time_fmtd_for_fname = dt_obj.strftime("%H%M")
+    except ValueError:
+        print(
+            f"エラー: 日時文字列 '{datetime_str}' の形式が無効です。"
+            " 'YYYY-MM-DD HH:MM' 形式で指定してください。"
+        )
+        return
+
+    # 2. 各チャンネルのファイルパスを組み立て、Mapオブジェクトをロード
+    maps = {}
+    channels = {'r': channel_r_str, 'g': channel_g_str, 'b': channel_b_str}
+    loaded_map_count = 0
+
+    for color, ch_str in channels.items():
+        wavelength_part_in_fname = ch_str.zfill(4)
+        filename = f"AIA{date_fmtd_for_fname}_{time_fmtd_for_fname}_{wavelength_part_in_fname}.fits"
+        file_path = BASE_DATA_DIR / ch_str / filename
+        print(f"読み込み試行: {color.upper()}チャンネル ({ch_str}Å) - {file_path}")
+        try:
+            # sunpyの詳細なエラーハンドリングを活用
+            maps[color] = sunpy.map.Map(file_path)
+            # sunpyマップの基本検証
+            if hasattr(maps[color], 'data') and maps[color].data is not None:
+                print(f"  成功: {ch_str}Å (データ形状: {maps[color].data.shape})")
+                loaded_map_count += 1
+            else:
+                print(f"  警告: {ch_str}Å のデータが無効です")
+                maps[color] = None
+        except Exception as e:
+            print(f"  失敗: {ch_str}Å のファイル読み込みエラー: {e}")
+            maps[color] = None
+
+    if loaded_map_count < 3:
+        print("エラー: 3つ全ての波長チャンネルのデータを読み込めませんでした。プロットを中止します。")
+        if return_data:
+            return None, None, False
+        return
+
+    # 基準となるMapオブジェクトを選択 (WCS情報、メタデータ、リム/グリッド描画に使用)
+    reference_map = maps['b'] if maps['b'] else maps['g'] if maps['g'] else maps['r']
+    if not reference_map:
+        print("エラー: 基準となるMapオブジェクトがありません。")
+        if return_data:
+            return None, None, False
+        return
+
+    wcs_info = reference_map.wcs
+
+    # 3. 各チャンネルのデータを正規化（線形ストレッチ使用）
+    try:
+        red_channel_data = normalize_log_stretch(maps['r'].data)
+        green_channel_data = normalize_log_stretch(maps['g'].data)
+        blue_channel_data = normalize_log_stretch(maps['b'].data)
+    except Exception as e_norm:
+        print(f"データ正規化中にエラー: {e_norm}")
+        if return_data:
+            return None, None, False
+        return
+
+    # 4. RGB画像の作成 (0-1にスケーリング、パーセンタイル使用)
+    def scale_to_01_percentile(data, pmin=1.0, pmax=99.5):
+        """パーセンタイルベースのスケーリング"""
+        valid_data = data[np.isfinite(data)]
+        if valid_data.size == 0:
+            return np.zeros_like(data)
+        
+        vmin = np.percentile(valid_data, pmin)
+        vmax = np.percentile(valid_data, pmax)
+        
+        if vmax == vmin:
+            return np.zeros_like(data)
+        
+        scaled = (data - vmin) / (vmax - vmin)
+        return np.clip(scaled, 0, 1)
+
+    red_channel_final = scale_to_01_percentile(red_channel_data)
+    green_channel_final = scale_to_01_percentile(green_channel_data)
+    blue_channel_final = scale_to_01_percentile(blue_channel_data)
+    rgb_image = np.stack([red_channel_final, green_channel_final, blue_channel_final], axis=-1)
+
+    # 5. ピクセルスケールを取得
+    cdelt1 = reference_map.meta.get('cdelt1')
+    cdelt2 = reference_map.meta.get('cdelt2')
+    use_pixel_formatter = False
+    pixel_scale_x = 1.0
+    pixel_scale_y = 1.0
+
+    if cdelt1 is not None and cdelt2 is not None and cdelt1 != 0 and cdelt2 != 0:
+        pixel_scale_x = abs(cdelt1)
+        pixel_scale_y = abs(cdelt2)
+        if hasattr(wcs_info, 'wcs') and hasattr(wcs_info.wcs, 'cunit'):
+            if wcs_info.wcs.cunit[0] == u.arcsec and wcs_info.wcs.cunit[1] == u.arcsec:
+                use_pixel_formatter = True
+        else:
+            print("警告: WCS単位を確認できません。ピクセル目盛りは無効の可能性があります。")
+    else:
+        print("警告: CDELTが取得不可または0です。ピクセル目盛りは無効です。")
+
+    # 6. 目盛りフォーマッタ関数
+    def arcsec_to_pixel_offset_formatter(arcsec_value, pos, scale_arcsec_per_pixel):
+        if scale_arcsec_per_pixel == 0:
+            return f"{0:.0f}"
+        return f"{(arcsec_value / scale_arcsec_per_pixel):.0f}"
+
+    # 7. プロット準備
+    fig = plt.figure(figsize=(10, 10))
+    ax = fig.add_subplot(projection=wcs_info)
+
+    # 8. RGB画像のプロット
+    ax.imshow(rgb_image, origin='lower', aspect='equal')
+
+    # 9. 太陽リムとグリッドの描画
+    try:
+        reference_map.draw_limb(axes=ax, color='white', linestyle='dashed', linewidth=1.2)
+        reference_map.draw_grid(axes=ax, grid_spacing=15*u.deg, color='white', linestyle='dotted', linewidth=0.8, alpha=0.7)
+        print("情報: 太陽リムとグリッドをWCSベースで描画しました。")
+    except Exception as e_draw:
+        print(f"警告: 太陽リムまたはグリッドの描画に失敗しました: {e_draw}")
+
+    # 10. タイトルと軸ラベルの設定
+    title_str_parts = [
+        f"SDO/AIA Composite: R={channel_r_str}Å, G={channel_g_str}Å, B={channel_b_str}Å",
+        f"{reference_map.date.strftime('%Y-%m-%d %H:%M:%S UT')}"
+    ]
+    if use_pixel_formatter:
+        title_str_parts.append(f"Tick Labels in Pixels (Ref. Scale ≈ {pixel_scale_x:.2f}\" /pix)")
+    ax.set_title("\n".join(title_str_parts), fontsize=12, pad=15)
+
+    if use_pixel_formatter:
+        ax.coords[0].set_major_formatter(FuncFormatter(lambda val, pos: arcsec_to_pixel_offset_formatter(val, pos, pixel_scale_x)))
+        ax.coords[0].set_axislabel("Solar X (pixels from Sun center, ref. WCS)")
+        ax.coords[1].set_major_formatter(FuncFormatter(lambda val, pos: arcsec_to_pixel_offset_formatter(val, pos, pixel_scale_y)))
+        ax.coords[1].set_axislabel("Solar Y (pixels from Sun center, ref. WCS)")
+    else:
+        cunit1 = wcs_info.wcs.cunit[0] if hasattr(wcs_info, 'wcs') and hasattr(wcs_info.wcs, 'cunit') else u.arcsec
+        cunit2 = wcs_info.wcs.cunit[1] if hasattr(wcs_info, 'wcs') and hasattr(wcs_info.wcs, 'cunit') else u.arcsec
+        ax.coords[0].set_axislabel(f"Solar X ({cunit1})")
+        ax.coords[1].set_axislabel(f"Solar Y ({cunit2})")
+
+    ax.tick_params(axis='both', which='major', labelsize=10, direction='in')
+
+    # return_dataがTrueの場合、RGB画像データを返す
+    if return_data:
+        return rgb_image, reference_map, True
+
+    plt.tight_layout()
+    plt.show()
+
+
+def find_files_in_time_range(start_time: str, end_time: str, time_tolerance_seconds: int = 12) -> defaultdict:
+    """
+    指定された時間範囲にあるFITSファイルを検索し、時刻をグループ化して返す。
+    時刻のわずかなズレを許容するため、指定された秒数で時刻を丸める（タイムビン）。
+    """
+    BASE_DATA_DIR = Path('/mnt/d/wsl/home/kinno-7010/Research/SDO/AIA/Rawdata')
+    print(f"ディレクトリ '{BASE_DATA_DIR}' 内の.fits/.ftsファイルを再帰的に検索しています...")
+    all_files = sorted(BASE_DATA_DIR.rglob('*.fits')) + sorted(BASE_DATA_DIR.rglob('*.fts'))
+    all_files = sorted(list(set(all_files))) # 重複を削除
+
+    if not all_files:
+        print("警告: FITSファイルが一つも見つかりませんでした。")
+        return defaultdict(list)
+    else:
+        print(f"{len(all_files)}個のFITSファイルが見つかりました。")
+
+    t_start = Time(start_time)
+    t_end = Time(end_time)
+    files_by_time = defaultdict(list)
+
+    print(f"各ファイルを読み込み、約{time_tolerance_seconds}秒間の時間幅でグループ化しています...")
+    for f in tqdm(all_files, desc="ファイルフィルタリング"):
+        try:
+            # sunpyの堅牢なファイル読み込み機能を活用
+            m = sunpy.map.Map(f)
+            file_time = m.date
+            
+            # sunpyのTime比較機能を使用
+            if t_start <= file_time <= t_end:
+                # --- ★★★ 新しいグループ化ロジック ★★★ ---
+                dt_obj = file_time.to_datetime()
+                
+                # UNIXタイムスタンプ（秒）に変換し、指定秒数で丸める
+                total_seconds = dt_obj.timestamp()
+                binned_seconds = round(total_seconds / time_tolerance_seconds) * time_tolerance_seconds
+                
+                # 丸めた秒数から、グループ化のキーとなるdatetimeオブジェクトを再構築
+                time_key = datetime.fromtimestamp(binned_seconds)
+                
+                files_by_time[time_key].append(f)
+                
+        except Exception as e:
+            print(f"ファイル {f.name} の読み込み/解析中にエラー: {e}")
+            continue
+
+    return files_by_time
+
+
+
+
+def plot_hmi_with_pfss(hmi_data, aia_rgb_data, pfss_output, field_lines, rss, nrho, save_filename=None):
     """
     HMI画像にPFSS磁力線を重ねてプロット
     
@@ -289,14 +547,19 @@ def plot_hmi_with_pfss(hmi_data, pfss_output, field_lines, rss, nrho, save_filen
     
     # データを取得
     hmi_map = hmi_data['full_map']
+    aia_rgb_map = aia_rgb_data['aia_rgb_map']
     x_lims_pix = hmi_data['x_lims_pix']
     y_lims_pix = hmi_data['y_lims_pix']
     
     # Figure作成（2x2のサブプロット）
     fig = plt.figure(figsize=(16, 14))
     
-    # 1. HMI全体マップ + 表示範囲の枠
-    ax1 = fig.add_subplot(221, projection=hmi_map)
+    from matplotlib.gridspec import GridSpec
+    gs = GridSpec(2, 2, figure=fig, left=0.1, right=0.9, bottom=0.1, top=0.9,
+                  wspace=0.2, hspace=0.2)
+
+    # 1. HMI全体マップ (左上)
+    ax1 = fig.add_subplot(gs[0, 0], projection=hmi_map)    
     hmi_map.plot_settings['norm'].vmin = -1500
     hmi_map.plot_settings['norm'].vmax = 1500
     hmi_map.plot(axes=ax1, cmap='hmimag')
@@ -309,29 +572,102 @@ def plot_hmi_with_pfss(hmi_data, pfss_output, field_lines, rss, nrho, save_filen
         fill=False, edgecolor='red', linewidth=2,
         transform=ax1.get_transform('pixel')
     )
+    ax1.set_xlabel('Solar X (arcsec)', fontsize=12)
+    ax1.set_ylabel('Solar Y (arcsec)', fontsize=12)
     ax1.add_patch(rect)
-    ax1.set_title('HMI Full Disk + Region of Interest', fontsize=14)
+    ax1.set_title('SDO/HMI Magnetogram + AR 13030, 13032', fontsize=14)
     
-    # 2. 指定範囲のHMI画像
-    ax2 = fig.add_subplot(222, projection=hmi_map)
-    im2 = ax2.imshow(hmi_map.data, cmap='RdBu_r', origin='lower', vmin=-200, vmax=200)
-    ax2.set_xlim(x_lims_pix)
-    ax2.set_ylim(y_lims_pix)
-    cbar2 = fig.colorbar(im2, ax=ax2, orientation='vertical', pad=0.1, shrink=0.8)
-    cbar2.ax.set_ylabel('$B_r$ (Gauss)', fontsize=12)
-    ax2.set_title('HMI Radial Magnetic Field (Zoomed)', fontsize=14)
-    draw_hmi_solar_grid(hmi_map, ax2)
+    # 2. 指定範囲のSDO/AIA RGB画像
+    ax2 = fig.add_subplot(gs[0, 1], projection=aia_rgb_map)
     
-    # 3. 指定範囲のHMI画像 + PFSS磁力線
-    ax3 = fig.add_subplot(223, projection=hmi_map)
+    # AIA RGB画像をHMI画像と同じサイズにリサイズ
+    from scipy.ndimage import zoom
+    
+    # HMI画像のサイズを取得
+    hmi_shape = hmi_map.data.shape
+    
+    # ズーム係数を計算
+    zoom_y = hmi_shape[0] / aia_rgb_data['rgb_image'].shape[0]
+    zoom_x = hmi_shape[1] / aia_rgb_data['rgb_image'].shape[1]
+    
+    # 各チャンネルを個別にリサイズ
+    resized_rgb = np.zeros((hmi_shape[0], hmi_shape[1], 3))
+    for i in range(3):
+        resized_rgb[:, :, i] = zoom(aia_rgb_data['rgb_image'][:, :, i], (zoom_y, zoom_x), order=1)
+    
+    # AIA RGB画像を表示
+    im2 = ax2.imshow(resized_rgb, origin='lower')
+    
+    # sunpyの座標変換機能を活用してarcsec座標をピクセル座標に変換
+    # X: -1024"~0", Y: -200"~1024" arcsec
+    coord_x1 = SkyCoord(-880*u.arcsec, 0*u.arcsec, frame=hmi_map.coordinate_frame)
+    coord_x2 = SkyCoord(0*u.arcsec, 0*u.arcsec, frame=hmi_map.coordinate_frame)
+    coord_y1 = SkyCoord(0*u.arcsec, -180*u.arcsec, frame=hmi_map.coordinate_frame)
+    coord_y2 = SkyCoord(0*u.arcsec, 880*u.arcsec, frame=hmi_map.coordinate_frame)
+    
+    # sunpyのWCS変換機能を使用
+    pix_x1 = hmi_map.world_to_pixel(coord_x1)
+    pix_x2 = hmi_map.world_to_pixel(coord_x2)
+    pix_y1 = hmi_map.world_to_pixel(coord_y1)
+    pix_y2 = hmi_map.world_to_pixel(coord_y2)
+    
+    # ピクセル座標で範囲を設定（HMIの切り取り方と同様）
+    x_min_aia = int(pix_x1.x.value) if hasattr(pix_x1, 'x') else int(pix_x1[0].value)
+    x_max_aia = int(pix_x2.x.value) if hasattr(pix_x2, 'x') else int(pix_x2[0].value)
+    y_min_aia = int(pix_y1.y.value) if hasattr(pix_y1, 'y') else int(pix_y1[1].value)
+    y_max_aia = int(pix_y2.y.value) if hasattr(pix_y2, 'y') else int(pix_y2[1].value)
+    
+    ax2.set_xlim(x_min_aia, x_max_aia)
+    ax2.set_ylim(y_min_aia, y_max_aia)
+    ax2.set_xlabel('Solar X (arcsec)', fontsize=12)
+    ax2.set_ylabel('Solar Y (arcsec)', fontsize=12)
+    ax2.set_title('SDO/AIA RGB (211/193/171)', fontsize=14)
+    
+    # AIA RGB画像用のグリッド描画
+    try:
+        aia_rgb_map.draw_limb(axes=ax2, color='white', linestyle='dashed', linewidth=1.2)
+        aia_rgb_map.draw_grid(axes=ax2, grid_spacing=15*u.deg, color='white', linestyle='dotted', linewidth=0.8, alpha=0.7)
+    except Exception as e:
+        print(f"警告: AIA RGB用グリッド描画に失敗: {e}")
+        # フォールバックとしてHMIマップのグリッドを使用
+        draw_hmi_solar_grid(hmi_map, ax2)
+    
+    # 3. 指定範囲のHMI画像のみ
+    ax3 = fig.add_subplot(gs[1, 0], projection=hmi_map)
+    
+    # HMI画像を表示
     im3 = ax3.imshow(hmi_map.data, cmap='RdBu_r', origin='lower', vmin=-200, vmax=200)
     ax3.set_xlim(x_lims_pix)
     ax3.set_ylim(y_lims_pix)
+    ax3.set_xlabel('Solar X (arcsec)', fontsize=12)
+    ax3.set_ylabel('Solar Y (arcsec)', fontsize=12)
+    cbar3 = fig.colorbar(im3, ax=ax3, orientation='vertical', pad=0.1, shrink=0.8)
+    cbar3.ax.set_ylabel('$B_r$ (Gauss)', fontsize=12)
+    ax3.set_title(f'SDO/HMI Radial Magnetic Field (Source Surface: {rss:.1f} Rs)', fontsize=14)
+    draw_hmi_solar_grid(hmi_map, ax3)
+    
+    # 4. 指定範囲のHMI画像 + PFSS磁力線
+    ax4 = fig.add_subplot(gs[1, 1], projection=hmi_map)
+    
+    # HMI画像を表示
+    im4 = ax4.imshow(hmi_map.data, cmap='RdBu_r', origin='lower', vmin=-200, vmax=200)
+    ax4.set_xlim(x_lims_pix)
+    ax4.set_ylim(y_lims_pix)
     
     for fline in field_lines:
         coords = fline.coords
+        
+        # pfsspyの磁力線分類機能とsunpyのWCS変換を活用
         if hasattr(coords, 'radius'):
-            end_r = fline.coords.radius[-1].to(u.Rsun).value
+            # pfsspyのis_openプロパティを優先使用
+            if hasattr(fline, 'is_open'):
+                is_open_line = fline.is_open
+            else:
+                # フォールバック: 半径による判定
+                end_r = fline.coords.radius[-1].to(u.Rsun).value
+                is_open_line = end_r > 2.0
+            
+            # sunpyのWCS変換で磁極性を判定
             try:
                 start_pix = hmi_map.world_to_pixel(coords[0])
                 x_pix, y_pix = int(start_pix.x.value), int(start_pix.y.value)
@@ -341,78 +677,82 @@ def plot_hmi_with_pfss(hmi_data, pfss_output, field_lines, rss, nrho, save_filen
             
             polarity = hmi_map.data[y_pix, x_pix] if (0 <= y_pix < hmi_map.data.shape[0] and 0 <= x_pix < hmi_map.data.shape[1]) else 0
             
-            color, linewidth, alpha = ('white', 1.0, 0.7)
-            if end_r > 2.0:
-                color = 'yellow' if polarity > 0 else 'cyan'
-                linewidth, alpha = 1.5, 0.9
+            # 磁力線の色分け
+            color, linewidth, alpha = ('black', 0.5, 0.7)
+            if is_open_line:
+                color = 'red' if polarity > 0 else 'blue'
+                linewidth, alpha = 0.5, 0.7
             
-            ax3.plot_coord(coords, alpha=alpha, linewidth=linewidth, color=color)
+            # sunpyのplot_coord機能を使用
+            ax4.plot_coord(coords, alpha=alpha, linewidth=linewidth, color=color)
 
-    ax3.set_title('HMI + PFSS Field Lines', fontsize=14)
-    draw_hmi_solar_grid(hmi_map, ax3)
+    ax4.set_title('SDO/HMI Magnetogram + PFSS Field Lines', fontsize=14)
+    ax4.set_xlabel('Solar X (arcsec)', fontsize=12)
+    ax4.set_ylabel('Solar Y (arcsec)', fontsize=12)
+    draw_hmi_solar_grid(hmi_map, ax4)
     
     from matplotlib.lines import Line2D
     legend_elements = [
-        Line2D([0], [0], color='yellow', lw=2, label='Open Lines (from N-pole)'),
-        Line2D([0], [0], color='cyan', lw=2, label='Open Lines (from S-pole)'),
-        Line2D([0], [0], color='white', lw=2, label='Closed Lines')
+        Line2D([0], [0], color='red', lw=0.7, label='Open Lines (from N-pole)'),
+        Line2D([0], [0], color='blue', lw=0.7, label='Open Lines (from S-pole)'),
+        Line2D([0], [0], color='black', lw=0.7, label='Closed Lines')
     ]
-    ax3.legend(handles=legend_elements, loc='upper right', fontsize=10)
+    ax4.legend(handles=legend_elements, loc='upper right', fontsize=10)
     
-    # 4. 磁力線の統計情報
-    ax4 = fig.add_subplot(224)
-    ax4.axis('off')
+#     # 4. 磁力線の統計情報
+#     ax4 = fig.add_subplot(224)
+#     ax4.axis('off')
     
-    open_lines = sum(1 for fline in field_lines if fline.is_open)
-    closed_lines = len(field_lines) - open_lines
+#     open_lines = sum(1 for fline in field_lines if fline.is_open)
+#     closed_lines = len(field_lines) - open_lines
     
-    positive_start, negative_start = 0, 0
-    for fline in field_lines:
-        try:
-            start_pix = hmi_map.world_to_pixel(fline.coords[0])
-            x_pix, y_pix = int(start_pix.x.value), int(start_pix.y.value)
-        except AttributeError:
-            start_pix = hmi_map.world_to_pixel(fline.coords[0])
-            x_pix, y_pix = int(start_pix[0].value), int(start_pix[1].value)
+#     positive_start, negative_start = 0, 0
+#     for fline in field_lines:
+#         try:
+#             start_pix = hmi_map.world_to_pixel(fline.coords[0])
+#             x_pix, y_pix = int(start_pix.x.value), int(start_pix.y.value)
+#         except AttributeError:
+#             start_pix = hmi_map.world_to_pixel(fline.coords[0])
+#             x_pix, y_pix = int(start_pix[0].value), int(start_pix[1].value)
 
-        if (0 <= y_pix < hmi_map.data.shape[0] and 0 <= x_pix < hmi_map.data.shape[1]):
-            if hmi_map.data[y_pix, x_pix] > 0:
-                positive_start += 1
-            else:
-                negative_start += 1
+#         if (0 <= y_pix < hmi_map.data.shape[0] and 0 <= x_pix < hmi_map.data.shape[1]):
+#             if hmi_map.data[y_pix, x_pix] > 0:
+#                 positive_start += 1
+#             else:
+#                 negative_start += 1
     
-    # ======================= ここからが修正部分 =======================
-    # 引数で渡された rss と nrho を使用する
-    stats_text = f"""PFSS Field Line Analysis
+#     # ======================= ここからが修正部分 =======================
+#     # 引数で渡された rss と nrho を使用する
+#     stats_text = f"""PFSS Field Line Analysis
 
-Observation Info:
-- HMI Obs Time: {hmi_map.date.strftime("%Y-%m-%d %H:%M:%S")}
-- Display Range: [{x_lims_pix[0]}:{x_lims_pix[1]}, {y_lims_pix[0]}:{y_lims_pix[1]}] px
+# Observation Info:
+# - HMI Obs Time: {hmi_map.date.strftime("%Y-%m-%d %H:%M:%S")}
+# - Display Range: [{x_lims_pix[0]}:{x_lims_pix[1]}, {y_lims_pix[0]}:{y_lims_pix[1]}] px
 
-Field Line Statistics:
-- Total Lines: {len(field_lines)}
-- Open Lines: {open_lines} ({open_lines/len(field_lines)*100:.1f}%)
-- Closed Lines: {closed_lines} ({closed_lines/len(field_lines)*100:.1f}%)
-- Start from N-pole: {positive_start}
-- Start from S-pole: {negative_start}
+# Field Line Statistics:
+# - Total Lines: {len(field_lines)}
+# - Open Lines: {open_lines} ({open_lines/len(field_lines)*100:.1f}%)
+# - Closed Lines: {closed_lines} ({closed_lines/len(field_lines)*100:.1f}%)
+# - Start from N-pole: {positive_start}
+# - Start from S-pole: {negative_start}
 
-PFSS Settings:
-- Source Surface: {rss:.1f} Rs
-- Radial Grid Pts: {nrho}
+# PFSS Settings:
+# - Source Surface: {rss:.1f} Rs
+# - Radial Grid Pts: {nrho}
 
-Color Legend:
-- Yellow: Open (from N-pole)
-- Cyan: Open (from S-pole)
-- White: Closed
-"""
-    # ======================= ここまでが修正部分 =======================
+# Color Legend:
+# - Red: Open (from N-pole)
+# - Blue: Open (from S-pole)
+# - Black: Closed
+# """
+    # # ======================= ここまでが修正部分 =======================
     
-    ax4.text(0.05, 0.95, stats_text, fontsize=11, fontfamily='monospace',
-             transform=ax4.transAxes, verticalalignment='top')
+    # ax4.text(0.05, 0.95, stats_text, fontsize=11, fontfamily='monospace',
+    #          transform=ax4.transAxes, verticalalignment='top')
     
-    fig.suptitle(f'SDO/HMI PFSS Analysis\n{hmi_data["time"]}', fontsize=16)
-    plt.tight_layout(pad=1.0, w_pad=1.5, h_pad=1.5)
-    fig.subplots_adjust(top=0.92)
+    fig.suptitle(f'SDO/HMI + PFSS Field Lines {hmi_data["time"]}', fontsize=16)
+    # plt.tight_layout(pad=0.2, w_pad=0.2, h_pad=0.2)
+    # fig.subplots_adjust(top=0.92)
 
     if save_filename is None:
         save_filename = '/mnt/d/wsl/home/kinno-7010/Research/PFSS/hmi_pfss_overlay.png'
@@ -437,9 +777,9 @@ def main():
     hmi_file = "/mnt/d/wsl/home/kinno-7010/Research/SDO/HMI/Rawdata/hmi.M_720s.20220613_030000_TAI.fits"
     
     # ======================= ここからが修正部分 =======================
-    # PFSSパラメータを定数として定義
-    RSS_VAL = 2.5
-    NRHO_VAL = 25
+    # PFSSパラメータを定数として定義（変更可能）
+    RSS_VAL = 3.0   # Source Surface高度 (Rs) - 必要に応じて変更可能: 1.5, 2.0, 2.5, 3.0など
+    NRHO_VAL = 30   # 動径方向格子点数
     # ======================= ここまでが修正部分 =======================
     
     try:
@@ -447,8 +787,25 @@ def main():
         print("\n--- Step 1: HMIデータ準備 ---")
         hmi_data = prepare_hmi_for_pfss(hmi_file)
         
+        # AIA RGB画像の準備
+        print("\n--- Step 1.5: AIA RGB画像準備 ---")
+        target_time = "2022-06-13 03:00"
+        
+        # plot_sdo_aia_rgb関数を使用してRGB画像データを取得
+        aia_rgb_image, aia_rgb_ref_map, aia_rgb_success = plot_sdo_aia_rgb(target_time, return_data=True)
+        
+        if aia_rgb_success:
+            aia_rgb_data = {
+                'aia_rgb_map': aia_rgb_ref_map,
+                'rgb_image': aia_rgb_image
+            }
+        else:
+            print("AIA RGB画像の準備に失敗しました")
+            return
+        
         # 2. PFSS解の計算（全球データ使用）
         print("\n--- Step 2: PFSS計算 ---")
+        print(f"  使用パラメータ: Source Surface = {RSS_VAL} Rs, 動径格子点数 = {NRHO_VAL}")
         pfss_output = compute_pfss_solution(hmi_data['full_map'], nrho=NRHO_VAL, rss=RSS_VAL)
         
         # 3. 磁力線の開始点を定義（表示範囲内）
@@ -457,10 +814,10 @@ def main():
             hmi_data['full_map'], 
             hmi_data['x_lims_pix'], 
             hmi_data['y_lims_pix'],
-            n_seeds_x=10,
-            n_seeds_y=10,
+            n_seeds_x=20,
+            n_seeds_y=20,
             use_strong_field=True,
-            field_threshold=150
+            field_threshold=200
         )
         
         # 4. 磁力線をトレース
@@ -471,7 +828,7 @@ def main():
         print("\n--- Step 5: プロット作成 ---")
         # ======================= ここからが修正部分 =======================
         # plot関数にrssとnrhoの値を渡す
-        fig = plot_hmi_with_pfss(hmi_data, pfss_output, field_lines, rss=RSS_VAL, nrho=NRHO_VAL)
+        fig = plot_hmi_with_pfss(hmi_data, aia_rgb_data, pfss_output, field_lines, rss=RSS_VAL, nrho=NRHO_VAL)
         # ======================= ここまでが修正部分 =======================
         
         print("\n=== 処理完了 ===")

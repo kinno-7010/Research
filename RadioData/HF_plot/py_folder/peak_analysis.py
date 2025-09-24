@@ -21,8 +21,7 @@ def calculate_dynamic_spectrum_with_peak(
     time_tick_sec, freq_tick_mhz,
     med_filter_size,
     vmin, vmax,
-    title, scatter_color,
-    outlier_z
+    title, scatter_color
 ):
     """
     Plot dynamic spectrum and mark peak frequencies over time.
@@ -78,7 +77,7 @@ def calculate_dynamic_spectrum_with_peak(
     if peak_times.size > 0:
         ax.scatter(
             mdates.date2num(peak_times), peak_freqs,
-            c=scatter_color, s=1.5, alpha=0.7
+            c=scatter_color, s=50, alpha=0.7
         )
 
     # ── Plot formatting ────────────────────────────────────
@@ -118,12 +117,10 @@ def calculate_peak_time_and_freq(
     t1 = _to_datetime(end_time)
 
     # 2) スライス
-    mask_t = (time >= t0) & (time <= t1)
-    t_sel = time[mask_t]
-    d_sel = data[mask_t, :]
-    mask_f = (frequency_mhz >= freq_min) & (frequency_mhz <= freq_max)
-    f_sel = frequency_mhz[mask_f]
-    d_sel = d_sel[:, mask_f]
+    t_sel, f_sel, d_sel = _slice_data(
+        time, data, t0, t1,
+        frequency_mhz, freq_min, freq_max
+    )
 
     # 3) メディアンフィルタ
     d_filt = median_filter(d_sel.astype(float), size=med_filter_size)
@@ -158,14 +155,14 @@ def plot_removed_dynamic_spectrum_with_peak(
     start_time, end_time,
     freq_min, freq_max,
     time_tick_sec, freq_tick_mhz,
-    med_filter_size, vmin, vmax, title, scatter_color,
-    outlier_z
+    med_filter_size, vmin, vmax, title, scatter_color
 ):
     """
     Apply 3σ cleaning in 35–40 MHz, then plot dynamic spectrum with peaks.
     """
     # 3σ cleaning in specified band
-    mask_band = (frequency_mhz >= 35) & (frequency_mhz <= 40)
+    freq_array = np.asarray(frequency_mhz, dtype=float)
+    mask_band = (freq_array >= 35) & (freq_array <= 40)
     band_data = data[:, mask_band]
     flat = band_data.flatten()
     mu, sigma = np.mean(flat), np.std(flat)
@@ -179,6 +176,8 @@ def plot_removed_dynamic_spectrum_with_peak(
     original_data = data
     globals()['data'] = masked_data
     
+    outlier_z = 3.0
+    
     # Delegate to calculate_dynamic_spectrum_with_peak
     calculate_dynamic_spectrum_with_peak(
         fig, ax,
@@ -187,9 +186,97 @@ def plot_removed_dynamic_spectrum_with_peak(
         time_tick_sec, freq_tick_mhz,
         med_filter_size,
         vmin, vmax,
-        title, scatter_color,
-        outlier_z
+        title, scatter_color
     )
     
     # Restore original data
     globals()['data'] = original_data
+
+def plot_removed_dynamic_spectrum_with_peak_2(
+    fig, ax,
+    start_time, end_time,
+    freq_min, freq_max,
+    time_tick_sec, freq_tick_mhz,
+    med_filter_size, vmin, vmax,
+    title  # 上限閾値
+):
+    """
+    Apply 3σ cleaning in 35–40 MHz, then plot dynamic spectrum with peaks.
+    Lower threshold = mean of 3σ-cleaned band * 1.05
+    Upper threshold = threshold_high
+    """
+    threshold_high = 93
+    # 1) 35–40 MHz帯だけを取り出し、flatten
+    mask_band = (frequency_mhz >= 35) & (frequency_mhz <= 40)
+    band_data = data[:, mask_band]
+    flat = band_data.flatten()
+
+    # 2) 3σクリーニングして下限閾値を決定
+    mu, sigma = np.mean(flat), np.std(flat)
+    clean = flat[(flat < mu + 3*sigma) & (flat > mu - 3*sigma)]
+    threshold_low = np.mean(clean) * 1.05
+
+    # 3) 元の data に対して閾値マスク
+    mask = (data > threshold_low) & (data < threshold_high)
+    masked_data = np.where(mask, data, np.nan)
+
+    # 4) クリーニング後スペクトルをピークプロット関数へ委譲
+    peak_times, peak_freqs = calculate_dynamic_spectrum_with_peak(
+        fig, ax, time, frequency_mhz, masked_data,
+        start_time, end_time, freq_min, freq_max,
+        time_tick_sec, freq_tick_mhz, med_filter_size,
+        vmin, vmax, title, 'blue'
+    )
+    
+    ax.scatter(
+        mdates.date2num(peak_times),
+        peak_freqs,
+        s=30, facecolors='blue', edgecolors='black'
+    )
+    
+    return masked_data
+
+
+if __name__ == "__main__":
+    import os
+
+    print("=" * 60)
+    print("HF Radio Peak Analysis Tool")
+    print("=" * 60)
+    print()
+    
+    # Load data
+    if not (time.size and frequency_mhz.size and data.size):
+        print("Failed to load data. Exiting...")
+        exit(1)
+    
+    # --- Define the output directory path ---
+    output_dir = '../output'
+    os.makedirs(output_dir, exist_ok=True)
+    
+    print("\nPlotting cleaned dynamic spectrum with peak detection...")
+    try:
+        from .utils import _initialize_plot_parameters
+    except ImportError:
+        from utils import _initialize_plot_parameters
+    
+    start_time, end_time, freq_min, freq_max, time_tick_sec, freq_tick_mhz, med_filter_size, vmin, vmax, title = _initialize_plot_parameters()
+    
+    # Peak analysis parameters
+    scatter_color = 'red'
+    outlier_z = 3.0
+    
+    fig, ax = plt.subplots(figsize=(12, 8))
+    
+    plot_removed_dynamic_spectrum_with_peak(
+        fig, ax,
+        start_time, end_time,
+        freq_min, freq_max,
+        time_tick_sec, freq_tick_mhz,
+        med_filter_size, vmin, vmax, title, scatter_color
+    )
+    ax.set_xlabel('Time (UTC)', fontsize=16)
+    plt.tight_layout()
+    plt.savefig(f'{output_dir}/removed_HF_peak_analysis_{start_time}-{end_time}_{freq_min}-{freq_max}MHz.png')
+    print(f'Saved: {output_dir}/removed_HF_peak_analysis_{start_time}-{end_time}_{freq_min}-{freq_max}MHz.png')
+    plt.show()

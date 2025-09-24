@@ -219,7 +219,7 @@ def plot_cor1_image(data, header, filepath, save_path=None,
     
     # Add colorbar
     cbar = plt.colorbar(im, ax=ax, shrink=0.8)
-    cbar.set_label('Intensity [DN]', rotation=270, labelpad=20)
+    cbar.set_label('Intensity [DN]', labelpad=20)
     
     # Professional title setting
     title_text = f'STEREO-A/SECCHI/COR1'
@@ -240,17 +240,6 @@ def plot_cor1_image(data, header, filepath, save_path=None,
     else:
         # Basic grid
         ax.grid(True, alpha=0.3)
-    
-    # Add crosshairs at solar center (enhanced version)
-    if sun_center_x is not None and sun_center_y is not None:
-        # Crosshairs at solar center
-        ax.axhline(y=sun_center_y, color='red', linestyle='--', alpha=0.7, linewidth=1.5)
-        ax.axvline(x=sun_center_x, color='red', linestyle='--', alpha=0.7, linewidth=1.5)
-    else:
-        # Fallback: image center
-        center_x, center_y = data.shape[1] // 2, data.shape[0] // 2
-        ax.axhline(y=center_y, color='red', linestyle='--', alpha=0.5, linewidth=1)
-        ax.axvline(x=center_x, color='red', linestyle='--', alpha=0.5, linewidth=1)
     
     # Draw solar radius circles (SSWIDL-compliant enhanced version)
     if rsun_pixel is not None and sun_center_x is not None and sun_center_y is not None:
@@ -277,7 +266,7 @@ def plot_cor1_image(data, header, filepath, save_path=None,
         # Professional legend
         legend = ax.legend(loc='upper left', bbox_to_anchor=(0.02, 0.98), 
                           fontsize=11, framealpha=0.9, edgecolor='gray')
-        legend.get_frame().set_facecolor('black')
+        legend.get_frame().set_facecolor('white')
         for text in legend.get_texts():
             text.set_color('white')
     
@@ -329,9 +318,9 @@ def plot_cor1_image(data, header, filepath, save_path=None,
             for i, point in enumerate(test_points):
                 distance_rsun = solar_utils.calculate_distance(
                     (sun_center_x, sun_center_y), point, header, 'rsun')
-                ax.plot(point[0], point[1], 'go', markersize=6)
-                ax.text(point[0]+10, point[1]+10, f'{distance_rsun:.1f} R☉',
-                       color='green', fontsize=10, weight='bold')
+                # ax.plot(point[0], point[1], 'go', markersize=6)
+                # ax.text(point[0]+10, point[1]+10, f'{distance_rsun:.1f} R☉',
+                #        color='green', fontsize=10, weight='bold')
         except Exception as e:
             print(f"Warning: Could not add measurements: {e}")
     
@@ -453,6 +442,7 @@ Example usage:
                 color_scaling=args.scaling,
                 show_logo=show_logo
             )
+            plt.show()
             plt.close(fig)  # Memory conservation
             processed_count += 1
             

@@ -134,8 +134,8 @@ def save_cme_measurements_to_csv(result, target_time_str, base_dir='/mnt/d/wsl/h
     
     # obs_filename = os.path.join(obs_dir, f'nose_cme_observations_{time_label}.csv')
     # stats_filename = os.path.join(stats_dir, f'nose_cme_statistics_{time_label}.csv')
-    obs_filename = os.path.join(obs_dir, f'cme_observations_{time_label}_1min_diff.csv')
-    stats_filename = os.path.join(stats_dir, f'cme_statistics_{time_label}_1min_diff.csv')
+    obs_filename = os.path.join(obs_dir, f'nose_cme_observations_{time_label}.csv')
+    stats_filename = os.path.join(stats_dir, f'nose_cme_statistics_{time_label}.csv')
     
     
     # データが無い場合はNaNで埋める

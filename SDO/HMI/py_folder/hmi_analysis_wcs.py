@@ -538,7 +538,7 @@ def plot_magnetic_field_histogram(ax, ar_data, region_name="AR Region"):
     ax.set_ylabel('Number of Pixels', fontsize=12)
     ax.set_title(f'Magnetic Field Distribution in {region_name}', fontsize=14, pad=10)
     ax.grid(True, alpha=0.3, linestyle='--')
-    ax.legend(loc='best', fontsize=10)
+
     
     # x軸の範囲を調整（ゼロを中心に対称的に）
     ax.set_xlim(min_abs_value, max_abs_value)
@@ -581,6 +581,7 @@ def plot_magnetic_field_histogram(ax, ar_data, region_name="AR Region"):
     
     # Y軸を対数スケールにするオプション（必要に応じて）
     ax.set_yscale('log')
+    ax.legend(loc='best', fontsize=10)
 
 
 # plot_hmi_quick関数内のaxes[0][1]部分を以下のように修正：

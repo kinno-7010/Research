@@ -62,7 +62,7 @@ def measure_cme_height_manual(ax, map_data, params, r_map, instrument='mk4', cli
                     click_points.append((event.xdata, event.ydata))
                     # エラーハンドリングで囲んでプロット
                     try:
-                        ax.plot(event.xdata, event.ydata, 'ro', markersize=8, markeredgecolor='white')
+                        ax.plot(event.xdata, event.ydata, 'ro', markersize=4, markeredgecolor='white')
                         plt.draw()
                         print(f"測定点 {len(click_points)}: ({event.xdata:.1f}, {event.ydata:.1f})")
                     except Exception as e:
@@ -442,11 +442,8 @@ def measure_cme_height_manual_multi_points(ax, map_data, params, r_map, instrume
                     # エラーハンドリングで囲んでプロット
                     try:
                         # 点をプロット
-                        ax.plot(event.xdata, event.ydata, 'ro', markersize=8, 
+                        ax.plot(event.xdata, event.ydata, 'ro', markersize=4, 
                                markeredgecolor='white', markeredgewidth=2)
-                        # 点番号を表示
-                        ax.text(event.xdata + 5, event.ydata + 5, str(len(click_points)), 
-                               color='yellow', fontsize=10, fontweight='bold')
                         plt.draw()
                         print(f"測定点 {len(click_points)}: ({event.xdata:.1f}, {event.ydata:.1f})")
                     except Exception as e:

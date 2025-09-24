@@ -27,8 +27,11 @@ def _slice_data(time_array, data, start_dt, end_dt, freq_mhz, freq_min, freq_max
     d_sel = data[mask_t, :]
 
     # Frequency slice
-    mask_f = (freq_mhz >= freq_min) & (freq_mhz <= freq_max)
-    f_sel = freq_mhz[mask_f]
+    freq_array = np.asarray(freq_mhz, dtype=float)
+    freq_min_float = float(freq_min)
+    freq_max_float = float(freq_max)
+    mask_f = (freq_array >= freq_min_float) & (freq_array <= freq_max_float)
+    f_sel = freq_array[mask_f]
     d_sel = d_sel[:, mask_f]
     return t_sel, f_sel, d_sel
 
@@ -69,9 +72,13 @@ def _initialize_plot_parameters(time_tick_sec=None, freq_tick_mhz=None, med_filt
     freq_min = input("Enter the frequency minimum: [default: 25 MHz]")
     if freq_min == '':
         freq_min = 25
+    else:
+        freq_min = float(freq_min)
     freq_max = input("Enter the frequency maximum: [default: 38 MHz]")
     if freq_max == '':
         freq_max = 38
+    else:
+        freq_max = float(freq_max)
     
     if time_tick_sec is None:
         time_tick_sec = 60

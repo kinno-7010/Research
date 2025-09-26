@@ -330,18 +330,44 @@ def sample_gcs_wireframe_points(
         body_curve = np.column_stack([x, y, z])
         meridians.append(_rotate_body(body_curve))
 
+    # --- 既存の legs 生成部分を差し替え ---
     legs = []
     if include_legs and leg_len > 1:
+        # 左右の脚に対応するインデックス列（既存のまま）
         leg_indices = [np.arange(0, leg_len), np.arange(total_nodes - leg_len, total_nodes)]
-        leg_phi_values = [0.0, np.pi]
+
+        # ★ 外側扇形だけをサンプリング（内側に回り込まない）
+        #    -> 脚の本数：各脚 n_leg_lines_per_side 本（必要に応じて調整）
+        n_leg_lines_per_side = 8                  # ← 外側の青い脚を減らしたい場合はここを小さく（例 6, 4）
+        legs_phi_halfwidth   = np.pi/3.0          # ← 扇の広がり（±60°）。狭めれば内側がさらに消える
+        leg_phi_values = np.linspace(-legs_phi_halfwidth, +legs_phi_halfwidth,
+                                    n_leg_lines_per_side, endpoint=True)
+
+        # トーラスの半径（“内側クリップ”判定に使う）
+        # h_apex は Quantity で渡される場合があるため、無次元値に変換してから計算する
+        h_apex_val = h_apex.to_value(u.R_sun) if hasattr(h_apex, "to_value") else h_apex
+        R_major = h_apex_val / (1.0 + kappa)
+        r_minor = kappa * R_major
+
         for indices in leg_indices:
             for phi in leg_phi_values:
-                body_curve = _build_body_curve(phi, indices)
-                # Avoid duplicating very short legs (close to radial minimum)
+                body_curve = _build_body_curve(phi, indices)  # ← 本体座標系の脚ポリライン
+                # (A) 半径しきい値（既存の低高度カット）
                 radial_mask = np.linalg.norm(body_curve, axis=1) >= leg_r_min
                 if np.count_nonzero(radial_mask) < 2:
                     continue
-                legs.append(_rotate_body(body_curve[radial_mask]))
+                body_curve = body_curve[radial_mask]
+
+                # (B) ★ トーラス内部をクリップ： (sqrt(x^2+y^2)-R)^2 + z^2 <= r^2 を除外
+                rho = np.sqrt(body_curve[:, 0]**2 + body_curve[:, 1]**2)
+                inside_torus = (rho - R_major)**2 + (body_curve[:, 2]**2) <= (r_minor**2)
+                if np.all(inside_torus):
+                    continue
+                body_curve = body_curve[~inside_torus]
+
+                # 回転して太陽中心座標に
+                legs.append(_rotate_body(body_curve))
+
 
     return {
         "parallels": parallels,

@@ -74,9 +74,15 @@ def overlay_gcs_wireframe_on_axes(
     n_parallels: int = 8,
     n_meridians: int = 12,
     color: str = 'white',
+    color_legs: Optional[str] = None,
     lw: float = 1.0,
     alpha: float = 0.8,
-    include_legs: bool = True
+    include_legs: bool = True,
+    depth_shade: bool = False,
+    alpha_near: float = 1.0,
+    alpha_far: float = 0.3,
+    alpha_far_legs: Optional[float] = None,
+    leg_depth_from_joint: bool = True,
 ) -> Dict[str, List[np.ndarray]]:
     """
     Core overlay function to draw the wireframe given LASCO map + scale (from the composite).
@@ -98,24 +104,71 @@ def overlay_gcs_wireframe_on_axes(
 
     polylines_px = {"parallels": [], "meridians": [], "legs": []}
 
+    # 観測者（LASCO）の HGS 単位ベクトル o_hat（Sun→Observer）
+    from sunpy.coordinates import frames
+    obs_hgs = lasco_map.observer_coordinate.transform_to(
+        frames.HeliographicStonyhurst(obstime=lasco_map.date)
+    )
+    import numpy as _np
+    olon = obs_hgs.lon.to_value(u.rad); olat = obs_hgs.lat.to_value(u.rad)
+    o_hat = _np.array([_np.cos(olat)*_np.cos(olon),
+                       _np.cos(olat)*_np.sin(olon),
+                       _np.sin(olat)], dtype=float)
+
     # Helper to project and draw
-    def _project_and_draw(curves: List[np.ndarray], zorder:int):
+    from matplotlib.collections import LineCollection
+    from matplotlib.colors import to_rgba
+    def _project_and_draw(curves: List[np.ndarray], zorder: int, override_color: Optional[str] = None, is_legs: bool = False):
         nonlocal legend_assigned
-        out = []
+        out: List[np.ndarray] = []
         for pts in curves:
             xa, ya = _to_hpc_arcsec_for_lasco(lasco_map, pts, obstime)
             xp, yp = _arcsec_to_pixels_using_lasco_scale(xa, ya, lasco_map, p_lasco)
             label = legend_label if (legend_label and not legend_assigned) else None
-            line_handles = ax.plot(xp, yp, color=color, lw=lw, alpha=alpha, zorder=zorder, label=label)
+            
+            use_color = override_color or color
+            if not depth_shade:
+                line_handles = ax.plot(xp, yp, color=use_color, lw=lw, alpha=alpha, zorder=zorder, label=label)
+            else:
+                # --- LOS 深度で alpha を連続変化 ---
+                d = pts @ o_hat                   # Sun→Obs 方向成分（Rsun）
+                dm = 0.5 * (d[:-1] + d[1:])       # 線分中点の深度
+                if is_legs and leg_depth_from_joint:
+                    # 脚：トーラス接続点（半径の大きい端）を基準に相対深度でフェード
+                    import numpy as _np
+                    radii = _np.sqrt((_np.asarray(pts) ** 2).sum(axis=1))
+                    end0, end1 = 0, len(pts) - 1
+                    joint_idx = int(end0 if radii[end0] >= radii[end1] else end1)
+                    d0 = d[joint_idx]
+                    rel = _np.abs(dm - d0)                 # 接続点からの離れ具合
+                    rmax = rel.max() if rel.size and rel.max() > 0 else 1.0
+                    w = 1.0 - (rel / rmax)                 # 接続点が 1.0, 遠ざかるほど 0.0
+                else:
+                    dmin, dmax = dm.min(), dm.max()
+                    rng = (dmax - dmin) if (dmax > dmin) else 1.0
+                    w = (dm - dmin) / rng                  # 0..1
+                afar = (alpha_far_legs if (is_legs and alpha_far_legs is not None) else alpha_far)
+                alphas = alpha_far + (alpha_near - afar) * w
+                # 線分集合を作成
+                import numpy as _np
+                segs = _np.stack(
+                    [_np.column_stack([xp[:-1], yp[:-1]]), _np.column_stack([xp[1:], yp[1:]])],
+                    axis=1,
+                )
+                base = to_rgba(use_color)
+                cols = [(base[0], base[1], base[2], float(a)) for a in alphas]
+                lc = LineCollection(segs, colors=cols, linewidths=lw, zorder=zorder, label=label)
+                ax.add_collection(lc)
+                line_handles = [lc]
             if label and line_handles:
                 legend_assigned = True
             out.append(np.column_stack([xp, yp]))
         return out
-
-    polylines_px["parallels"] = _project_and_draw(wire["parallels"], zorder=5)
-    polylines_px["meridians"] = _project_and_draw(wire["meridians"], zorder=5)
+     
+    polylines_px["parallels"] = _project_and_draw(wire["parallels"], zorder=5, override_color=None, is_legs=False)
+    polylines_px["meridians"] = _project_and_draw(wire["meridians"], zorder=5, override_color=None, is_legs=False)
     if include_legs and len(wire["legs"])>0:
-        polylines_px["legs"] = _project_and_draw(wire["legs"], zorder=4)
+        polylines_px["legs"] = _project_and_draw(wire["legs"], zorder=6, override_color=(color_legs or color), is_legs=True)
 
     if legend_assigned:
         handles, labels = ax.get_legend_handles_labels()
@@ -131,9 +184,15 @@ def overlay_gcs_on_composite(
     n_parallels: int = 8,
     n_meridians: int = 12,
     color: str = 'white',
+    color_legs: Optional[str] = None,
     lw: float = 1.0,
     alpha: float = 0.8,
-    include_legs: bool = True
+    include_legs: bool = True,
+    depth_shade: bool = False,
+    alpha_near: float = 1.0,
+    alpha_far: float = 0.3,
+    alpha_far_legs: Optional[float] = None,
+    leg_depth_from_joint: bool = True,
 ) -> dict:
     """
     Convenience function:
@@ -191,6 +250,7 @@ def overlay_gcs_on_composite(
     polylines = overlay_gcs_wireframe_on_axes(
         ax, lasco_map, p_lasco, gcs_params, obstime_str=target_time_str,
         n_parallels=n_parallels, n_meridians=n_meridians,
-        color=color, lw=lw, alpha=alpha, include_legs=include_legs
+        color=color, color_legs=color_legs, lw=lw, alpha=alpha, include_legs=include_legs,
+        depth_shade=depth_shade, alpha_near=alpha_near, alpha_far=alpha_far, leg_depth_from_joint=leg_depth_from_joint
     )
     return {'base': base_info, 'polylines': polylines}

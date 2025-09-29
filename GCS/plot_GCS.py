@@ -18,6 +18,7 @@ provided `tilt_deg`.
 
 from __future__ import annotations
 
+import csv
 import json
 import os
 import sys
@@ -25,6 +26,9 @@ from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+
+import numpy as np
+from astropy.time import Time
 
 CANDIDATE_PATHS = [
     r"D:\\wsl\\home\\kinno-7010\\Research\\SDO_Mk4_SOHO\\py_folder",
@@ -38,6 +42,7 @@ for path in CANDIDATE_PATHS:
         sys.path.insert(0, path)
 
 from gcs_overlay import GCSParams, overlay_gcs_on_composite  # noqa: E402
+from gcs_overlay.gcs_geometry import sample_gcs_wireframe_points  # noqa: E402
 from gcs_overlay.footpoint_fit import (  # noqa: E402
     find_best_tilt_for_source,
     find_best_tilt_for_two_sources,
@@ -61,6 +66,36 @@ def _event_key(ts: str) -> str:
     except ValueError:
         return ts
     return dt.replace(microsecond=0, tzinfo=None).isoformat()
+
+
+def _sanitize_timestamp_tag(ts_str: str) -> str:
+    normalized = _event_key(ts_str)
+    cleaned = normalized.replace(':', '').replace('-', '').replace('T', '_')
+    return ''.join(ch if ch.isalnum() or ch in {'_', '-'} else '-' for ch in cleaned)
+
+
+def _mk4_time_to_iso(map_time: object) -> Optional[str]:
+    """Convert MK4 map time to an ISO yyyy-mm-ddTHH:MM:SS string if possible."""
+    if map_time is None:
+        return None
+    try:
+        # Handle astropy Time or convertible inputs first for consistency
+        time_obj = Time(map_time)
+        dt_obj = time_obj.to_datetime()
+        return dt_obj.replace(microsecond=0, tzinfo=None).isoformat()
+    except Exception:
+        pass
+
+    if hasattr(map_time, "strftime"):
+        try:
+            return map_time.strftime('%Y-%m-%dT%H:%M:%S')
+        except Exception:
+            pass
+
+    try:
+        return _event_key(str(map_time))
+    except Exception:
+        return None
 
 
 def _load_catalogue(path: Path) -> Dict[str, Dict[str, object]]:
@@ -237,8 +272,112 @@ def main(ts: str, h_apex: float, kappa: float, alpha_deg: float, tilt_deg: float
 
     title_time = ts
     base_info = res.get('base') if isinstance(res, dict) else None
+    lasco_map = base_info.get('lasco_map') if isinstance(base_info, dict) else None
+    params_lasco = base_info.get('params_lasco') if isinstance(base_info, dict) else {}
     mk4_map = base_info.get('mk4_map') if isinstance(base_info, dict) else None
+
+    mk4_obstime_iso = None
     if mk4_map is not None:
+        try:
+            mk4_obstime_iso = _mk4_time_to_iso(getattr(mk4_map, 'date', None))
+        except Exception:
+            mk4_obstime_iso = None
+
+    if mk4_obstime_iso:
+        title_time = mk4_obstime_iso
+
+    apex_metrics: Optional[Dict[str, object]] = None
+
+    if lasco_map is not None and isinstance(params_lasco, dict):
+        try:
+            wireframe = sample_gcs_wireframe_points(
+                params,
+                obstime=Time(ts),
+                n_parallels=8,
+                n_meridians=32,
+                include_legs=True,
+            )
+            stacks: List[np.ndarray] = []
+            for key in ("parallels", "meridians", "legs"):
+                curves = wireframe.get(key, []) if isinstance(wireframe, dict) else []
+                for curve in curves:
+                    if isinstance(curve, np.ndarray) and curve.size:
+                        stacks.append(curve)
+
+            if stacks:
+                points = np.vstack(stacks)
+                radii = np.linalg.norm(points, axis=1)
+                if radii.size:
+                    idx_max = int(np.argmax(radii))
+                    apex_point = points[idx_max]
+                    apex_r = float(radii[idx_max])
+                    if apex_r > 0:
+                        z_norm = np.clip(apex_point[2] / apex_r, -1.0, 1.0)
+                    else:
+                        z_norm = 0.0
+                    phi_rad = float(np.arctan2(apex_point[1], apex_point[0]))
+                    theta_rad = float(np.arcsin(z_norm))
+                    phi_deg = float(np.degrees(phi_rad))
+                    theta_deg = float(np.degrees(theta_rad))
+
+                    from astropy import units as u
+                    from astropy.coordinates import SkyCoord
+                    from sunpy.coordinates import frames
+
+                    apex_coord = SkyCoord(
+                        lon=phi_rad * u.rad,
+                        lat=theta_rad * u.rad,
+                        radius=apex_r * u.R_sun,
+                        frame=frames.HeliographicStonyhurst,
+                        obstime=lasco_map.date,
+                    )
+                    hpc_apex = apex_coord.transform_to(
+                        frames.Helioprojective(
+                            observer=lasco_map.observer_coordinate,
+                            obstime=lasco_map.date,
+                        )
+                    )
+
+                    rsun_arcsec = lasco_map.rsun_obs.to_value(u.arcsec)
+                    px_per_rsun = params_lasco.get('px_per_rsun')
+                    if rsun_arcsec and px_per_rsun:
+                        x_arcsec = hpc_apex.Tx.to_value(u.arcsec)
+                        y_arcsec = hpc_apex.Ty.to_value(u.arcsec)
+                        x_px = float((x_arcsec / rsun_arcsec) * px_per_rsun)
+                        y_px = float((y_arcsec / rsun_arcsec) * px_per_rsun)
+                        apex_metrics = {
+                            "time": mk4_obstime_iso or ts,
+                            "radius_rsun": apex_r,
+                            "phi_deg": phi_deg,
+                            "theta_deg": theta_deg,
+                            "x_px": x_px,
+                            "y_px": y_px,
+                        }
+                        apex_label = (
+                            f"Apex height (r={apex_r:.2f} $R_\\odot$, $\\phi$={phi_deg:.1f}$^\\circ$, "
+                            f"$\\theta$={theta_deg:.1f}$^\\circ$)"
+                        )
+                        ax.scatter(
+                            [x_px], [y_px],
+                            facecolor='orange',
+                            edgecolors='black',
+                            linewidths=0.7,
+                            s=70,
+                            zorder=7,
+                            label=apex_label,
+                        )
+                        handles, labels = ax.get_legend_handles_labels()
+                        if handles and labels:
+                            ax.legend(handles, labels)
+                        apex_time_for_print = (mk4_obstime_iso or ts)
+                        print(
+                            f"Apex height at {apex_time_for_print}: r={apex_r:.3f} Rsun, "
+                            f"phi={phi_deg:.2f} deg, theta={theta_deg:.2f} deg"
+                        )
+        except Exception as exc:
+            print(f"[WARN] Apex height computation failed: {exc}")
+
+    if mk4_map is not None and not mk4_obstime_iso:
         try:
             title_time = mk4_map.date.strftime('%Y-%m-%dT%H:%M:%S')
         except Exception:
@@ -256,6 +395,105 @@ def main(ts: str, h_apex: float, kappa: float, alpha_deg: float, tilt_deg: float
 
     plt.tight_layout()
     plt.show()
+
+    return {
+        "timestamp": mk4_obstime_iso or ts,
+        "input_timestamp": ts,
+        "gcs_params": asdict(params),
+        "apex": apex_metrics,
+        "tilt_meta": tilt_meta,
+        "figure_path": str(save_path),
+    }
+
+
+def run_gcs_over_times(
+    times: Sequence[str],
+    h_apex: float,
+    kappa: float,
+    alpha_deg: float,
+    tilt_deg: float,
+    lon_deg: float,
+    lat_deg: float,
+    auto_tilt: Optional[bool] = None,
+    write_csv: bool = True,
+) -> Dict[str, object]:
+    """Run the GCS overlay for multiple timestamps and optionally save apex heights.
+
+    Parameters mirror :func:`main`, except that ``times`` is a sequence of timestamps
+    (ISO strings). The function returns a bundle containing per-run metadata and the
+    apex-height time series.
+    """
+
+    normalized_times = [str(ts).strip() for ts in times if str(ts).strip()]
+    if not normalized_times:
+        return {"results": [], "apex_series": [], "csv_path": None}
+
+    results: List[Dict[str, object]] = []
+    apex_series: List[Dict[str, object]] = []
+
+    for ts_entry in normalized_times:
+        run_result = main(
+            ts_entry,
+            h_apex,
+            kappa,
+            alpha_deg,
+            tilt_deg,
+            lon_deg,
+            lat_deg,
+            auto_tilt=auto_tilt,
+        )
+        if isinstance(run_result, dict):
+            results.append(run_result)
+            apex_info = run_result.get("apex")
+            if isinstance(apex_info, dict):
+                radius = apex_info.get("radius_rsun")
+                phi_val = apex_info.get("phi_deg")
+                theta_val = apex_info.get("theta_deg")
+                if radius is not None and phi_val is not None and theta_val is not None:
+                    apex_time_str = apex_info.get("time") or ts_entry
+                    apex_series.append(
+                        {
+                            "time": str(apex_time_str),
+                            "radius_rsun": float(radius),
+                            "phi_deg": float(phi_val),
+                            "theta_deg": float(theta_val),
+                        }
+                    )
+        else:
+            results.append({"timestamp": ts_entry, "result": run_result})
+
+    csv_path: Optional[Path] = None
+    if write_csv and apex_series:
+        output_dir = Path(__file__).resolve().with_name("output")
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        start_tag = _sanitize_timestamp_tag(apex_series[0]["time"])
+        end_tag = _sanitize_timestamp_tag(apex_series[-1]["time"])
+        if len(apex_series) == 1:
+            base_name = f"apex_height_{start_tag}"
+        else:
+            base_name = f"apex_height_{start_tag}_to_{end_tag}"
+        candidate = output_dir / f"{base_name}.csv"
+        suffix = 1
+        while candidate.exists():
+            candidate = output_dir / f"{base_name}_{suffix}.csv"
+            suffix += 1
+
+        fieldnames = ["time", "radius_rsun", "phi_deg", "theta_deg"]
+        with candidate.open('w', newline='', encoding='utf-8') as fp:
+            writer = csv.DictWriter(fp, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in apex_series:
+                writer.writerow(row)
+
+        csv_path = candidate
+        print(f"Saved apex height series to {candidate}")
+
+    return {
+        "results": results,
+        "apex_series": apex_series,
+        "csv_path": str(csv_path) if csv_path is not None else None,
+    }
 
 
 def _parse_cli(argv: List[str]):
@@ -351,13 +589,37 @@ if __name__ == "__main__":
 
     _parse_cli(sys.argv)
 
+    def _normalize_times(raw_items: Iterable[str]) -> List[str]:
+        return [item for item in (entry.strip() for entry in raw_items) if item]
+
+    def _extract_times(arg: str) -> List[str]:
+        candidate_path: Optional[Path] = None
+        if arg.startswith('@'):
+            candidate_path = Path(arg[1:]).expanduser()
+        else:
+            try:
+                candidate_path = Path(arg)
+            except Exception:
+                candidate_path = None
+        if candidate_path is not None and candidate_path.exists() and candidate_path.is_file():
+            with candidate_path.open('r', encoding='utf-8') as fp:
+                return _normalize_times(fp.readlines())
+        times = _normalize_times(arg.split(','))
+        return times if times else [arg.strip()]
+
+    if len(sys.argv) > 1:
+        ts_candidates = _extract_times(sys.argv[1])
+    else:
+        ts_candidates = [ts]
+    if not ts_candidates:
+        ts_candidates = [ts]
+
     h_apex_param = float(sys.argv[2]) if len(sys.argv) > 2 else h_apex
     kappa_param = float(sys.argv[3]) if len(sys.argv) > 3 else kappa
     alpha_deg_param = float(sys.argv[4]) if len(sys.argv) > 4 else alpha_deg
     tilt_deg_param = float(sys.argv[5]) if len(sys.argv) > 5 else tilt_deg
     lon_deg_param = float(sys.argv[6]) if len(sys.argv) > 6 else lon_deg
     lat_deg_param = float(sys.argv[7]) if len(sys.argv) > 7 else lat_deg
-    ts_param = sys.argv[1] if len(sys.argv) > 1 else ts
 
     auto_flag = getattr(main, "_cli_tilt_mode", None)
     if auto_flag is None and tilt_mode_at_main in ("auto", "manual"):
@@ -367,7 +629,14 @@ if __name__ == "__main__":
     if auto_flag in ("auto", "manual"):
         auto_bool = auto_flag == "auto"
 
-    main(
-        ts_param, h_apex_param, kappa_param, alpha_deg_param, tilt_deg_param,
-        lon_deg_param, lat_deg_param, auto_tilt=auto_bool,
+    run_gcs_over_times(
+        ts_candidates,
+        h_apex_param,
+        kappa_param,
+        alpha_deg_param,
+        tilt_deg_param,
+        lon_deg_param,
+        lat_deg_param,
+        auto_tilt=auto_bool,
+        write_csv=True,
     )

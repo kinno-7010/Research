@@ -193,6 +193,15 @@ def overlay_gcs_on_composite(
     alpha_far: float = 0.3,
     alpha_far_legs: Optional[float] = None,
     leg_depth_from_joint: bool = True,
+    auto_h_apex: bool = False,
+    h_bounds: Tuple[float, float] = (1.6, 6.0),
+    pa_band_deg: float = 7.0, # nose PAの帯域幅
+    auto_lonlat: bool = False,
+    lon_bounds: Tuple[float, float] = (-90.0, 90.0),
+    lat_bounds: Tuple[float, float] = (-60.0, 60.0),
+    coarse_step_deg: float = 5.0,
+    refine_step_deg: float = 1.0,
+    refine_iters: int = 2,
 ) -> dict:
     """
     Convenience function:
@@ -246,6 +255,161 @@ def overlay_gcs_on_composite(
     base_info = create_single_diff_image(ax, target_time_str)
     lasco_map = base_info['lasco_map']
     p_lasco   = base_info['params_lasco']
+    
+        # --- h_apex 自動フィット（必要なら） ---
+    if auto_h_apex and (lasco_map is not None):
+        import numpy as np
+        from astropy import units as u
+
+        # 1) nose の位置角（PA）を推定し、±帯域で前縁半径 r_obs をロバスト推定
+        pa0 = _nose_pa_deg_from_lonlat(lasco_map, gcs_params.lon_deg, gcs_params.lat_deg)
+        pa_list = np.linspace(pa0 - pa_band_deg, pa0 + pa_band_deg, 7)  # 7本の放射プロファイル
+        r_obs_list: List[float] = []
+        for pa in pa_list:
+            r_rsun, I = _sample_radial_profile_along_pa(lasco_map, pa)
+            r_val = _find_front_radius_rsun(r_rsun, I, smooth=7)
+            if r_val is None:
+                continue
+            if hasattr(r_val, "to_value"):
+                try:
+                    r_val = float(r_val.to_value(u.R_sun))
+                except Exception:
+                    continue
+            try:
+                r_val = float(r_val)
+            except Exception:
+                continue
+            if np.isfinite(r_val):
+                r_obs_list.append(r_val)
+
+        if not r_obs_list:
+            return gcs_params  # 十分な情報がない場合は自動推定をスキップ
+
+        r_obs_rsun = float(np.median(r_obs_list))
+        rsun_arc   = lasco_map.rsun_obs.to_value(u.arcsec)
+        if not np.isfinite(r_obs_rsun):
+            return gcs_params
+        r_obs_arc  = r_obs_rsun * rsun_arc  # 比較は “見かけ半径[arcsec]” で行う
+
+        # 2) 二分法で r_model(h) を r_obs に一致させる h を探索（[h_bounds] 内）
+        lo, hi = h_bounds
+        for _ in range(24):  # 収束十分
+            mid = 0.5*(lo+hi)
+            r_mid_arc = _project_apex_radius_arcsec(lasco_map, gcs_params, mid)
+            if r_mid_arc < r_obs_arc:
+                lo = mid
+            else:
+                hi = mid
+        h_best = 0.5*(lo+hi)
+
+        # 3) 見つけた h で上書き
+        gcs_params = gcs_params.__class__(**{**gcs_params.__dict__, "h_apex": h_best})
+
+        # --- h_apex 自動フィット（必要なら） --- （既存）
+    if auto_h_apex and (lasco_map is not None):
+        ...  # 既存の h 推定ロジック（省略）
+
+    # --- lon/lat 自動フィット（必要なら） ---
+    if auto_lonlat and (lasco_map is not None):
+        import numpy as np
+        from astropy import units as u
+
+        # 1) 画像から nose の PA と r_obs[Rsun] を検出
+        pa_obs, r_obs_rsun = _detect_nose_pa_and_radius(lasco_map, pa_step_deg=2.0)
+        pa_valid = (pa_obs is not None) and np.isfinite(pa_obs)
+        
+                # === 追加：検出失敗時の広域スキャン・フォールバック ===
+        if (not pa_valid) and ((r_obs_rsun is None) or (not np.isfinite(r_obs_rsun))):
+            best = (-np.inf, None, None)  # (勾配ピークの大きさ, pa[deg], r[Rsun])
+            for pa in np.arange(0.0, 360.0, 2.0):
+                r_rsun, I = _sample_radial_profile_along_pa(
+                    lasco_map, pa, rmin_rsun=2.0, rmax_rsun=6.0, nr=800
+                )
+                if I is None or len(I) < 5:
+                    continue
+                dI = np.gradient(I, r_rsun)
+                k = int(np.argmax(dI))
+                peak = float(dI[k]) if np.isfinite(dI[k]) else -np.inf
+                r_val = float(r_rsun[k]) if np.isfinite(r_rsun[k]) else None
+                if (peak > best[0]) and (r_val is not None):
+                    best = (peak, float(pa), float(r_val))
+            # スキャンで得られた値を採用
+            if best[1] is not None:
+                print('自動化したPAを採用しました')
+                pa_obs = best[1]; pa_valid = True
+            if best[2] is not None:
+                r_obs_rsun = best[2]
+                print('自動化した半径を採用しました')
+
+        def _dpa_norm(pa_mod: float) -> float:
+            """PAの差の最小角（0..1）。pa_obsが無効なら0を返して角度項を無視。"""
+            if not pa_valid or pa_mod is None:
+                return 0.0
+            # 最小角度差（0..180）を 0..1 に正規化
+            return abs(((pa_mod - pa_obs + 180.0) % 360.0) - 180.0) / 180.0
+
+        # 2) 目的関数
+        if (r_obs_rsun is None) or (not np.isfinite(r_obs_rsun)):
+            # 半径が取れない → PAのみで評価。PAも無効ならスキップ。
+            if not pa_valid:
+                print("[WARN] auto_lonlat skipped: could not determine PA and front radius.")
+            else:
+                def score_for(lon, lat):
+                    _, _, _, pa_mod = _project_apex_xy_arcsec(lasco_map, lon, lat, gcs_params.h_apex)
+                    return _dpa_norm(pa_mod)
+                # 3) グリッドサーチ（coarse→refine）
+                best = (None, None, 1e9)
+                for lon in np.arange(lon_bounds[0], lon_bounds[1] + 1e-9, coarse_step_deg):
+                    for lat in np.arange(lat_bounds[0], lat_bounds[1] + 1e-9, coarse_step_deg):
+                        s = score_for(lon, lat)
+                        if s < best[2]:
+                            best = (float(lon), float(lat), float(s))
+                lon0, lat0, _ = best
+                for _ in range(int(refine_iters)):
+                    lon_lo = max(lon0 - 2*refine_step_deg, lon_bounds[0])
+                    lon_hi = min(lon0 + 2*refine_step_deg, lon_bounds[1])
+                    lat_lo = max(lat0 - 2*refine_step_deg, lat_bounds[0])
+                    lat_hi = min(lat0 + 2*refine_step_deg, lat_bounds[1])
+                    for lon in np.arange(lon_lo, lon_hi + 1e-9, refine_step_deg):
+                        for lat in np.arange(lat_lo, lat_hi + 1e-9, refine_step_deg):
+                            s = score_for(lon, lat)
+                            if s < best[2]:
+                                best = (float(lon), float(lat), float(s))
+                    lon0, lat0, _ = best
+                gcs_params = gcs_params.__class__(**{
+                    **gcs_params.__dict__, "lon_deg": best[0], "lat_deg": best[1]
+                })
+        else:
+            # 半径は取得できた → 半径一致を主、PAは得られた場合のみ加点。
+            rsun_arc = lasco_map.rsun_obs.to_value(u.arcsec)
+            r_obs_arc = float(r_obs_rsun) * rsun_arc
+            def score_for(lon, lat):
+                _, _, r_arc, pa_mod = _project_apex_xy_arcsec(lasco_map, lon, lat, gcs_params.h_apex)
+                dr = abs((r_arc - r_obs_arc) / max(r_obs_arc, 1e-6))
+                dpa = _dpa_norm(pa_mod)
+                return (0.6 * dr + 0.4 * dpa) if pa_valid else dr
+
+            best = (None, None, 1e9)
+            for lon in np.arange(lon_bounds[0], lon_bounds[1] + 1e-9, coarse_step_deg):
+                for lat in np.arange(lat_bounds[0], lat_bounds[1] + 1e-9, coarse_step_deg):
+                    s = score_for(lon, lat)
+                    if s < best[2]:
+                        best = (float(lon), float(lat), float(s))
+            lon0, lat0, _ = best
+            for _ in range(int(refine_iters)):
+                lon_lo = max(lon0 - 2*refine_step_deg, lon_bounds[0])
+                lon_hi = min(lon0 + 2*refine_step_deg, lon_bounds[1])
+                lat_lo = max(lat0 - 2*refine_step_deg, lat_bounds[0])
+                lat_hi = min(lat0 + 2*refine_step_deg, lat_bounds[1])
+                for lon in np.arange(lon_lo, lon_hi + 1e-9, refine_step_deg):
+                    for lat in np.arange(lat_lo, lat_hi + 1e-9, refine_step_deg):
+                        s = score_for(lon, lat)
+                        if s < best[2]:
+                            best = (float(lon), float(lat), float(s))
+                lon0, lat0, _ = best
+            gcs_params = gcs_params.__class__(**{
+                **gcs_params.__dict__, "lon_deg": best[0], "lat_deg": best[1]
+            })
 
     polylines = overlay_gcs_wireframe_on_axes(
         ax, lasco_map, p_lasco, gcs_params, obstime_str=target_time_str,
@@ -253,4 +417,109 @@ def overlay_gcs_on_composite(
         color=color, color_legs=color_legs, lw=lw, alpha=alpha, include_legs=include_legs,
         depth_shade=depth_shade, alpha_near=alpha_near, alpha_far=alpha_far, leg_depth_from_joint=leg_depth_from_joint
     )
-    return {'base': base_info, 'polylines': polylines}
+    from dataclasses import asdict
+    return {'base': base_info, 'polylines': polylines, 'gcs_params': asdict(gcs_params)}
+
+def _nose_pa_deg_from_lonlat(lasco_map, lon_deg: float, lat_deg: float) -> float:
+    """HGS (lon,lat) の nose 方向を LASCO 観測者の HPC に投影し、位置角（度, 北=0, 反時計廻り）を返す。"""
+    import numpy as np
+    import astropy.units as u
+    from astropy.coordinates import SkyCoord
+    from sunpy.coordinates import frames as fr
+    hgs = SkyCoord(lon_deg*u.deg, lat_deg*u.deg, 1.0*u.R_sun,
+                   frame=fr.HeliographicStonyhurst(obstime=lasco_map.date))
+    hpc = hgs.transform_to(fr.Helioprojective(observer=lasco_map.observer_coordinate,
+                                              obstime=lasco_map.date))
+    x, y = hpc.Tx.to_value(u.arcsec), hpc.Ty.to_value(u.arcsec)
+    pa = (np.degrees(np.arctan2(x, y)) + 360.0) % 360.0  # 北=0°, 東=+90°
+    return pa
+
+def _sample_radial_profile_along_pa(lasco_map, pa_deg: float,
+                                    rmin_rsun=2.0, rmax_rsun=6.0, nr=800) -> tuple:
+    """LASCO 差分画像で、指定 PA の放射プロファイル I(r) を取得。戻り値：(r_rsun, I)。"""
+    import numpy as np
+    import astropy.units as u
+    from astropy.coordinates import SkyCoord
+    from sunpy.coordinates import frames as fr
+
+    rsun_arc = lasco_map.rsun_obs.to_value(u.arcsec)
+    r_arc = np.linspace(rmin_rsun*rsun_arc, rmax_rsun*rsun_arc, nr)
+    # 中心(0,0) からの HPC 座標（arcsec）
+    th = np.radians(pa_deg)
+    x_arc = r_arc * np.sin(th)
+    y_arc = r_arc * np.cos(th)
+    # SkyCoord → pixel
+    hpc = SkyCoord(x_arc*u.arcsec, y_arc*u.arcsec,
+                   frame=fr.Helioprojective(observer=lasco_map.observer_coordinate,
+                                            obstime=lasco_map.date))
+    xp, yp = lasco_map.world_to_pixel(hpc)
+    xp, yp = xp.value, yp.value
+
+    # バイリニアでサンプリング（scipy なし）
+    data = lasco_map.data.astype(float)
+    h, w = data.shape
+    x0 = np.clip(np.floor(xp).astype(int), 0, w-2)
+    y0 = np.clip(np.floor(yp).astype(int), 0, h-2)
+    dx = xp - x0; dy = yp - y0
+    I = ((1-dx)*(1-dy)*data[y0, x0] +
+         dx*(1-dy)*data[y0, x0+1] +
+         (1-dx)*dy*data[y0+1, x0] +
+         dx*dy*data[y0+1, x0+1])
+    return (r_arc/rsun_arc, I)
+
+def _find_front_radius_rsun(r_rsun, I, smooth=5) -> float:
+    """I(r) の前縁半径を 1D 勾配ピークで推定（簡易）。"""
+    import numpy as np
+    from numpy.lib.stride_tricks import sliding_window_view
+    if smooth>1 and len(I)>=smooth:
+        I = sliding_window_view(I, smooth).mean(axis=-1)
+        r_rsun = r_rsun[(smooth//2):(-(smooth//2)) or None]
+    # 正の勾配ピーク（ベース差分で明縁が正のとき）
+    dI = np.gradient(I, r_rsun)
+    k = np.argmax(dI)  # 必要に応じて np.argmax(np.abs(dI))
+    return float(r_rsun[k])
+
+def _project_apex_radius_arcsec(lasco_map, gcs_params, h_rsun: float) -> float:
+    """与えた h で apex を HPC に投影し、中心からの見かけ半径（arcsec）を返す。"""
+    import numpy as np
+    import astropy.units as u
+    from astropy.coordinates import SkyCoord
+    from sunpy.coordinates import frames as fr
+    # apex は nose 方向 (lon,lat) に距離 h
+    hgs = SkyCoord(gcs_params.lon_deg*u.deg, gcs_params.lat_deg*u.deg,
+                   h_rsun*u.R_sun,
+                   frame=fr.HeliographicStonyhurst(obstime=lasco_map.date))
+    hpc = hgs.transform_to(fr.Helioprojective(observer=lasco_map.observer_coordinate,
+                                              obstime=lasco_map.date))
+    x, y = hpc.Tx.to_value(u.arcsec), hpc.Ty.to_value(u.arcsec)
+    return float((x**2 + y**2)**0.5)
+
+def _project_apex_xy_arcsec(lasco_map, lon_deg: float, lat_deg: float, h_rsun: float):
+    """(lon,lat,h) の apex を HPC に投影し、(x,y)[arcsec], r[arcsec], PA[deg] を返す。"""
+    import numpy as np
+    import astropy.units as u
+    from astropy.coordinates import SkyCoord
+    from sunpy.coordinates import frames as fr
+    hgs = SkyCoord(lon=lon_deg*u.deg, lat=lat_deg*u.deg, radius=h_rsun*u.R_sun,
+                   frame=fr.HeliographicStonyhurst(obstime=lasco_map.date))
+    hpc = hgs.transform_to(fr.Helioprojective(observer=lasco_map.observer_coordinate,
+                                              obstime=lasco_map.date))
+    x = hpc.Tx.to_value(u.arcsec); y = hpc.Ty.to_value(u.arcsec)
+    r = float(np.hypot(x, y))
+    pa = float((np.degrees(np.arctan2(x, y)) + 360.0) % 360.0)   # 北=0°, 反時計回り
+    return float(x), float(y), r, pa
+
+
+def _detect_nose_pa_and_radius(lasco_map, pa_step_deg: float = 2.0) -> tuple:
+    """0..360° を走査し、前縁の勾配ピークが最も強い PA と、その半径 r_obs[Rsun] を返す。"""
+    import numpy as np
+    best = (None, None, -np.inf)  # (pa_deg, r_obs_rsun, score)
+    for pa in np.arange(0.0, 360.0, pa_step_deg):
+        r_rsun, I = _sample_radial_profile_along_pa(lasco_map, pa)
+        dI = np.gradient(I, r_rsun)
+        k = int(np.argmax(dI))
+        score = float(dI[k])            # 勾配強度（必要に応じて abs に変更）
+        r_obs = float(r_rsun[k])        # その PA での前縁半径
+        if score > best[2]:
+            best = (float(pa), r_obs, score)
+    return best[0], best[1]

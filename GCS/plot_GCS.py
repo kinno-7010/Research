@@ -266,6 +266,15 @@ def main(ts: str, h_apex: float, kappa: float, alpha_deg: float, tilt_deg: float
         alpha_far=0.3,
         alpha_far_legs=0.3,
         leg_depth_from_joint=True,
+        auto_h_apex=True,
+        h_bounds=(2.5, 5.0), # h_apexの探索範囲
+        pa_band_deg=6.0, # nose PAの帯域幅
+        auto_lonlat=True,
+        lon_bounds=(-60.0, 60.0),
+        lat_bounds=(-30.0, 30.0),
+        coarse_step_deg=5.0,
+        refine_step_deg=1.0,
+        refine_iters=2,
     )
     ax.get_legend(); ax.set_aspect('equal')
     ax.set_xlabel("X [pixels] "); ax.set_ylabel("Y [pixels] ")
@@ -287,11 +296,20 @@ def main(ts: str, h_apex: float, kappa: float, alpha_deg: float, tilt_deg: float
         title_time = mk4_obstime_iso
 
     apex_metrics: Optional[Dict[str, object]] = None
+    params_for_summary = params
+    
+    # 戻り値の最終パラメータを必ず採用（dict でもクラスでもOK）
+    if isinstance(res, dict) and ('gcs_params' in res):
+        rp = res['gcs_params']
+        if isinstance(rp, dict):
+            params_for_summary = params.__class__(**rp)
+        else:
+            params_for_summary = rp
 
     if lasco_map is not None and isinstance(params_lasco, dict):
         try:
             wireframe = sample_gcs_wireframe_points(
-                params,
+                params_for_summary,
                 obstime=Time(ts),
                 n_parallels=8,
                 n_meridians=32,
@@ -353,9 +371,15 @@ def main(ts: str, h_apex: float, kappa: float, alpha_deg: float, tilt_deg: float
                             "x_px": x_px,
                             "y_px": y_px,
                         }
+                        updated_params = params_for_summary.__class__(
+                            **{**asdict(params_for_summary), "h_apex": apex_r}
+                        )
+                        params_for_summary = updated_params
+                                               # --- 表示ラベルを「推定後の lon/lat」に変更 ---
                         apex_label = (
-                            f"Apex height (r={apex_r:.2f} $R_\\odot$, $\\phi$={phi_deg:.1f}$^\\circ$, "
-                            f"$\\theta$={theta_deg:.1f}$^\\circ$)"
+                            f"Apex height (r={apex_r:.3f} $R_\\odot$, "
+                            f"lon={params_for_summary.lon_deg:.1f}$^\\circ$, "
+                            f"lat={params_for_summary.lat_deg:.1f}$^\\circ$)"
                         )
                         ax.scatter(
                             [x_px], [y_px],
@@ -366,14 +390,25 @@ def main(ts: str, h_apex: float, kappa: float, alpha_deg: float, tilt_deg: float
                             zorder=7,
                             label=apex_label,
                         )
+
                         handles, labels = ax.get_legend_handles_labels()
                         if handles and labels:
-                            ax.legend(handles, labels)
+                            updated_labels: List[str] = []
+                            override_label = params_for_summary.legend_label()
+                            for lbl in labels:
+                                if "$h_{\\mathrm{apex}}$" in lbl:
+                                    updated_labels.append(override_label)
+                                else:
+                                    updated_labels.append(lbl)
+                            ax.legend(handles, updated_labels)
                         apex_time_for_print = (mk4_obstime_iso or ts)
                         print(
-                            f"Apex height at {apex_time_for_print}: r={apex_r:.3f} Rsun, "
-                            f"phi={phi_deg:.2f} deg, theta={theta_deg:.2f} deg"
+                            f"Apex height at {apex_time_for_print}: "
+                            f"r={apex_r:.3f} Rsun, "
+                            f"lon={params_for_summary.lon_deg:.2f} deg, "
+                            f"lat={params_for_summary.lat_deg:.2f} deg"
                         )
+
         except Exception as exc:
             print(f"[WARN] Apex height computation failed: {exc}")
 
@@ -399,7 +434,7 @@ def main(ts: str, h_apex: float, kappa: float, alpha_deg: float, tilt_deg: float
     return {
         "timestamp": mk4_obstime_iso or ts,
         "input_timestamp": ts,
-        "gcs_params": asdict(params),
+        "gcs_params": asdict(params_for_summary),
         "apex": apex_metrics,
         "tilt_meta": tilt_meta,
         "figure_path": str(save_path),
@@ -451,14 +486,29 @@ def run_gcs_over_times(
                 theta_val = apex_info.get("theta_deg")
                 if radius is not None and phi_val is not None and theta_val is not None:
                     apex_time_str = apex_info.get("time") or ts_entry
+                    # 最終パラメータ（自動化後）を取得
+                    p = run_result.get("gcs_params") or {}
+                    if not isinstance(p, dict):
+                        try:
+                            from dataclasses import asdict as _asdict
+                            p = _asdict(p)
+                        except Exception:
+                            p = {}
                     apex_series.append(
                         {
-                            "time": str(apex_time_str),
-                            "radius_rsun": float(radius),
+                            "time": str(apex_time_str),            # Mk4 の時刻（または ts）
+                            "radius_rsun": float(radius),          # 幾何から得た apex 実測値
                             "phi_deg": float(phi_val),
                             "theta_deg": float(theta_val),
-                        }
-                    )
+                            # ここからパラメータ（最終値）
+                            "h_apex": float(p.get("h_apex", radius)),
+                            "kappa": float(p.get("kappa")) if p.get("kappa") is not None else None,
+                            "alpha_deg": float(p.get("alpha_deg")) if p.get("alpha_deg") is not None else None,
+                            "tilt_deg": float(p.get("tilt_deg")) if p.get("tilt_deg") is not None else None,
+                            "lon_deg": float(p.get("lon_deg")) if p.get("lon_deg") is not None else None,
+                            "lat_deg": float(p.get("lat_deg")) if p.get("lat_deg") is not None else None,
+                        })
+
         else:
             results.append({"timestamp": ts_entry, "result": run_result})
 
@@ -467,27 +517,24 @@ def run_gcs_over_times(
         output_dir = Path(__file__).resolve().with_name("output")
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        start_tag = _sanitize_timestamp_tag(apex_series[0]["time"])
-        end_tag = _sanitize_timestamp_tag(apex_series[-1]["time"])
-        if len(apex_series) == 1:
-            base_name = f"apex_height_{start_tag}"
-        else:
-            base_name = f"apex_height_{start_tag}_to_{end_tag}"
-        candidate = output_dir / f"{base_name}.csv"
-        suffix = 1
-        while candidate.exists():
-            candidate = output_dir / f"{base_name}_{suffix}.csv"
-            suffix += 1
+        fieldnames = [
+            "time", "radius_rsun", "phi_deg", "theta_deg",
+            "h_apex", "kappa", "alpha_deg", "tilt_deg", "lon_deg", "lat_deg",
+        ]
 
-        fieldnames = ["time", "radius_rsun", "phi_deg", "theta_deg"]
-        with candidate.open('w', newline='', encoding='utf-8') as fp:
-            writer = csv.DictWriter(fp, fieldnames=fieldnames)
-            writer.writeheader()
-            for row in apex_series:
+        csv_paths: List[Path] = []
+        for row in apex_series:
+            time_tag = _sanitize_timestamp_tag(row["time"])
+            candidate = output_dir / f"apex_height_{time_tag}.csv"
+            with candidate.open('w', newline='', encoding='utf-8') as fp:
+                writer = csv.DictWriter(fp, fieldnames=fieldnames)
+                writer.writeheader()
                 writer.writerow(row)
+            csv_paths.append(candidate)
+            print(f"Saved apex height series to {candidate}")
 
-        csv_path = candidate
-        print(f"Saved apex height series to {candidate}")
+        if csv_paths:
+            csv_path = csv_paths[-1]
 
     return {
         "results": results,
@@ -549,7 +596,7 @@ if __name__ == "__main__":
     - (lon, lat)：nose の向き → 投影を通じて apex の“見かけの幅”と脚の“見かけの間隔”を同時に変える。
         → apex を広く見せたいなら POS（面内）に寄せる、脚は 視線方向に寄せると投影で狭く見える。
     """
-    h_apex=3.05; kappa=0.35; alpha_deg=5; tilt_deg=-10; lon_deg=-40; lat_deg=10
+    h_apex=2; kappa=0.35; alpha_deg=5; tilt_deg=-10; lon_deg=-30; lat_deg=10
 
 
     ts = "2022-06-13T03:20:00"

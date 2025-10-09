@@ -41,14 +41,201 @@ for path in CANDIDATE_PATHS:
     if os.path.isdir(path) and path not in sys.path:
         sys.path.insert(0, path)
 
-from gcs_overlay import GCSParams, overlay_gcs_on_composite  # noqa: E402
+from gcs_overlay import (
+    GCSParams,
+    overlay_gcs_on_composite,
+    overlay_gcs_wireframe_on_axes,
+    footpoint_fit,
+)
 from gcs_overlay.gcs_geometry import sample_gcs_wireframe_points  # noqa: E402
 from gcs_overlay.footpoint_fit import (  # noqa: E402
     find_best_tilt_for_source,
     find_best_tilt_for_two_sources,
 )
 
+import importlib
+
+import matplotlib
+
+
+def _select_interactive_backend() -> str:
+    """Pick an interactive backend (Tk preferred, Qt as fallback)."""
+    candidates = []
+    try:
+        import tkinter  # noqa: F401
+    except Exception:
+        pass
+    else:
+        candidates.append("TkAgg")
+
+    try:
+        importlib.import_module("PyQt5")
+    except Exception:
+        pass
+    else:
+        candidates.append("Qt5Agg")
+
+    for backend in candidates:
+        try:
+            matplotlib.use(backend)
+            return backend
+        except Exception:
+            continue
+
+    raise RuntimeError(
+        "No interactive Matplotlib backend could be activated. Install/configure Tkinter or PyQt5 with a working display."
+    )
+
+
+_ACTIVE_BACKEND = _select_interactive_backend()
+
 import matplotlib.pyplot as plt  # noqa: E402
+from matplotlib.patches import Circle  # noqa: E402
+
+LASCO_GEOM_CACHE = Path(__file__).resolve().with_name("lasco_geometry_cache.json")
+
+
+def _normalize_json_value(value):
+    import numpy as _np
+
+    if isinstance(value, (int, float, str)) or value is None:
+        return value
+    if isinstance(value, (_np.integer,)):
+        return int(value)
+    if isinstance(value, (_np.floating,)):
+        return float(value)
+    if isinstance(value, (list, tuple)):
+        return [_normalize_json_value(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): _normalize_json_value(v) for k, v in value.items()}
+    return value
+
+
+def _compute_extent_from_params(params: Dict[str, object]) -> List[float]:
+    cx = float(params.get('cx', 0.0))
+    cy = float(params.get('cy', 0.0))
+    nx = float(params.get('nx', 0.0))
+    ny = float(params.get('ny', 0.0))
+    return [-cx, nx - cx, -cy, ny - cy]
+
+
+def _cache_lasco_geometry(
+    params_lasco: Dict[str, object],
+    lasco_map,
+    timestamp: str,
+    xlim: Tuple[float, float],
+    ylim: Tuple[float, float],
+    gcs_params: Dict[str, object],
+) -> None:
+    try:
+        from astropy import units as u
+        from astropy.coordinates import SkyCoord
+        from sunpy.coordinates import frames
+
+        params_copy: Dict[str, object] = {str(k): _normalize_json_value(v) for k, v in params_lasco.items()}
+        if 'center_px' not in params_copy:
+            cx = float(params_copy.get('cx', 0.0))
+            cy = float(params_copy.get('cy', 0.0))
+            params_copy['center_px'] = [cx, cy]
+
+        extent = params_copy.get('extent')
+        if extent is None:
+            extent = _compute_extent_from_params(params_copy)
+        params_copy['extent'] = _normalize_json_value(extent)
+
+        observer = lasco_map.observer_coordinate.transform_to(
+            frames.HeliographicStonyhurst(obstime=lasco_map.date)
+        )
+
+        entry = {
+            "timestamp": Time(timestamp).iso,
+            "rsun_arcsec": float(lasco_map.rsun_obs.to_value(u.arcsec)),
+            "observer": {
+                "lon_deg": float(observer.lon.to_value(u.deg)),
+                "lat_deg": float(observer.lat.to_value(u.deg)),
+                "radius_m": float(observer.radius.to_value(u.m)),
+            },
+            "params_lasco": params_copy,
+            "xlim": [float(xlim[0]), float(xlim[1])],
+            "ylim": [float(ylim[0]), float(ylim[1])],
+            "gcs_params": _normalize_json_value(gcs_params),
+        }
+
+        LASCO_GEOM_CACHE.write_text(json.dumps(entry, indent=2))
+    except Exception as exc:
+        print(f"[WARN] Failed to cache LASCO geometry: {exc}")
+
+
+def _load_cached_lasco_geometry() -> Tuple[
+    Dict[str, object],
+    List[float],
+    object,
+    Tuple[float, float],
+    Tuple[float, float],
+    Dict[str, object],
+]:
+    if not LASCO_GEOM_CACHE.exists():
+        raise FileNotFoundError(
+            "LASCO geometry cache not found. Run with composite enabled once to populate the cache."
+        )
+
+    try:
+        entry = json.loads(LASCO_GEOM_CACHE.read_text())
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Failed to parse LASCO geometry cache: {exc}") from exc
+
+    params_lasco = entry.get('params_lasco') or {}
+    extent = params_lasco.get('extent')
+    if not extent:
+        extent = _compute_extent_from_params(params_lasco)
+
+    from astropy import units as u
+    from astropy.time import Time
+    from astropy.coordinates import SkyCoord
+    from sunpy.coordinates import frames
+
+    class _CachedLascoMap:
+        def __init__(self, entry_obj):
+            self.date = Time(entry_obj["timestamp"])
+            self.rsun_obs = u.Quantity(entry_obj["rsun_arcsec"], u.arcsec)
+            obs = entry_obj["observer"]
+            self._observer = SkyCoord(
+                lon=obs["lon_deg"] * u.deg,
+                lat=obs["lat_deg"] * u.deg,
+                radius=obs["radius_m"] * u.m,
+                frame=frames.HeliographicStonyhurst,
+                obstime=self.date,
+            )
+
+        @property
+        def observer_coordinate(self):
+            return self._observer
+
+    xlim_entry = entry.get('xlim') or [extent[0], extent[1]]
+    ylim_entry = entry.get('ylim') or [extent[2], extent[3]]
+    xlim = (float(xlim_entry[0]), float(xlim_entry[1]))
+    ylim = (float(ylim_entry[0]), float(ylim_entry[1]))
+
+    cached_params = entry.get('gcs_params') or {}
+
+    lasco_map = _CachedLascoMap(entry)
+    return params_lasco, extent, lasco_map, xlim, ylim, cached_params
+
+
+def _extract_center(params_lasco: Dict[str, object]) -> Optional[Tuple[float, float]]:
+    center = params_lasco.get('center_px')
+    if center is None:
+        cx = params_lasco.get('cx')
+        cy = params_lasco.get('cy')
+        if cx is not None and cy is not None:
+            center = (cx, cy)
+
+    if isinstance(center, (list, tuple)) and len(center) >= 2:
+        try:
+            return float(center[0]), float(center[1])
+        except Exception:
+            return None
+    return None
 
 
 # Legacy globals (still honored for backwards compatibility)
@@ -222,7 +409,18 @@ def _apply_sources_override(
     )
 
 
-def main(ts: str, h_apex: float, kappa: float, alpha_deg: float, tilt_deg: float, lon_deg: float, lat_deg: float, auto_tilt: Optional[bool] = None):
+def main(
+    ts: str,
+    h_apex: float,
+    kappa: float,
+    alpha_deg: float,
+    tilt_deg: float,
+    lon_deg: float,
+    lat_deg: float,
+    auto_tilt: Optional[bool] = None,
+    auto_h_apex: Optional[bool] = None,
+    use_composite: bool = True,
+):
     params = GCSParams(
         h_apex=h_apex,kappa=kappa,alpha_deg=alpha_deg,
         tilt_deg=tilt_deg,lon_deg=lon_deg,lat_deg=lat_deg
@@ -236,6 +434,12 @@ def main(ts: str, h_apex: float, kappa: float, alpha_deg: float, tilt_deg: float
         tilt_mode = cli_mode
     elif auto_tilt is not None:
         tilt_mode = "auto" if auto_tilt else "manual"
+
+    h_apex_mode = "auto" if auto_h_apex else "manual"
+    cli_h_apex_mode = getattr(main, "_cli_h_apex_mode", None)
+    if isinstance(cli_h_apex_mode, str) and cli_h_apex_mode in {"auto", "manual"}:
+        h_apex_mode = cli_h_apex_mode
+    auto_h_apex_enabled = h_apex_mode == "auto"
 
     # 1) CLI override (fit ...)
     cli_sources: Optional[List[Tuple[float, float]]] = getattr(main, "_cli_sources", None)
@@ -256,34 +460,135 @@ def main(ts: str, h_apex: float, kappa: float, alpha_deg: float, tilt_deg: float
         params, tilt_meta = _apply_catalogue_tilt(params, ts)
 
     fig, ax = plt.subplots(figsize=(8, 8), dpi=120)
-    res = overlay_gcs_on_composite(
-        ax, target_time_str=ts, gcs_params=params,
-        n_parallels=8, n_meridians=32,
-        color='green', color_legs='green', lw=1, alpha=0.8,
+    overlay_style = dict(
+        n_parallels=8,
+        n_meridians=32,
+        color='green',
+        color_legs='green',
+        lw=1,
+        alpha=0.8,
         include_legs=True,
         depth_shade=True,
-        alpha_near=1.0,
-        alpha_far=0.3,
-        alpha_far_legs=0.3,
+        alpha_near=0.5,
+        alpha_far=0.2,
+        alpha_far_legs=0.2,
         leg_depth_from_joint=True,
-        auto_h_apex=True,
-        h_bounds=(2.5, 5.0), # h_apexの探索範囲
-        pa_band_deg=6.0, # nose PAの帯域幅
-        auto_lonlat=True,
-        lon_bounds=(-60.0, 60.0),
-        lat_bounds=(-30.0, 30.0),
-        coarse_step_deg=5.0,
-        refine_step_deg=1.0,
-        refine_iters=2,
     )
-    ax.get_legend(); ax.set_aspect('equal')
-    ax.set_xlabel("X [pixels] "); ax.set_ylabel("Y [pixels] ")
+
+    res: Dict[str, object]
+    base_info: Optional[Dict[str, object]] = None
+    lasco_map = None
+    params_lasco: Dict[str, object] = {}
+    mk4_map = None
+    params_for_summary = params
+
+    if use_composite:
+        res = overlay_gcs_on_composite(
+            ax,
+            target_time_str=ts,
+            gcs_params=params,
+            auto_h_apex=auto_h_apex_enabled,
+            h_bounds=(2.5, 5.0),  # h_apexの探索範囲
+            pa_band_deg=6.0,  # nose PAの帯域幅
+            auto_lonlat=False,
+            lon_bounds=(-60.0, 60.0),
+            lat_bounds=(-30.0, 30.0),
+            coarse_step_deg=5.0,
+            refine_step_deg=1.0,
+            refine_iters=2,
+            **overlay_style,
+        )
+
+        base_info = res.get('base') if isinstance(res, dict) else None
+        lasco_map = base_info.get('lasco_map') if isinstance(base_info, dict) else None
+        params_lasco = base_info.get('params_lasco') if isinstance(base_info, dict) else {}
+        mk4_map = base_info.get('mk4_map') if isinstance(base_info, dict) else None
+
+        if isinstance(res, dict) and ('gcs_params' in res):
+            rp = res['gcs_params']
+            if isinstance(rp, dict):
+                params_for_summary = params.__class__(**rp)
+            else:
+                params_for_summary = rp
+
+        if lasco_map is not None and params_lasco:
+            _cache_lasco_geometry(
+                params_lasco,
+                lasco_map,
+                ts,
+                ax.get_xlim(),
+                ax.get_ylim(),
+                asdict(params_for_summary),
+            )
+    else:
+        try:
+            params_lasco, extent, lasco_map, xlim, ylim, cached_params = _load_cached_lasco_geometry()
+        except Exception as exc:
+            raise RuntimeError(
+                "Composite disabled but no cached LASCO geometry is available. "
+                "Run once with composite enabled to create the cache."
+            ) from exc
+
+        ax.cla()
+        ax.set_facecolor('white')
+        ax.set_xlim(xlim[0], xlim[1])
+        ax.set_ylim(ylim[0], ylim[1])
+
+        use_cached_params = bool(cached_params) and tilt_mode == "auto"
+        if use_cached_params:
+            try:
+                params = params.__class__(**cached_params)
+                params_for_summary = params
+            except Exception:
+                params_for_summary = params
+        else:
+            params_for_summary = params
+
+        polylines = overlay_gcs_wireframe_on_axes(
+            ax,
+            lasco_map,
+            params_lasco,
+            params_for_summary,
+            obstime_str=ts,
+            **overlay_style,
+        )
+        px_per_rsun = params_lasco.get('px_per_rsun')
+        try:
+            scale_px = float(px_per_rsun)
+        except Exception:
+            scale_px = None
+
+        if scale_px:
+            for radius_rsun in (1.1, 3.0):
+                circle = Circle(
+                    (0.0, 0.0),
+                    scale_px * radius_rsun,
+                    fill=False,
+                    color='gray',
+                    linestyle='--',
+                    linewidth=0.8,
+                )
+                ax.add_patch(circle)
+
+        res = {
+            'base': None,
+            'polylines': polylines,
+            'gcs_params': asdict(params_for_summary),
+        }
+
+    ax.get_legend()
+    ax.set_aspect('equal')
+    ax.set_xlabel("X [pixels] ")
+    ax.set_ylabel("Y [pixels] ")
 
     title_time = ts
-    base_info = res.get('base') if isinstance(res, dict) else None
-    lasco_map = base_info.get('lasco_map') if isinstance(base_info, dict) else None
-    params_lasco = base_info.get('params_lasco') if isinstance(base_info, dict) else {}
-    mk4_map = base_info.get('mk4_map') if isinstance(base_info, dict) else None
+
+    if isinstance(res, dict) and ('gcs_params' in res):
+        rp = res['gcs_params']
+        if isinstance(rp, dict):
+            params_for_summary = params.__class__(**rp)
+        else:
+            params_for_summary = rp
 
     mk4_obstime_iso = None
     if mk4_map is not None:
@@ -296,22 +601,13 @@ def main(ts: str, h_apex: float, kappa: float, alpha_deg: float, tilt_deg: float
         title_time = mk4_obstime_iso
 
     apex_metrics: Optional[Dict[str, object]] = None
-    params_for_summary = params
-    
-    # 戻り値の最終パラメータを必ず採用（dict でもクラスでもOK）
-    if isinstance(res, dict) and ('gcs_params' in res):
-        rp = res['gcs_params']
-        if isinstance(rp, dict):
-            params_for_summary = params.__class__(**rp)
-        else:
-            params_for_summary = rp
 
     if lasco_map is not None and isinstance(params_lasco, dict):
         try:
             wireframe = sample_gcs_wireframe_points(
                 params_for_summary,
                 obstime=Time(ts),
-                n_parallels=8,
+                n_parallels=16,
                 n_meridians=32,
                 include_legs=True,
             )
@@ -405,6 +701,9 @@ def main(ts: str, h_apex: float, kappa: float, alpha_deg: float, tilt_deg: float
                         print(
                             f"Apex height at {apex_time_for_print}: "
                             f"r={apex_r:.3f} Rsun, "
+                            f"kappa={params_for_summary.kappa:.2f}, "
+                            f"alpha={params_for_summary.alpha_deg:.1f} deg, "
+                            f"tilt={params_for_summary.tilt_deg:.1f} deg, "
                             f"lon={params_for_summary.lon_deg:.2f} deg, "
                             f"lat={params_for_summary.lat_deg:.2f} deg"
                         )
@@ -450,7 +749,9 @@ def run_gcs_over_times(
     lon_deg: float,
     lat_deg: float,
     auto_tilt: Optional[bool] = None,
+    auto_h_apex: Optional[bool] = None,
     write_csv: bool = True,
+    use_composite: bool = True,
 ) -> Dict[str, object]:
     """Run the GCS overlay for multiple timestamps and optionally save apex heights.
 
@@ -476,6 +777,8 @@ def run_gcs_over_times(
             lon_deg,
             lat_deg,
             auto_tilt=auto_tilt,
+            auto_h_apex=auto_h_apex,
+            use_composite=use_composite,
         )
         if isinstance(run_result, dict):
             results.append(run_result)
@@ -553,6 +856,12 @@ def _parse_cli(argv: List[str]):
             main._cli_tilt_mode = mode_candidate
             idx += 1
 
+    if len(argv) > idx:
+        h_apex_mode_candidate = argv[idx].lower()
+        if h_apex_mode_candidate in ("auto", "manual"):
+            main._cli_h_apex_mode = h_apex_mode_candidate
+            idx += 1
+
     if len(argv) <= idx:
         return
 
@@ -596,15 +905,23 @@ if __name__ == "__main__":
     - (lon, lat)：nose の向き → 投影を通じて apex の“見かけの幅”と脚の“見かけの間隔”を同時に変える。
         → apex を広く見せたいなら POS（面内）に寄せる、脚は 視線方向に寄せると投影で狭く見える。
     """
-    h_apex=2; kappa=0.35; alpha_deg=5; tilt_deg=-10; lon_deg=-30; lat_deg=10
+    h_apex=4.23; kappa=0.12; alpha_deg=23; tilt_deg=-85; lon_deg=-44; lat_deg=10
 
 
-    ts = "2022-06-13T03:20:00"
+    ts = "2022-06-13T03:36:06"
     # Tilt mode for direct execution (CLI 未指定時に適用)
     # "auto" にすると自動推定を行う
     # "manual" にすると自動推定を行わない
-    # tilt_mode_at_main = "manual"
-    tilt_mode_at_main = "auto"
+    tilt_mode_at_main = "manual"
+    # tilt_mode_at_main = "auto"
+
+    # h_apex 自動推定の ON/OFF（"auto" で有効化、"manual" で無効化）
+    h_apex_mode_at_main = "manual"
+    # h_apex_mode_at_main = "auto"
+
+    # Composite 表示の ON/OFF を切り替える（"off" で背景を無効化）
+    composite_mode_at_main = "on"
+    # composite_mode_at_main = "off"
 
     FIT_TILT_FROM_SOURCE = False  # True にするとグローバル設定でフィット
     # "True" にするとグローバル設定でフィット
@@ -676,6 +993,16 @@ if __name__ == "__main__":
     if auto_flag in ("auto", "manual"):
         auto_bool = auto_flag == "auto"
 
+    h_apex_flag = getattr(main, "_cli_h_apex_mode", None)
+    if h_apex_flag is None and h_apex_mode_at_main in ("auto", "manual"):
+        h_apex_flag = h_apex_mode_at_main
+
+    auto_h_apex_bool = None
+    if h_apex_flag in ("auto", "manual"):
+        auto_h_apex_bool = h_apex_flag == "auto"
+
+    use_composite_bool = composite_mode_at_main.lower() != "off"
+
     run_gcs_over_times(
         ts_candidates,
         h_apex_param,
@@ -685,5 +1012,7 @@ if __name__ == "__main__":
         lon_deg_param,
         lat_deg_param,
         auto_tilt=auto_bool,
+        auto_h_apex=auto_h_apex_bool,
         write_csv=True,
+        use_composite=use_composite_bool,
     )

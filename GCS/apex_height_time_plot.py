@@ -12,11 +12,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Optional
 
+import numpy as np
+
 SOLAR_RADIUS_KM = 695700.0
 
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import pandas as pd
+
 
 
 def _discover_csv_files(search_root: Path) -> list[Path]:
@@ -167,7 +170,7 @@ def plot_apex_height_time_series(
     filtered.sort_values("datetime", inplace=True)
     filtered.reset_index(drop=True, inplace=True)
 
-    legend_label: Optional[str] = None
+    legend_parts: list[str] = []
     if len(filtered) >= 2:
         delta_seconds = filtered["datetime"].diff().dt.total_seconds().iloc[1:]
         delta_height = filtered["apex_height"].diff().iloc[1:]
@@ -181,9 +184,48 @@ def plot_apex_height_time_series(
                     std_velocity = velocities_km_s.std(ddof=1)
                 else:
                     std_velocity = 0.0
-                legend_label = (
-                    f"Speed {mean_velocity:.1f}±{std_velocity:.1f} km/s"
+                legend_parts.append(
+                    f"1st order: $v$={mean_velocity:.1f}±{std_velocity:.1f} km/s"
                 )
+
+    if len(filtered) >= 3:
+        times_sec = (
+            filtered["datetime"] - filtered["datetime"].iloc[0]
+        ).dt.total_seconds().to_numpy()
+        heights_rsun = filtered["apex_height"].to_numpy()
+
+        finite_mask = np.isfinite(times_sec) & np.isfinite(heights_rsun)
+        if finite_mask.sum() >= 3 and np.unique(times_sec[finite_mask]).size >= 3:
+            try:
+                coeffs, cov = np.polyfit(
+                    times_sec[finite_mask],
+                    heights_rsun[finite_mask],
+                    deg=2,
+                    cov=True,
+                )
+            except np.linalg.LinAlgError:
+                coeffs, cov = None, None
+            if coeffs is not None:
+                a, b, _ = coeffs  # h(t) = a*t^2 + b*t + c
+                velocity0_km_s = b * SOLAR_RADIUS_KM
+                acceleration_km_s2 = (2.0 * a) * SOLAR_RADIUS_KM
+
+                std_v0 = 0.0
+                std_acc = 0.0
+                if cov is not None and np.shape(cov) == (3, 3):
+                    cov = np.asarray(cov, dtype=float)
+                    if np.isfinite(cov[1, 1]):
+                        std_v0 = float(np.sqrt(max(cov[1, 1], 0.0)) * SOLAR_RADIUS_KM)
+                    if np.isfinite(cov[0, 0]):
+                        std_acc = float(np.sqrt(max(cov[0, 0], 0.0)) * (2.0 * SOLAR_RADIUS_KM))
+
+                legend_parts.append(
+                    f"2nd order: $v_0$={velocity0_km_s:.1f}±{std_v0:.1f} km/s, "
+                    f"$a$={acceleration_km_s2:.2f}±{std_acc:.2f}"
+                    "$\\mathrm{km/s^2}$"
+                )
+
+    legend_label = "\n".join(legend_parts) if legend_parts else None
 
     fig, ax = plt.subplots(figsize=(8, 4.5))
     ax.plot(
@@ -193,12 +235,20 @@ def plot_apex_height_time_series(
         linestyle="-",
         label=legend_label,
     )
-    ax.set_xlabel("Time [UT]"); ax.set_ylabel("Apex height [$R_\\odot$]")
+    ax.set_xlabel("Time [UT]", fontsize=12); ax.set_ylabel("Apex height [$R_\\odot$]", fontsize=12)
     ax.set_title("Apex height", fontsize=14)
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M:%S"))
     ax.grid(True, linestyle="--", alpha=0.3)
+    # 03:35:00に縦線を引く
+    vline_time_str = "03:34:00"
+    # x軸のdatetime型に合わせて、日付部分はデータの最初の日時を流用
+    base_date = filtered["datetime"].iloc[0].date()
+    vline_dt = pd.to_datetime(f"{base_date} {vline_time_str}")
+    # ax.axvline(vline_dt, color="black", linestyle="--", linewidth=0.5, alpha=0.5)
+    # ax.text(vline_dt, ax.get_ylim()[0], "K-Cor ", color="black", fontsize=12, ha="right", va="bottom", alpha=0.5)
+    # ax.text(vline_dt, ax.get_ylim()[0], " LASCO-C2", color="black", fontsize=12, ha="left", va="bottom", alpha=0.5)
     if legend_label:
-        ax.legend()
+        ax.legend(loc="best")
     fig.autofmt_xdate()
     fig.tight_layout()
 
@@ -221,7 +271,8 @@ def main(start_time: Optional[str] = None, end_time: Optional[str] = None) -> No
     script_dir = Path(__file__).resolve().parent
     search_root = script_dir.parent  # search from the repository root by default
 
-    save_path = f"./output/apex_height_time_series_{start_time}_{end_time}.png"
+
+    save_path = f"./output/apex_height_time_series_{start_time.replace(':', '')}_{end_time.replace(':', '')}.png"
     try:
         plot_apex_height_time_series(
             start_time=start_time,
@@ -236,5 +287,5 @@ def main(start_time: Optional[str] = None, end_time: Optional[str] = None) -> No
 
 if __name__ == "__main__":
     start_time = "2022-06-13T03:19:01"
-    end_time = "2022-06-13T04:01:00"
+    end_time = "2022-06-13T03:33:30"
     main(start_time, end_time)

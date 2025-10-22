@@ -897,7 +897,7 @@ def create_single_diff_image(ax, target_time_str: str):
     # lasco_map_mean, lasco_map_std = np.nanmean(lasco_map.data), np.nanstd(lasco_map.data)
     # lasco_vmin, lasco_vmax = lasco_map_mean - lasco_map_std, lasco_map_mean + lasco_map_std
     # lasco_vmin, lasco_vmax = np.percentile(lasco_diff, [1, 99.9])
-    lasco_vmin, lasco_vmax = -50, 50
+    lasco_vmin, lasco_vmax = -10, 10
     print('lasco_vmin', lasco_vmin, 'lasco_vmax', lasco_vmax)
     
     lasco_norm = ImageNormalize(lasco_diff, vmin=lasco_vmin, vmax=lasco_vmax, stretch=LinearStretch(), clip=True)
@@ -921,7 +921,7 @@ def create_single_diff_image(ax, target_time_str: str):
 
     # 半径マップ・合成
     r_map = calculate_r_map(p_lasco)
-    ranges = dict(mk4_inner=1.1, mk4_outer_lasco_inner=3.0, lasco_outer=6.0)
+    ranges = dict(mk4_inner=1.1, mk4_outer_lasco_inner=3, lasco_outer=6.0)
     composite, imk4, ia = combine_corona_data(
         n_lasco, p_lasco,
         n_mk4, p_mk4,
@@ -987,7 +987,7 @@ def create_single_diff_image(ax, target_time_str: str):
             label=f"{ranges['mk4_outer_lasco_inner']} $R_\\odot$")
 
     # 軸範囲を global に固定
-    ax.set_xlim(-400, 0); ax.set_ylim(-200, 300)
+    ax.set_xlim(-250, 0); ax.set_ylim(-100, 200)
     # ax.set_xlabel('X [pixel]'); ax.set_ylabel('Y [pixel]'); ax.set_facecolor('gray')
     ax.set_title(
         f"Difference | Base: {base_time_str.replace('T', ' ')} \n"

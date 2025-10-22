@@ -13,7 +13,13 @@ import astropy.units as u
 import astropy.visualization as vis
 import imageio.v2 as imageio
 import matplotlib
-matplotlib.use('TkAgg')  # GUI表示用バックエンドを明示的に設定
+
+# Prefer Tk when available; fall back to Agg under headless execution.
+try:
+    import tkinter  # noqa: F401
+    matplotlib.use('TkAgg')
+except Exception:
+    matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd

@@ -224,3 +224,55 @@ def plot_combined_image(image_data, r_map_plot, params_lasco, r_ranges, theta_de
         ax.legend(handles=boundary_lines_for_legend, loc='upper right', fontsize=10)
     ax.tick_params(axis='both', which='major', labelsize=12)
     plt.tight_layout()
+
+def add_radial_guides_on_ax(ax,
+                            r_map_plot,
+                            params_ref,
+                            r_ranges,
+                            theta_deg_overlay=None):
+    """
+    Draw standard radial guides on an axis:
+      - integer-Rsun contours (white dashed)
+      - boundary rings at mk4_inner / mk4_outer_lasco_inner / lasco_outer
+      - optional position-angle guide line at theta_deg_overlay
+    Returns a list of legend handles you can pass to ax.legend(handles=...).
+    """
+    import numpy as np
+
+    extent_pixels = [-params_ref['cx'], params_ref['nx'] - params_ref['cx'],
+                     -params_ref['cy'], params_ref['ny'] - params_ref['cy']]
+
+    # integer Rsun contours
+    int_levels = np.arange(1, int(np.floor(r_ranges['lasco_outer'])) + 1)
+    ax.contour(r_map_plot, levels=int_levels, colors='white', linewidths=1,
+               linestyles='--', extent=extent_pixels, alpha=0.7)
+
+    # boundary rings & legend proxies
+    boundary_lines_for_legend = []
+    for level_val, (label_text, color) in [
+        (r_ranges['mk4_inner'], (f"{r_ranges['mk4_inner']:.1f} $R_\\odot$ (Mk4 inner)", 'magenta')),
+        (r_ranges['mk4_outer_lasco_inner'], (f"{r_ranges['mk4_outer_lasco_inner']:.1f} $R_\\odot$ (Mk4/LASCO)", 'green')),
+        (r_ranges['lasco_outer'], (f"{r_ranges['lasco_outer']:.1f} $R_\\odot$ (LASCO outer)", 'blue'))
+    ]:
+        if level_val <= np.nanmax(r_map_plot) and level_val >= np.nanmin(r_map_plot):
+            ax.contour(r_map_plot, levels=[level_val], colors=[color], linewidths=1.2,
+                       linestyles='-.', extent=extent_pixels)
+            proxy = ax.plot([], [], linestyle='-.', color=color, linewidth=1.2, label=label_text)[0]
+            boundary_lines_for_legend.append(proxy)
+
+    # solar center mark
+    ax.plot(0, 0, '+', color='black', markersize=12, markeredgewidth=1.5)
+
+    # optional PA guide
+    if theta_deg_overlay is not None:
+        theta_rad = np.radians(theta_deg_overlay)
+        r_line_max_rsun = r_ranges['lasco_outer']
+        r_coords_rsun = np.array([0.0, r_line_max_rsun])
+        x_overlay_pix = r_coords_rsun * params_ref['px_per_rsun'] * np.cos(theta_rad)
+        y_overlay_pix = r_coords_rsun * params_ref['px_per_rsun'] * np.sin(theta_rad)
+        line_theta, = ax.plot(x_overlay_pix, y_overlay_pix,
+                              color='cyan', linestyle='-', linewidth=2,
+                              label=f'θ={theta_deg_overlay:.0f}°')
+        boundary_lines_for_legend.append(line_theta)
+
+    return boundary_lines_for_legend

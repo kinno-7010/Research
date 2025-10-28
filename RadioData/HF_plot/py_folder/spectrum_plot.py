@@ -61,7 +61,7 @@ def plot_dynamic_spectrum(
     cax = divider.append_axes("right", size="1%", pad=0.1)
     cbar = fig.colorbar(im, cax=cax)
     cbar.ax.tick_params(labelsize=14)
-    cbar.set_label('Intensity (dB)', fontsize=16)
+    cbar.set_label('Intensity - median of each frequency (dB)', fontsize=16)
 
     # Labels and formatting
     ax.set_title(title, fontsize=18)
@@ -81,8 +81,9 @@ def plot_removed_dynamic_spectrum(
     freq_min, freq_max,
     time_tick_sec, freq_tick_mhz,
     med_filter_size, vmin, vmax,
-    background_method
-):
+    background_method,
+    return_data: bool = False
+) -> np.ndarray | None:
     """
     Remove 3σ outliers in 35–40 MHz band and plot the cleaned dynamic spectrum.
     """
@@ -104,7 +105,7 @@ def plot_removed_dynamic_spectrum(
         clean_mean = np.mean(clean)
         
         # Mask below threshold using background_removed_data
-        threshold = 2
+        threshold = vmin
         masked = np.where(background_removed_data >= threshold, background_removed_data, np.nan)
         
         # Temporarily save original data and use masked data
@@ -156,6 +157,9 @@ def plot_removed_dynamic_spectrum(
     
     # Restore original data
     data = original_data
+    if return_data == True:
+        return masked
+
 
 
 # In spectrum_plot.py
@@ -272,13 +276,13 @@ if __name__ == "__main__":
             elif choice == '2':
                 print("\nPlotting removed dynamic spectrum...")
                 start_time, end_time, freq_min, freq_max, time_tick_sec, freq_tick_mhz, med_filter_size, vmin, vmax, title = _initialize_plot_parameters()
-                
+                time_tick_sec = 10*60
                 fig, ax = plt.subplots(figsize=(12, 8))
                 
                 background_method_value = input("Background method (0: none, 1: median_time): ")
                 if background_method_value == '1':
                     background_method = 'median_time'
-                    vmin = 3
+                    vmin = 0
                     vmax = 10
                     # titleにbackground_methodを追記
                     title = f"{title} (removed) ({background_method})"

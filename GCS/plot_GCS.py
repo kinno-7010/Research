@@ -469,9 +469,9 @@ def main(
         alpha=0.8,
         include_legs=True,
         depth_shade=True,
-        alpha_near=0.5,
-        alpha_far=0.2,
-        alpha_far_legs=0.2,
+        alpha_near=0.8,
+        alpha_far=0.3,
+        alpha_far_legs =0.3,
         leg_depth_from_joint=True,
     )
 
@@ -905,10 +905,10 @@ if __name__ == "__main__":
     - (lon, lat)：nose の向き → 投影を通じて apex の“見かけの幅”と脚の“見かけの間隔”を同時に変える。
         → apex を広く見せたいなら POS（面内）に寄せる、脚は 視線方向に寄せると投影で狭く見える。
     """
-    h_apex=4.23; kappa=0.12; alpha_deg=23; tilt_deg=-85; lon_deg=-44; lat_deg=10
+    h_apex=3.92; kappa=0.10; alpha_deg=23; tilt_deg=87; lon_deg=-44; lat_deg=10
 
 
-    ts = "2022-06-13T03:36:06"
+    ts = "2022-06-13T03:33:04"
     # Tilt mode for direct execution (CLI 未指定時に適用)
     # "auto" にすると自動推定を行う
     # "manual" にすると自動推定を行わない

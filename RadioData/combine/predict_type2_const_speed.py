@@ -24,6 +24,14 @@ import pandas as pd
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 
+# Ensure project root is on sys.path for absolute imports like `RadioData.*`
+import os
+import sys
+_CURRENT_DIR = os.path.dirname(__file__)
+_PROJECT_ROOT = os.path.abspath(os.path.join(_CURRENT_DIR, "..", ".."))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
 # ---- Import from your existing script ----
 from wind_hf_assa_dynamic_spectrum import (
     Saito1977,
@@ -32,6 +40,8 @@ from wind_hf_assa_dynamic_spectrum import (
     load_wind_rad2, load_hf, load_callisto,
     create_dataframe, resample_to_grid, normalize_by_median, combine_spectra,
 )
+from RadioData.HF_plot.py_folder.spectrum_plot import plot_removed_dynamic_spectrum
+
 
 from matplotlib.ticker import MultipleLocator, FuncFormatter
 from matplotlib.dates import SecondLocator
@@ -240,7 +250,7 @@ def plot_type2_prediction(
     yscale: str = "log",
     dt_s: float = 2.0,
     outfile: str | None = None,
-    figsize: Tuple[float, float] = (11, 5),
+    figsize: Tuple[float, float] = (12, 6),
     cmap: str = "viridis",
     clim: Tuple[float, float] = (0.0, 2.5),
     seed_point: Tuple[pd.Timestamp | str, float] | None = None,
@@ -266,77 +276,38 @@ def plot_type2_prediction(
     fig, ax = plt.subplots(figsize=figsize)
 
     if with_spectrum:
+    # removedコードここから
+        # plot_removed_dynamic_spectrum(
+        #     fig, ax,
+        #     start_time, end_time,
+        #     min_frequency, max_frequency,
+        #     time_tick_sec=1*60, freq_tick_mhz=5,
+        #     med_filter_size=(1,1), vmin=0, vmax=10,
+        #     background_method='median_time',
+        #     return_data=False,
+        # )
+    # removedコードここまで
+    #------------------------------------------------------------
+    # combineコードここから
+    # Combine spectra from Wind/RAD2, HF, ASSA using existing helpers
         spectrum = assemble_dynamic_spectrum(start_time, end_time, cadence="0.5s")
-
-        # Frequency & time crop
-        freq_vals = spectrum.columns.astype(float)
-        mask = (freq_vals >= min_frequency) & (freq_vals <= max_frequency)
-        spectrum = spectrum.loc[(spectrum.index >= start_time) & (spectrum.index <= end_time), mask]
-        if spectrum.empty:
-            raise ValueError("Combined spectrum is empty after applying time/frequency bounds.")
-
-        # 背景表示（wind_hf_assa_dynamic_spectrum.py と同等）
         time_axis = spectrum.index.to_pydatetime()
         freq_axis = spectrum.columns.to_numpy()
         values = spectrum.to_numpy().T  # (freq, time)
-
         mesh = ax.pcolormesh(
             mdates.date2num(time_axis),
             freq_axis,
             values,
             shading="auto",
             cmap=cmap,
-            vmin=1.0, vmax=1.1,
-        )
-
-        # バンド境界と注記
-        ax.axhline(14.0, color="white", linestyle="--", linewidth=1)
-        ax.text(mdates.date2num(end_time), 14.0, "Wind/RAD2",
-                color="white", fontsize=14, ha="right", va="top", fontweight="bold")
-        ax.axhline(40.0, color="white", linestyle="--", linewidth=1)
-        ax.text(mdates.date2num(end_time), 40.0, "Iitate HF antenna",
-                color="white", fontsize=14, ha="right", va="top", fontweight="bold")
-        ax.text(mdates.date2num(end_time), max_frequency, "Australia-ASSA",
-                color="white", fontsize=14, ha="right", va="top", fontweight="bold")
-
-        # 縦線例（CME/flare）
-        CME_time = mdates.date2num(pd.Timestamp("2022-06-13 03:12:00"))
-        flare_time = mdates.date2num(pd.Timestamp("2022-06-13 04:07:00"))
-        ax.axvline(CME_time, color="white", linestyle="--", linewidth=1)
-        ax.text(CME_time, min_frequency + (max_frequency - min_frequency) * 0.05,
-                " CME erupted\n 03:12 UT", color="white", fontsize=14,
-                ha="left", va="bottom", fontweight="bold")
-        ax.axvline(flare_time, color="white", linestyle="--", linewidth=1)
-        ax.text(flare_time, max_frequency,
-                " M3.4 flare peaked\n 04:07 UT", color="white", fontsize=14,
-                ha="left", va="top", fontweight="bold")
-        
-        ax.text(
-            mdates.date2num(pd.Timestamp("2022-06-13T03:35:00")),
-            40,
-            "Second Harmonic ",
-            color="pink",
-            fontsize=14,
-            ha="left",
-            va="bottom",
-            fontweight="bold",
-        )
-        ax.text(
-            mdates.date2num(pd.Timestamp("2022-06-13T03:30:00")),
-            10,
-            "Fundamental ",
-            color="white",
-            fontsize=14,
-            ha="right",
-            va="bottom",
-            fontweight="bold",
+            vmin=1, vmax=1.1,
         )
 
         ax.set_ylabel("Frequency [MHz]", fontsize=16)
         ax.set_yscale("log" if log_scale else "linear")
         ax.set_xlabel("Time [UT]", fontsize=16)
         ax.set_title(
-            "Dynamic Spectrum; Wind/RAD2 (1-14 MHz) + HF antenna (14-40 MHz) + Australia-ASSA (40-85 MHz)",
+            "Dynamic Spectrum (combined: Wind/RAD2 + HF + ASSA)",
             fontsize=18,
         )
         ax.set_xlim(mdates.date2num(time_axis[0]), mdates.date2num(time_axis[-1]))
@@ -351,17 +322,18 @@ def plot_type2_prediction(
 
         cbar = fig.colorbar(mesh, ax=ax, pad=0.01, shrink=0.5)
         cbar.set_label(
-            "Intensity normalized to per-frequency median" + (" (log10)" if log_scale else ""),
+            "Intensity normalized to per-frequency median",
             fontsize=14,
         )
-
+    # combineコードここまで
+    #------------------------------------------------------------
     # Type II の点
     points_handle = None
     if pts:
         xs = [mdates.date2num(t) for t, _ in pts]
         ys = [f for _, f in pts]
         (points_handle,) = ax.plot(
-            xs, ys, "o", color="yellow", ms=7, mec="k", mew=0.8, alpha=0.95, label="Type II points"
+            xs, ys, "o", color="red", ms=5, mec="k", mew=1, alpha=0.95, label="Type II points"
         )
 
     def resolve_seed_point(
@@ -458,12 +430,14 @@ def plot_type2_prediction(
             loc="lower right",
             fontsize=12,
         )
-
+    ax.set_xlim(mdates.date2num(start_time), mdates.date2num(end_time))
+    ax.set_ylim(min_frequency, max_frequency)
     fig.tight_layout()
 
     if outfile:
         fig.savefig(outfile, dpi=300, bbox_inches="tight")
         print(f"Saved figure to {outfile}")
+        plt.show()
     else:
         plt.show()
 
@@ -473,28 +447,32 @@ def plot_type2_prediction(
 if __name__ == "__main__":
     # ==== USER CONFIG START ====
     # Plot range
-    start_time = "2022-06-13T03:00:00"
-    end_time   = "2022-06-13T05:00:00"
+    start_time = "2022-06-13T03:25:00"
+    end_time = "2022-06-13T03:33:00"
+    min_frequency = 25.0     # MHz
+    max_frequency = 38.0    # MHz
+    
+    end_time = "2022-06-13T05:00:00"
     min_frequency = 1.0     # MHz
-    max_frequency = 85.0    # MHz
+    max_frequency = 43.0    # MHz
 
     # (Option A) Multiple picked points; the last is used unless seed_point is set
     points = [
-        ("2022-06-13T03:26:30", 34.5),
-        ("2022-06-13T03:32:00", 27.5),
+        ("2022-06-13T03:25:40", 35.5),
+        ("2022-06-13T03:31:20", 28),
     ]
 
     # (Option B) Seed points for prediction curves
-    seed_point_fundamental = ("2022-06-13T03:26:30", 17.25)  # Fundamental branch
-    seed_point_harmonic = ("2022-06-13T03:26:30", 34.5)      # Second harmonic branch
+    seed_point_fundamental = ("2022-06-13T03:25:40", 17.75)  # Fundamental branch
+    seed_point_harmonic = ("2022-06-13T03:25:40", 35.5)      # Second harmonic branch
 
     # Prediction params
-    speed_kms = 550.0       # km/s (constant speed)
+    speed_kms = 440.0       # km/s (constant speed)
     branch = "F"             # Primary branch ('F' for fundamental)
-    factor = 5.0             # Factor × Saito1977
+    factor = 3.0             # Factor × Saito1977
     yscale = "log"           # display scale
     with_spectrum = True
-    dt_s = 10.0               # sampling for the line across the window
+    dt_s = 1.0               # sampling for the line across the window
     outfile = "/mnt/d/wsl/home/kinno-7010/Research/RadioData/combine/dynamic_spectra_with_density_model_line.png"           # e.g., "./type2_fullspan_demo.png"
     # ==== USER CONFIG END ====
 

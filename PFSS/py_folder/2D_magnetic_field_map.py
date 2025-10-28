@@ -578,7 +578,7 @@ def plot_B_map(
         B_map,
         origin="lower",
         cmap="plasma",
-        norm=LogNorm(vmin=np.nanmax([np.nanmin(B_map[B_map > 0]) * 0.8, 1e-2]), vmax=np.nanmax(B_map) * 1.1),
+        norm=LogNorm(vmin=0.1, vmax=1),
         extent=extent_pixels,
         aspect="equal",
     )
@@ -602,11 +602,11 @@ def plot_B_map(
 
     ax.plot(0, 0, "+", color="black", markersize=12, markeredgewidth=1.5)
     ax.set_title(title, fontsize=16)
-    ax.set_xlabel("X [pixels from Sun center, LASCO grid]")
-    ax.set_ylabel("Y [pixels from Sun center, LASCO grid]")
+    ax.set_xlabel("X [pixels from Sun center]")
+    ax.set_ylabel("Y [pixels from Sun center]")
 
-    cbar = plt.colorbar(im, ax=ax, pad=0.02, fraction=0.03)
-    cbar.set_label("|B| or Br [Gauss]")
+    cbar = plt.colorbar(im, ax=ax, pad=0.01, shrink=0.5)
+    cbar.set_label("Magnetic Field Strength [Gauss]", fontsize=14)
 
     plt.tight_layout()
     if out_png:

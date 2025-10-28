@@ -227,7 +227,7 @@ def plot_apex_height_time_series(
 
     legend_label = "\n".join(legend_parts) if legend_parts else None
 
-    fig, ax = plt.subplots(figsize=(8, 4.5))
+    fig, ax = plt.subplots(figsize=(12, 6))
     ax.plot(
         filtered["datetime"],
         filtered["apex_height"],
@@ -235,21 +235,35 @@ def plot_apex_height_time_series(
         linestyle="-",
         label=legend_label,
     )
-    ax.set_xlabel("Time [UT]", fontsize=12); ax.set_ylabel("Apex height [$R_\\odot$]", fontsize=12)
-    ax.set_title("Apex height", fontsize=14)
+    ax.set_xlabel("Time [UT]", fontsize=14)
+    ax.set_ylabel("Apex height [$R_\\odot$]", fontsize=14)
+    # x軸の目盛を斜めにしない（水平にする）
+    ax.set_title("Apex height", fontsize=16)
+    ax.set_ylim(filtered["apex_height"].min() - 0.5, filtered["apex_height"].max() + 0.1)
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M:%S"))
-    ax.grid(True, linestyle="--", alpha=0.3)
-    # 03:35:00に縦線を引く
-    vline_time_str = "03:34:00"
-    # x軸のdatetime型に合わせて、日付部分はデータの最初の日時を流用
+    ax.tick_params(axis='x', labelsize=12, labelrotation=0)
+    ax.tick_params(axis='y', labelsize=12)
+    # 03:25:40に縦線を引く
     base_date = filtered["datetime"].iloc[0].date()
-    vline_dt = pd.to_datetime(f"{base_date} {vline_time_str}")
-    # ax.axvline(vline_dt, color="black", linestyle="--", linewidth=0.5, alpha=0.5)
-    # ax.text(vline_dt, ax.get_ylim()[0], "K-Cor ", color="black", fontsize=12, ha="right", va="bottom", alpha=0.5)
-    # ax.text(vline_dt, ax.get_ylim()[0], " LASCO-C2", color="black", fontsize=12, ha="left", va="bottom", alpha=0.5)
+    vline_info = [
+        ("03:25:40",  "03:25:40\nSRBII start"),
+        ("03:28:45",  "03:28:45\ntransition time"),
+        ("03:31:20",  "03:31:20\ncleaving start"),
+        ("03:34:00",  "03:34:00\nHB start"),
+        ("03:45:00",  "03:45:00\nSRB II (Harmonic) end"),
+    ]
+    ax.grid(True, linestyle="--", alpha=0.3)
+    for time_str, label in vline_info:
+        if time_str == "03:25:40" or time_str == "03:45:00":
+            vline_color = "red"; text_color = "red"
+        else:
+            vline_color = "black"; text_color = "black"
+        vline_dt = pd.to_datetime(f"{base_date} {time_str}")
+        ax.axvline(x=vline_dt, color=vline_color, linestyle="--", linewidth=0.5, alpha=0.8)
+        ax.text(vline_dt, ax.get_ylim()[0], label, color=text_color, fontsize=12, ha="right", va="bottom", alpha=0.8)
+    
     if legend_label:
-        ax.legend(loc="best")
-    fig.autofmt_xdate()
+        ax.legend(loc="best", fontsize=12)
     fig.tight_layout()
 
     if save_path is not None:
@@ -286,6 +300,6 @@ def main(start_time: Optional[str] = None, end_time: Optional[str] = None) -> No
 
 
 if __name__ == "__main__":
-    start_time = "2022-06-13T03:19:01"
-    end_time = "2022-06-13T03:33:30"
+    start_time = "2022-06-13T03:23:00"
+    end_time = "2022-06-13T03:50:00"
     main(start_time, end_time)

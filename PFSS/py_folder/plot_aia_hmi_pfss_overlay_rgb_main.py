@@ -19,12 +19,14 @@ import matplotlib.pyplot as plt
 
 import astropy.units as u
 from astropy.coordinates import SkyCoord
+from sunpy.coordinates import HeliographicStonyhurst as HGS
 from astropy.visualization import ImageNormalize
 from astropy.visualization import PowerStretch
 
 import sunpy.map
 from sunpy.map import Map
 from sunpy.coordinates import frames
+from sunpy.coordinates import SphericalScreen
 from pathlib import Path
 # --- optional (aia_prep 相当) ---
 try:
@@ -79,7 +81,7 @@ def reproject_aia_to_hmi(aia_map: Map, hmi_map: Map) -> Map:
 # =========================
 # AIAの正規化（ユーザーの流儀を踏襲）
 # =========================
-def normalize_logish(data: np.ndarray, pmin=1.0, pmax=99.5, power=0.5) -> np.ndarray:
+def normalize_logish(data: np.ndarray, pmin=1.0, pmax=99.0, power=0.5) -> np.ndarray:
     """パーセンタイルでクリップ後、PowerStretch(γ)で0-1に近似正規化"""
     arr = data.astype(float)
     valid = arr[np.isfinite(arr)]
@@ -96,9 +98,9 @@ def normalize_logish(data: np.ndarray, pmin=1.0, pmax=99.5, power=0.5) -> np.nda
 
 def make_rgb_from_three(a211: Map, a193: Map, a171: Map) -> np.ndarray:
     """R=211, G=193, B=171 を 0-1 合成RGBへ"""
-    R = normalize_logish(a211.data, pmin=1.0, pmax=99.5, power=0.5)
-    G = normalize_logish(a193.data, pmin=1.0, pmax=99.5, power=0.5)
-    B = normalize_logish(a171.data, pmin=1.0, pmax=99.5, power=0.5)
+    R = normalize_logish(a211.data, pmin=1.0, pmax=99.0, power=0.5)
+    G = normalize_logish(a193.data, pmin=1.0, pmax=99.0, power=0.5)
+    B = normalize_logish(a171.data, pmin=1.0, pmax=99.0, power=0.5)
     return np.dstack([R, G, B])
 
 
@@ -163,7 +165,7 @@ def define_seed_points(hmi_map: Map, x_pix_range, y_pix_range,
 
 
 def trace_field_lines(seeds, pfss_out):
-    tracer = tracing.FortranTracer(max_steps=50000, step_size=0.01)
+    tracer = tracing.FortranTracer(max_steps=100000, step_size=0.01)
     return tracer.trace(seeds, pfss_out)
 
 
@@ -211,26 +213,48 @@ def print_rsun_check(hmi_map: Map, aia_r_map: Map):
 
 
 def draw_field_lines(ax, hmi_map: Map, field_lines, rss: float):
-    for fl in field_lines:
-        coords = fl.coords  # HGS 3D
-        # open判定（終端半径がRss到達近傍）
-        try:
-            is_open = (coords.radius[-1].to_value(u.Rsun) >= (rss - 0.05))
-        except Exception:
-            is_open = False
+    with SphericalScreen(hmi_map.observer_coordinate):
+        for fl in field_lines:
+            coords = fl.coords  # HGS 3D
+            # open判定（終端半径がRss到達近傍）
+            try:
+                is_open = (coords.radius[-1].to_value(u.Rsun) >= (rss - 0.05))
+            except Exception:
+                is_open = False
 
-        # 始点極性で色分け
-        try:
-            pxy = hmi_map.world_to_pixel(coords[0])
-            x, y = int(pxy.x.value), int(pxy.y.value)
-            pol = hmi_map.data[y, x] if (0 <= y < hmi_map.data.shape[0] and 0 <= x < hmi_map.data.shape[1]) else 0
-        except Exception:
-            pol = 0
+            # Helioprojectiveへ変換（SphericalScreenでオフディスクも有効化）
+            try:
+                coords_hpc = coords.transform_to(hmi_map.coordinate_frame)
+            except Exception:
+                continue
+            pixel_coords = hmi_map.world_to_pixel(coords_hpc)
+            if hasattr(pixel_coords, 'x'):
+                xs = np.array(pixel_coords.x.value)
+                ys = np.array(pixel_coords.y.value)
+            else:
+                xs = np.array(pixel_coords[0].value)
+                ys = np.array(pixel_coords[1].value)
+            valid = np.isfinite(xs) & np.isfinite(ys)
+            if not np.any(valid):
+                continue
+            xs_valid, ys_valid = xs[valid], ys[valid]
 
-        color = 'black'
-        if is_open:
-            color = 'red' if pol > 0 else 'blue'
-        ax.plot_coord(coords, color=color, linewidth=0.6, alpha=0.85)
+            # 始点極性で色分け
+            try:
+                start_idx = np.argmax(valid)
+                x_idx = int(round(xs[start_idx]))
+                y_idx = int(round(ys[start_idx]))
+                if (0 <= y_idx < hmi_map.data.shape[0]) and (0 <= x_idx < hmi_map.data.shape[1]):
+                    pol = hmi_map.data[y_idx, x_idx]
+                else:
+                    pol = 0
+            except Exception:
+                pol = 0
+
+            color = 'black'
+            if is_open:
+                color = 'red' if pol > 0 else 'blue'
+            ax.plot(xs_valid, ys_valid, color=color, linewidth=0.6, alpha=0.85)
 
 
 # =========================
@@ -241,6 +265,8 @@ def run_pipeline(HMI_FILE, AIA_ROOT, TIME_OBJ,
                  RSS=2.5, NRHO=50,
                  USE_STRONG=True, THRESH=200.0,
                  WIN_PIXELS=(1024, 1024),
+                 X_RANGE_PIX=None, Y_RANGE_PIX=None,
+                 RMAX=None, STEP_DR=0.01, BLEND_DR=0.6,
                  SAVE_PATH=None):
     # 1) 読み込み
     hmi = read_hmi(HMI_FILE)
@@ -261,11 +287,24 @@ def run_pipeline(HMI_FILE, AIA_ROOT, TIME_OBJ,
     pfss_out = compute_pfss_solution(hmi, nrho=NRHO, rss=RSS)
 
     # 5) 表示窓とシード点
-    xlim, ylim = compute_window_in_pixels(hmi,
-                                          cx=0*u.arcsec, cy=0*u.arcsec,
-                                          width_pix=WIN_PIXELS[0],
-                                          height_pix=WIN_PIXELS[1])
-    seeds = define_seed_points(hmi, xlim, ylim, n_x=20, n_y=20,
+    if X_RANGE_PIX is not None or Y_RANGE_PIX is not None:
+        if X_RANGE_PIX is None or Y_RANGE_PIX is None:
+            raise ValueError("X_RANGE_PIX と Y_RANGE_PIX は両方とも指定してください。")
+        if len(X_RANGE_PIX) != 2 or len(Y_RANGE_PIX) != 2:
+            raise ValueError("X_RANGE_PIX, Y_RANGE_PIX は (min, max) の2要素で指定してください。")
+        x0, x1 = sorted(int(v) for v in X_RANGE_PIX)
+        y0, y1 = sorted(int(v) for v in Y_RANGE_PIX)
+        x0 = max(0, min(x0, hmi.data.shape[1]-1))
+        x1 = max(0, min(x1, hmi.data.shape[1]-1))
+        y0 = max(0, min(y0, hmi.data.shape[0]-1))
+        y1 = max(0, min(y1, hmi.data.shape[0]-1))
+        xlim, ylim = (x0, x1), (y0, y1)
+    else:
+        xlim, ylim = compute_window_in_pixels(hmi,
+                                              cx=0*u.arcsec, cy=0*u.arcsec,
+                                              width_pix=WIN_PIXELS[0],
+                                              height_pix=WIN_PIXELS[1])
+    seeds = define_seed_points(hmi, xlim, ylim, n_x=25, n_y=25,
                                strong_only=USE_STRONG, thr=THRESH)
     flines = trace_field_lines(seeds, pfss_out)
 
@@ -280,7 +319,17 @@ def run_pipeline(HMI_FILE, AIA_ROOT, TIME_OBJ,
     except Exception:
         pass
 
+        # 既存の描画の直後に
     draw_field_lines(ax, hmi, flines, rss=RSS)
+    # if RMAX is not None and RMAX > RSS:
+    #     extend_open_fieldlines_smooth(
+    #         ax, hmi, flines, rss=RSS,
+    #         rmax=RMAX,          # RMAX の代わり
+    #         step_dr=STEP_DR,      # STEP_DR の代わり
+    #         blend_dr=BLEND_DR,      # BLEND_DR の代わり
+    #         linewidth=0.8, alpha=0.9, linestyle='--'
+    #     )
+
 
     ax.set_xlim(*xlim); ax.set_ylim(*ylim)
     ax.set_xlabel("Solar X (arcsec)"); ax.set_ylabel("Solar Y (arcsec)")
@@ -305,6 +354,69 @@ def run_pipeline(HMI_FILE, AIA_ROOT, TIME_OBJ,
     else:
         plt.show()
 
+# def extend_open_fieldlines_smooth(ax, hmi_map, field_lines, rss,
+#                                   rmax=6.0, step_dr=0.02, blend_dr=0.5,
+#                                   linewidth=0.8, alpha=0.9, linestyle='--'):
+#     """
+#     Rssでの接線方向を保ちながら、半径方向へC1連続（cubic smoothstep）で収束。
+#     """
+#     with SphericalScreen(hmi_map.observer_coordinate):
+#         for fl in field_lines:
+#             coords = fl.coords
+#             try:
+#                 r_end = coords.radius[-1].to_value(u.Rsun)
+#             except Exception:
+#                 continue
+#             if r_end < (rss - 0.02):
+#                 continue
+
+#             # 始点極性→色
+#             try:
+#                 pxy0 = hmi_map.world_to_pixel(coords[0].transform_to(hmi_map.coordinate_frame))
+#                 x0, y0 = int(round(pxy0.x.value)), int(round(pxy0.y.value))
+#                 pol = hmi_map.data[y0, x0] if (0 <= y0 < hmi_map.data.shape[0] and 0 <= x0 < hmi_map.data.shape[1]) else 0
+#             except Exception:
+#                 pol = 0
+#             color = 'red' if pol > 0 else 'blue'
+
+#             # 末端接線（HGSの3D cartesianで推定）
+#             c_prev = coords[-2].transform_to(HGS(obstime=hmi_map.date))
+#             c_end  = coords[-1].transform_to(HGS(obstime=hmi_map.date))
+#             p_prev = c_prev.cartesian.xyz.to_value(u.Rsun)
+#             p_end  = c_end.cartesian.xyz.to_value(u.Rsun)
+#             v0 = p_end - p_prev
+#             if np.dot(v0, p_end) < 0:  # 内向きなら反転
+#                 v0 = -v0
+#             v0 = v0 / (np.linalg.norm(v0) + 1e-12)
+#             er = p_end / (np.linalg.norm(p_end) + 1e-12)
+
+#             # 前進積分
+#             pts_x, pts_y = [], []
+#             P = p_end.copy()
+#             r_now = np.linalg.norm(P)
+#             while r_now < rmax - 1e-6:
+#                 s = np.clip((r_now - rss)/max(blend_dr, 1e-6), 0.0, 1.0)
+#                 w = 1 - (3*s**2 - 2*s**3)   # 多項式ブレンド
+#                 u_dir = w*v0 + (1-w)*er
+#                 u_dir /= (np.linalg.norm(u_dir) + 1e-12)
+
+#                 P = P + step_dr * u_dir
+#                 r_now = np.linalg.norm(P)
+#                 er = P / (r_now + 1e-12)    # 放射方向を更新
+
+#                 ext = SkyCoord(x=P[0]*u.Rsun, y=P[1]*u.Rsun, z=P[2]*u.Rsun,
+#                                frame=HGS, obstime=hmi_map.date, representation_type='cartesian')
+#                 ext_hpc = ext.transform_to(hmi_map.coordinate_frame)
+#                 pix = hmi_map.world_to_pixel(ext_hpc)
+#                 xs, ys = float(pix.x.value), float(pix.y.value)
+#                 if np.isfinite(xs) and np.isfinite(ys):
+#                     pts_x.append(xs); pts_y.append(ys)
+#             if len(pts_x) >= 2:
+#                 ax.plot(pts_x, pts_y, color=color, linewidth=linewidth, alpha=alpha, linestyle=linestyle)
+
+
+
+
 
 if __name__ == "__main__":
     # ===== ユーザー環境に合わせてここを編集 =====
@@ -321,15 +433,22 @@ if __name__ == "__main__":
     RCH, GCH, BCH = "211", "193", "171"
 
     # PFSS設定
-    RSS = 2.5
+    RSS = 2.0
     NRHO = 50
 
     # シード点抽出
     USE_STRONG = True
-    THRESH = 200.0  # Gauss
+    THRESH = 150.0  # Gauss
 
     # 表示窓サイズ[pixel]（HMI座標で統一）
     WIN_PIXELS = (1024, 1024)
+    X_RANGE_PIX = (-512, 0)
+    Y_RANGE_PIX = (0, 512)
+    
+    RMAX = 6.0          # 例: 6 R⊙ まで延長
+    CONT_MODE = 'radial'  # もしくは 'parker'
+    STEP_DR  = 0.01    # 積分ステップ幅 [Rsun]（~14 Mm 相当）
+    BLEND_DR = 0.6     # 非放射成分をゼロにするまでの厚み [Rsun]    
 
     # 出力先（Noneなら表示のみ）
     SAVE_PATH = fr"/mnt/d/wsl/home/kinno-7010/Research/PFSS/aia_pfss_Rss{RSS}_nrho{NRHO}_{TIME_OBJ.strftime('%Y%m%d_%H%M')}.png"
@@ -340,4 +459,6 @@ if __name__ == "__main__":
                  RSS=RSS, NRHO=NRHO,
                  USE_STRONG=USE_STRONG, THRESH=THRESH,
                  WIN_PIXELS=WIN_PIXELS,
+                #  X_RANGE_PIX=X_RANGE_PIX, Y_RANGE_PIX=Y_RANGE_PIX,
+                 RMAX=RMAX, STEP_DR=STEP_DR, BLEND_DR=BLEND_DR,
                  SAVE_PATH=SAVE_PATH)

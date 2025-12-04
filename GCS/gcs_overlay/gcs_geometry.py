@@ -114,8 +114,8 @@ class GCSParams:
         """Return a formatted legend string summarizing the GCS parameters."""
         return (
             "$h_{\\mathrm{apex}}$ ="+ f"{self.h_apex:.3f}"+"$\\mathrm{R_\\odot}$, "
-            "$\\kappa$ ="+ f"{self.kappa:.2f}, "
-            "$\\alpha$ ="+ f"{self.alpha_deg:.1f}"+"$\\mathrm{\\degree}$, "
+            "$\\kappa$ ="+ f"{self.kappa:.3f}, "
+            "$\\alpha$ ="+ f"{self.alpha_deg:.2f}"+"$\\mathrm{\\degree}$, "
             "$\\mathrm{tilt}$ ="+ f"{self.tilt_deg:.1f}"+"$\\mathrm{\\degree}$, "
             "$\\mathrm{lon}$ ="+ f"{self.lon_deg:.1f}"+"$\\mathrm{\\degree}$, "
             "$\\mathrm{lat}$ ="+ f"{self.lat_deg:.1f}"+"$\\mathrm{\\degree}$"

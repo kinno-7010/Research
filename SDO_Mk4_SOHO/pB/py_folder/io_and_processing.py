@@ -11,42 +11,131 @@ def load_and_prepare_instrument_data(filename, instrument_name, is_lasco=False):
             print(f"Successfully loaded {instrument_name} file: {filename}")
     except FileNotFoundError:
         print(f"CRITICAL Error: {instrument_name} file '{filename}' not found. Please check the path.")
-        raise SystemExit
+        raise SystemExit()
     except Exception as e:
         print(f"CRITICAL Error: Could not read {instrument_name} file '{filename}'. Error: {e}")
         raise SystemExit()
 
     params = {}
     try:
-        params['nx'] = header['NAXIS1']
-        params['ny'] = header['NAXIS2']
-        params['cx'] = header['CRPIX1'] - 1
-        params['cy'] = header['CRPIX2'] - 1
-        params['scale'] = abs(header['CDELT1'])
-
-        if is_lasco:
-            params['rsun_arc'] = header.get('RSUN_OBS', 959.2)
-            if 'RSUN_OBS' not in header:
-                print(f"Warning: {instrument_name} 'RSUN_OBS' not found in header. Using default value: {params['rsun_arc']} arcsec.")
-        else:
-            if 'RSUN_OBS' in header:
-                params['rsun_arc'] = header['RSUN_OBS']
-            elif 'R_SUN' in header and 'CDELT1' in header:
-                params['rsun_arc'] = header['R_SUN'] * abs(header['CDELT1'])
-                print(f"Warning: {instrument_name} 'RSUN_OBS' not found, calculated from 'R_SUN' and 'CDELT1'.")
-            else:
-                raise KeyError(f"{instrument_name} header missing solar radius information (RSUN_OBS or R_SUN/CDELT1).")
-        
-        params['px_per_rsun'] = params['rsun_arc'] / params['scale']
-        
-        print(f"{instrument_name} params: cx={params['cx']:.2f}, cy={params['cy']:.2f}, "
-              f"scale={params['scale']:.3f} arcsec/px, rsun={params['rsun_arc']:.2f} arcsec, "
-              f"R_sun_px={params['px_per_rsun']:.2f} px")
-        
+        params['nx'] = int(header['NAXIS1'])
+        params['ny'] = int(header['NAXIS2'])
+        params['cx'] = float(header['CRPIX1']) - 1.0  # 0-index に揃える
+        params['cy'] = float(header['CRPIX2']) - 1.0
     except KeyError as e:
         print(f"CRITICAL Error: Missing essential keyword in {instrument_name} header: {e}. Cannot proceed.")
-        raise SystemExit
-        
+        raise SystemExit()
+
+    # ---------------------------
+    # plate scale [arcsec/pixel]
+    # ---------------------------
+    scale = None
+
+    # 基本: CDELT1 を使う
+    if 'CDELT1' in header:
+        try:
+            cdelt1 = float(header['CDELT1'])
+        except Exception:
+            cdelt1 = 0.0
+        if cdelt1 != 0.0:
+            scale = abs(cdelt1)
+        else:
+            print(
+                f"Warning: {instrument_name} 'CDELT1' is 0. "
+                "Attempting to infer plate scale from RSUN / R_SUN / CRRADIUS."
+            )
+
+    # CDELT1 が無い or 0 の場合のフォールバック
+    if scale is None:
+        # まずは RSUN_OBS or RSUN (arcsec) と R_SUN or CRRADIUS (pixel) から計算
+        rsun_arc = None
+        rsun_key = None
+        for key in ['RSUN_OBS', 'RSUN']:
+            if key in header:
+                try:
+                    rsun_arc = float(header[key])
+                    rsun_key = key
+                    break
+                except Exception:
+                    rsun_arc = None
+
+        r_sun_px = None
+        r_sun_key = None
+        for key in ['R_SUN', 'CRRADIUS']:
+            if key in header:
+                try:
+                    r_sun_px = float(header[key])
+                    if r_sun_px > 0:
+                        r_sun_key = key
+                        break
+                except Exception:
+                    r_sun_px = None
+
+        if (rsun_arc is not None) and (r_sun_px is not None) and (r_sun_px > 0):
+            scale = rsun_arc / r_sun_px
+            print(
+                f"Info: {instrument_name} plate scale inferred as {scale:.3f} arcsec/px "
+                f"from {rsun_key} (arcsec) and {r_sun_key} (pixel)."
+            )
+
+    # それでも決まらない場合、LASCO 用のデフォルトを使う
+    if scale is None:
+        if is_lasco:
+            # LASCO C2 の典型値 ~ 11.9 arcsec/px
+            scale = 11.9
+            print(
+                f"Warning: {instrument_name} plate scale could not be inferred from header.\n"
+                f"  Falling back to default LASCO-C2 plate scale: {scale:.3f} arcsec/px.\n"
+                "  Please verify this is appropriate for your dataset."
+            )
+        else:
+            print(
+                f"CRITICAL Error: {instrument_name} header missing usable plate scale.\n"
+                "  CDELT1 is missing/zero and RSUN_OBS/RSUN with R_SUN/CRRADIUS are not usable.\n"
+                "  Cannot determine arcsec/pixel."
+            )
+            raise SystemExit()
+
+    params['scale'] = scale
+
+    # ---------------------------
+    # solar radius [arcsec]
+    # ---------------------------
+    rsun_arc = None
+    if 'RSUN_OBS' in header:
+        rsun_arc = float(header['RSUN_OBS'])
+    elif 'RSUN' in header:
+        rsun_arc = float(header['RSUN'])
+        print(f"Info: {instrument_name} using 'RSUN' for solar radius: {rsun_arc:.2f} arcsec.")
+    elif 'R_SUN' in header:
+        rsun_arc = float(header['R_SUN']) * scale
+        print(f"Info: {instrument_name} solar radius inferred from 'R_SUN' * scale = {rsun_arc:.2f} arcsec.")
+    elif 'CRRADIUS' in header:
+        rsun_arc = float(header['CRRADIUS']) * scale
+        print(f"Info: {instrument_name} solar radius inferred from 'CRRADIUS' * scale = {rsun_arc:.2f} arcsec.")
+    else:
+        if is_lasco:
+            rsun_arc = 959.2
+            print(
+                f"Warning: {instrument_name} 'RSUN_OBS'/'RSUN'/'R_SUN'/'CRRADIUS' not found.\n"
+                "  Using default photospheric radius 959.2 arcsec."
+            )
+        else:
+            print(
+                f"CRITICAL Error: {instrument_name} header missing solar radius information "
+                "(RSUN_OBS / RSUN / R_SUN / CRRADIUS). Cannot proceed."
+            )
+            raise SystemExit()
+
+    params['rsun_arc'] = rsun_arc
+    params['px_per_rsun'] = rsun_arc / scale
+
+    print(
+        f"{instrument_name} params: cx={params['cx']:.2f}, cy={params['cy']:.2f}, "
+        f"scale={params['scale']:.3f} arcsec/px, rsun={params['rsun_arc']:.2f} arcsec, "
+        f"R_sun_px={params['px_per_rsun']:.2f} px"
+    )
+
     return data, params
 
 def combine_corona_data(data_lasco, params_lasco, data_mk4, params_mk4, r_map_lasco, r_ranges,

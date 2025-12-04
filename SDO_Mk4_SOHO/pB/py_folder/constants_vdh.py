@@ -14,15 +14,87 @@ from __future__ import annotations
 import numpy as np
 from scipy.optimize import fsolve, root_scalar
 from scipy.integrate import trapezoid
+from set_u_from_instrument import compute_u_for_instrument
 
 # --- Physical constants / configuration ---
 R_SUN = 6.96e10                 # cm
 sigma_T = 6.6524587321e-25      # cm^2 (Thomson cross section, CODATA-2014/2018 value)
-u = 0.63                        # limb-darkening coefficient (visible)
 
-# LOS coefficient for pB when pB is in B_sun units (average solar disk brightness normalization)
-# C' = (3/8) * sigma_T * R_SUN / (1 - u/3)
-K_CONST = np.pi * sigma_T * (1.0 - u) / 6.0
+def _compute_K_const(u_val: float) -> float:
+    """
+    LOS 正規化定数 K_CONST を u から計算する補助関数。
+
+    元々の実装:
+        K_CONST = π σ_T (1 - u) / 6
+    をそのまま用い、u が変わるたびに再計算する。
+    """
+    return np.pi * sigma_T * (1.0 - u_val) / 6.0
+
+# ---- 初期値：デフォルトでは LASCO C2 の u を使う ----
+# （後から u_from_LASCO / u_from_KCOR / set_u_from_instrument(...) で上書き可能）
+u = compute_u_for_instrument("lasco_c2", use_allen=False)
+K_CONST = _compute_K_const(u)
+
+def set_u(u_new: float) -> float:
+    """
+    グローバルな limb-darkening 係数 u と K_CONST を整合的に更新する。
+
+    Parameters
+    ----------
+    u_new : float
+        新しい limb-darkening 係数。
+
+    Returns
+    -------
+    u : float
+        実際に設定された u（float(u_new)）。
+    """
+    global u, K_CONST
+    u = float(u_new)
+    K_CONST = _compute_K_const(u)
+    return u
+
+def u_from_LASCO(use_allen: bool = False) -> float:
+    """
+    SOHO/LASCO-C2 用の u と K_CONST を設定し、その u を返す。
+
+    instrument 名は set_u_from_instrument() 側では "lasco", "lasco_c2", "soho/lasco" などで認識される。
+    """
+    u_val = compute_u_for_instrument("lasco_c2", use_allen=use_allen)
+    return set_u(u_val)
+
+def u_from_KCOR(use_allen: bool = False) -> float:
+    """
+    MLSO COSMO K-Coronagraph (K-Cor) 用の u と K_CONST を設定し、その u を返す。
+    """
+    u_val = compute_u_for_instrument("kcor", use_allen=use_allen)
+    return set_u(u_val)
+
+def set_u_from_instrument(instrument: str, use_allen: bool = False) -> float:
+    """
+    自由形式の instrument 名から u を自動選択して設定する便利関数。
+
+    Examples
+    --------
+    set_u_from_instrument("SOHO/LASCO C2")
+    set_u_from_instrument("LASCO C2")
+    set_u_from_instrument("K-Cor")
+    set_u_from_instrument("Mk4")
+    """
+    inst = instrument.lower()
+
+    # LASCO C2 系
+    if "lasco" in inst or " c2" in inst or inst == "lasco_c2":
+        print(f"u_from_LASCO(use_allen={use_allen}): {u_from_LASCO(use_allen=use_allen)}")
+        return u_from_LASCO(use_allen=use_allen)
+
+    # K-Cor / Mk4 系
+    if "kcor" in inst or "k-cor" in inst or "kcoronagraph" in inst or "mk4" in inst:
+        print(f"u_from_KCOR(use_allen={use_allen}): {u_from_KCOR(use_allen=use_allen)}")
+        return u_from_KCOR(use_allen=use_allen)
+    
+
+    raise ValueError(f"Unknown instrument name for limb darkening: {instrument!r}")
 
 # Plasma constants (for plasma frequency conversions)
 _e = 1.60217662e-19     # C

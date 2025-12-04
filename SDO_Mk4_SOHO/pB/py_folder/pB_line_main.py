@@ -39,7 +39,7 @@ def main():
             final_image[r_map_lasco < lasco_effective_inner ] = np.nan
 
         if final_image is not None:
-            plot_combined_image(final_image, r_map_lasco, params_lasco, r_ranges, theta_deg_overlay=theta_to_plot)
+            plot_combined_image(final_image, r_map_lasco, params_lasco, r_ranges, theta_deg_overlay=theta_to_plot, xlim_pix=(-150, 0), ylim_pix=(-100, 150))
     else:
         print("Critical: LASCO data/params failed to load. Cannot proceed with image processing.")
         raise SystemExit
@@ -117,19 +117,19 @@ def main():
     if density_plot_max_val <= density_plot_min_val: density_plot_max_val = density_plot_min_val * 1000
 
     # 7) Required call + show (plot settings unchanged)
-    generate_ne_profile_plot(
-        ax_ne,                            # to ax
-        r_for_fitting,                    # to r_fit_data_points
-        Ne_for_fitting,                   # to Ne_fit_data_points
-        fit_params,                       # to fit_params_tuple
-        current_plot_r_min,               # to plot_r_min
-        current_plot_r_max,               # to plot_r_max
-        theta_to_plot,                    # to theta_deg_val
-        (density_plot_min_val, density_plot_max_val), # to density_plot_limits
-        {'Newkirk_C': 1.8, 'Saito1970_C': 6.0, 'Saito1977_C': 6.0}, # to model_multipliers_dict
-        density_lower_highlight,          # to density_lower_highlight_bound
-        density_upper_highlight           # to density_upper_highlight_bound
-    )
+    # generate_ne_profile_plot(
+    #     ax_ne,                            # to ax
+    #     r_for_fitting,                    # to r_fit_data_points
+    #     Ne_for_fitting,                   # to Ne_fit_data_points
+    #     fit_params,                       # to fit_params_tuple
+    #     current_plot_r_min,               # to plot_r_min
+    #     current_plot_r_max,               # to plot_r_max
+    #     theta_to_plot,                    # to theta_deg_val
+    #     (density_plot_min_val, density_plot_max_val), # to density_plot_limits
+    #     {'Newkirk_C': 1.8, 'Saito1970_C': 6.0, 'Saito1977_C': 6.0}, # to model_multipliers_dict
+    #     density_lower_highlight,          # to density_lower_highlight_bound
+    #     density_upper_highlight           # to density_upper_highlight_bound
+    # )
     plt.show()
 
 if __name__ == "__main__":

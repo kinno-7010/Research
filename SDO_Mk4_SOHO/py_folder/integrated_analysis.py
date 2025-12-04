@@ -1005,7 +1005,7 @@ def create_single_diff_image(ax, target_time_str: str):
     }
 
 
-def create_single_diff_from_time_image(ax, target_time_str: str, base_time_str: str):
+def create_single_diff_from_time_image(ax, target_time_str: str, delta_time: int):
     """2分前ベース差分統合画像作成関数（LASCOのみ02:00固定）"""
     
     # sunpyの警告を抑制
@@ -1015,15 +1015,20 @@ def create_single_diff_from_time_image(ax, target_time_str: str, base_time_str: 
     
     out_dir_str = "/mnt/d/wsl/home/kinno-7010/Research/SDO_Mk4_SOHO/diff"
     # --- 1. 時刻パースとデータリスト取得 ---
-    base_time_obj = Time(base_time_str)
     target_time_obj = Time(target_time_str)
+    if isinstance(delta_time, Time):
+        base_time_obj = delta_time
+    elif isinstance(delta_time, (int, float)):
+        base_time_obj = target_time_obj - delta_time * u.min
+    else:
+        base_time_obj = Time(delta_time)
     
     # LASCOの固定ベース時刻を定義
-    lasco_base_time = Time('2022-06-13T02:00:00')
+    lasco_base_time = Time(target_time_str)
     
     # スキャン範囲を計算（LASCOのベース時刻も考慮）
     # Time オブジェクトのリストを作成してmin/maxを計算
-    time_list = [target_time_obj, base_time_obj, lasco_base_time]
+    time_list = [target_time_obj, base_time_obj]
     earliest_time = min(time_list)
     latest_time = max([target_time_obj, base_time_obj])
     
@@ -1032,8 +1037,8 @@ def create_single_diff_from_time_image(ax, target_time_str: str, base_time_str: 
     
     out_dir = Path(out_dir_str)
     
-    print(f"2分前ベース差分画像作成: target={target_time_str}, base={base_time_str}")
-    print(f"LASCO用固定基準時刻: {target_time_obj.datetime.strftime('%Y-%m-%dT02:00:00')}")
+    print(f"2分前ベース差分画像作成: target={target_time_str}, base={base_time_obj.iso}")
+    print(f"LASCO用固定基準時刻: {lasco_base_time.iso}")
     print(f"LASCO選択ロジック: 指定時間を超えてから次の画像に移り変わる方式を使用")
     
     # 出力ディレクトリを作成
@@ -1043,7 +1048,7 @@ def create_single_diff_from_time_image(ax, target_time_str: str, base_time_str: 
     mk4_list, lasco_list, aia193_list = get_data_list(scan_start, scan_end)
     
     # AIA193差分範囲計算（既取得データを再利用）
-    aia_norm_ranges = determine_aia193_diff_ranges(aia193_list, base_time_str, percentile_range=[1, 99.9])
+    aia_norm_ranges = determine_aia193_diff_ranges(aia193_list, base_time_obj.iso, percentile_range=[1, 99.9])
     data_dict = {'mk4': mk4_list, 'lasco': lasco_list, 'aia193': aia193_list}
 
     # LASCO マップのサンプルを読み込んで最大shapeを特定（メモリ効率化）
@@ -1111,7 +1116,7 @@ def create_single_diff_from_time_image(ax, target_time_str: str, base_time_str: 
         if key == 'lasco':
             data_selected_dict[key], _ = select_lasco_by_time_threshold(target_time_obj, value)
             # LASCOの場合は常に02:00:00UTを基準時刻として使用（固定）
-            lasco_base_time = Time('2022-06-13T02:00:00')
+            lasco_base_time = Time(base_time_obj.iso)
             data_selected_base_dict[key], _ = select_lasco_by_time_threshold(lasco_base_time, value)
             print(f"LASCO: 02:00:00UT固定ベース時刻使用: {lasco_base_time.iso}")
             print(f"LASCO target時刻: {data_selected_dict[key].date.iso}")
@@ -1148,7 +1153,7 @@ def create_single_diff_from_time_image(ax, target_time_str: str, base_time_str: 
     mk4_norm = ImageNormalize(mk4_diff, vmin=mk4_vmin, vmax=mk4_vmax, stretch=LinearStretch(), clip=True)
     n_mk4 = mk4_norm(mk4_diff)
 
-    lasco_vmin, lasco_vmax = -50, 50
+    lasco_vmin, lasco_vmax = -10, 10
     print('lasco_vmin', lasco_vmin, 'lasco_vmax', lasco_vmax)
     
     lasco_norm = ImageNormalize(lasco_diff, vmin=lasco_vmin, vmax=lasco_vmax, stretch=LinearStretch(), clip=True)
@@ -1172,7 +1177,7 @@ def create_single_diff_from_time_image(ax, target_time_str: str, base_time_str: 
 
     # 半径マップ・合成
     r_map = calculate_r_map(p_lasco)
-    ranges = dict(mk4_inner=1.1, mk4_outer_lasco_inner=3.0, lasco_outer=6.0)
+    ranges = dict(mk4_inner=1.1, mk4_outer_lasco_inner=2.2, lasco_outer=6.0)
     composite, imk4, ia = combine_corona_data(
         n_lasco, p_lasco,
         n_mk4, p_mk4,
@@ -1250,15 +1255,15 @@ def create_single_diff_from_time_image(ax, target_time_str: str, base_time_str: 
     y_line_pix = r_coords_rsun * p_lasco['px_per_rsun'] * np.sin(theta_line_rad)
     
     # 直線を描画
-    ax.plot(x_line_pix, y_line_pix, 
-            color='red', linestyle='-', linewidth=2, 
-            label=f'θ={theta_line_deg:.0f}°')
+    # ax.plot(x_line_pix, y_line_pix, 
+    #         color='red', linestyle='-', linewidth=2, 
+    #         label=f'θ={theta_line_deg:.0f}°')
 
     # 軸範囲を global に固定
     ax.set_xlim(-400, 0); ax.set_ylim(-200, 300)
     # ax.set_xlabel('X [pixel]'); ax.set_ylabel('Y [pixel]'); ax.set_facecolor('gray')
     ax.set_title(
-        f"2min Diff | Base: {base_time_str.replace('T', ' ')} \n"
+        f"{delta_time} min Diff | Base: {base_time_obj.iso} \n"
         f"SDO/AIA 193 Å: {aia193_map.date.strftime('%Y-%m-%d %H:%M:%S')}\n"
         f"Mk4: {mk4_map.date.strftime('%H:%M:%S')} | LASCO-C2: {lasco_map.date.strftime('%H:%M:%S')}"
     )

@@ -235,6 +235,9 @@ def plot_apex_height_time_series(
         linestyle="-",
         label=legend_label,
     )
+    # faint CMEの時間変化
+    
+    
     ax.set_xlabel("Time [UT]", fontsize=14)
     ax.set_ylabel("Apex height [$R_\\odot$]", fontsize=14)
     # x軸の目盛を斜めにしない（水平にする）

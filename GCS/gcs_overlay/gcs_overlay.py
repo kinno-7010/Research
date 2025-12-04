@@ -215,7 +215,7 @@ def overlay_gcs_on_composite(
           }
     """
     # Import lazily to avoid pulling user config on import
-    from integrated_analysis import create_single_diff_image
+    from integrated_analysis import create_single_diff_from_time_image
 
     # Patch Horizons lookup to tolerate offline execution (no network access)
     if not hasattr(overlay_gcs_on_composite, "_horizons_patched"):
@@ -243,7 +243,7 @@ def overlay_gcs_on_composite(
         overlay_gcs_on_composite._horizons_patched = True
 
     # 1. ユーザー提供の関数でベース画像を作成
-    base_info = create_single_diff_image(ax, target_time_str)
+    base_info = create_single_diff_from_time_image(ax, target_time_str, delta_time=13)
     lasco_map = base_info.get('lasco_map')
     p_lasco = base_info.get('params_lasco')
     

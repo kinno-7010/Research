@@ -84,19 +84,20 @@ from constants_vdh import R_SUN  # for physical consistency if needed
 # Header / geometry convenience
 # -----------------------------
 def _params_from_header(hdr: dict) -> Dict[str, float]:
-    """
-    Extract pixel geometry and Sun-center from a COR1 FITS header.
-    Returns a dict with {nx, ny, cx, cy, scale, rsun_arc, px_per_rsun}.
-    """
     nx = int(hdr.get('NAXIS1'))
     ny = int(hdr.get('NAXIS2'))
     cx = float(hdr.get('CRPIX1')) - 1.0
     cy = float(hdr.get('CRPIX2')) - 1.0
     scale = abs(float(hdr.get('CDELT1')))  # arcsec/px
-    # 安全側：RSUN_OBS が無い場合は RSUN を参照。どちらも無ければ 959.2 arcsec。
-    rsun_arc = float(hdr.get('RSUN_OBS', hdr.get('RSUN', 959.2)))
+    rsun_arc = float(hdr.get('RSUN_OBS', hdr.get('RSUN', 959.2)))  # arcsec
     px_per_rsun = rsun_arc / scale
-    return dict(nx=nx, ny=ny, cx=cx, cy=cy, scale=scale, rsun_arc=rsun_arc, px_per_rsun=px_per_rsun)
+    return dict(
+        nx=nx, ny=ny, cx=cx, cy=cy, scale=scale,
+        rsun_arc=rsun_arc,          # ← 従来キー
+        rsun_arcsec=rsun_arc,       # ← 同義キー（可読名）
+        px_per_rsun=px_per_rsun,
+        arcsec_per_pix=scale        # ← これも明示
+    )
 
 
 def _radius_map(shape: Tuple[int, int], cx: float, cy: float, px_per_rsun: float) -> np.ndarray:
@@ -423,6 +424,155 @@ def select_triplet_by_polar_header(raw_files: Sequence[str]) -> Dict[int, str]:
     if missing:
         raise RuntimeError(f"POLAR {missing}° のRAWが見つかりません。入力を確認してください。")
     return found
+def smooth_profiles_along_r(profiles: dict,
+                            window_r: float = 0.03,   # 平滑スケール ~0.03 Rsun（調整可）
+                            min_bins: int = 5,
+                            logspace: bool = True) -> dict:
+    """
+    Ne_profiles(θ×r) を半径方向にだけ滑らか化する。
+    - window_r: Rsun単位の平滑幅（典型 0.02–0.05）
+    - r_mid, Ne_profiles を in-place で更新して返す
+    """
+    import numpy as np
+    Ne = profiles['Ne_profiles'].copy()
+    r_mid = np.asarray(profiles['r_mid'], float)
+    if r_mid.ndim != 1 or Ne.ndim != 2 or Ne.shape[1] != r_mid.size:
+        return profiles
+
+    # ウィンドウ長（奇数）
+    dr = np.median(np.diff(r_mid))
+    k = int(max(min_bins, round(window_r / max(dr, 1e-6))))
+    k = k + 1 - (k % 2)  # odd
+    if k < min_bins: k = min_bins
+    # ハニング窓
+    w = np.hanning(k); w /= w.sum()
+
+    def _conv_nanaware(arr1d):
+        m = np.isfinite(arr1d) & (arr1d > 0)
+        if m.sum() < 3:
+            return arr1d
+        arr = np.log(arr1d, where=m) if logspace else arr1d.copy()
+        arr[~m] = 0.0
+        ww = np.where(m, 1.0, 0.0)
+        num = np.convolve(ww, w, mode='same')
+        s   = np.convolve(arr, w, mode='same')
+        out = np.empty_like(arr1d); out[:] = np.nan
+        ok = num > 1e-6
+        if logspace:
+            out[ok] = np.exp(s[ok] / num[ok])
+        else:
+            out[ok] = s[ok] / num[ok]
+        # 元の有限値は優先的に上書き（過度な平滑を避ける）
+        out[m] = out[m]
+        return out
+
+    for i in range(Ne.shape[0]):
+        Ne[i, :] = _conv_nanaware(Ne[i, :])
+
+    profiles['Ne_profiles'] = Ne
+    return profiles
+
+def build_density_map_from_profiles_radinterp(
+    r_map_rsun: np.ndarray,
+    params_ref: dict,
+    profiles: dict,
+    valid_rmin: float,
+    valid_rmax: float
+) -> np.ndarray:
+    """
+    Ne_profiles(θ×r) を 2D に再配置：半径方向＋角度方向の双一次補間（log空間）。
+    “段差塗り”によるリングを抑える。
+    """
+    import numpy as np
+    ny, nx = r_map_rsun.shape
+    cx = float(params_ref['cx']); cy = float(params_ref['cy'])
+
+    # 角度マップ [0,360)
+    yy, xx = np.indices((ny, nx))
+    theta = (np.degrees(np.arctan2(yy - cy, xx - cx)) % 360.0).ravel()
+    r = r_map_rsun.ravel()
+
+    th_cent = np.asarray(profiles['theta_centers_deg'], float)
+    r_mid   = np.asarray(profiles['r_mid'], float)
+    Ne_tr   = np.asarray(profiles['Ne_profiles'], float)  # shape: (n_th, n_r)
+
+    n_th, n_r = Ne_tr.shape
+    step = float(np.median(np.diff(th_cent))) if n_th > 1 else 360.0
+    base = float(th_cent[0]) if n_th > 0 else 0.0
+
+    # 角度方向インデックスと重み
+    idx_f = ((theta - base) % 360.0) / step
+    i0 = np.floor(idx_f).astype(int) % n_th
+    i1 = (i0 + 1) % n_th
+    wt_th = idx_f - np.floor(idx_f)
+
+    # 半径方向インデックスと重み
+    r_cl = np.clip(r, r_mid[0], r_mid[-1])
+    j1 = np.searchsorted(r_mid, r_cl, side='right')
+    j1 = np.clip(j1, 1, n_r - 1)
+    j0 = j1 - 1
+    r0 = r_mid[j0]; r1 = r_mid[j1]
+    wt_r = np.clip((r_cl - r0) / np.maximum(r1 - r0, 1e-12), 0.0, 1.0)
+
+    # log 空間で補間
+    eps = 1e-30
+    lnN_i0_j0 = np.log(np.clip(Ne_tr[i0, j0], eps, None))
+    lnN_i0_j1 = np.log(np.clip(Ne_tr[i0, j1], eps, None))
+    lnN_i1_j0 = np.log(np.clip(Ne_tr[i1, j0], eps, None))
+    lnN_i1_j1 = np.log(np.clip(Ne_tr[i1, j1], eps, None))
+
+    lnN_i0 = (1 - wt_r) * lnN_i0_j0 + wt_r * lnN_i0_j1
+    lnN_i1 = (1 - wt_r) * lnN_i1_j0 + wt_r * lnN_i1_j1
+    lnN    = (1 - wt_th) * lnN_i0     + wt_th * lnN_i1
+
+    Ne = np.exp(lnN)
+
+    # r 範囲外は NaN
+    valid = (r_map_rsun.ravel() >= valid_rmin) & (r_map_rsun.ravel() <= valid_rmax)
+    out = np.full(r.size, np.nan, float)
+    out[valid] = Ne[valid]
+    return out.reshape(ny, nx)
+
+
+def sanitize_pb_for_inversion(pB_masked: np.ndarray,
+                              *,
+                              floor_bsun: float = 0.0,
+                              n_iter_fill: int = 2,
+                              min_neighbors: int = 4) -> np.ndarray:
+    """
+    反転を安定化するための前処理：
+      - rマスク済みの pB について、負値や極小値（<floor_bsun）を近傍平均で補間
+      - 3x3 近傍の有限値の平均でNaN/負値を埋める（min_neighbors以上ある画素のみ）
+      - これを n_iter_fill 回繰り返して小さな穴を消す
+    """
+    import numpy as np
+    pb = np.array(pB_masked, dtype=float, copy=True)
+
+    # まず floor 未満を NaN 扱いにする（物理的に負の pB は無い）
+    bad = ~np.isfinite(pb) | (pb < float(floor_bsun))
+    pb[bad] = np.nan
+
+    # 近傍平均での小穴埋め（3x3）
+    for _ in range(int(max(0, n_iter_fill))):
+        # 8 近傍のシフト配列
+        neighs = []
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                if dx == 0 and dy == 0:
+                    continue
+                neighs.append(np.roll(np.roll(pb, dy, axis=0), dx, axis=1))
+        neighs = np.stack(neighs, axis=0)  # (8, ny, nx)
+        finite = np.isfinite(neighs)
+        num = finite.sum(axis=0)
+        ssum = np.nansum(neighs, axis=0)
+        fill = ssum / np.clip(num, 1, None)
+        to_fill = (~np.isfinite(pb)) & (num >= int(min_neighbors))
+        if not np.any(to_fill):
+            break
+        pb[to_fill] = fill[to_fill]
+
+    return pb
+
 
 def guess_daily_med_paths_yyyymmdd(bkg_dir: str, example_raw_path: str,
                                    prefix: str = "dc1A",
@@ -447,29 +597,29 @@ def guess_daily_med_paths_yyyymmdd(bkg_dir: str, example_raw_path: str,
 # ----------------------------------------------------
 # Top-level: pB -> N_e using the shared inversion code
 # ----------------------------------------------------
-def invert_cor1_pb_to_density(pB_masked: np.ndarray,
+def invert_cor1_pb_to_density_spherical(pB_masked: np.ndarray,
                               r_map_rsun: np.ndarray,
                               params: dict,
                               r_min: float = 1.4,
                               r_max: float = 4.0,
-                              radial_step_pix: float = 2.0,
+                              radial_step_pix: float = 1.2,   # ほんの少し細かく
                               n_theta: int = 360,
                               regularization: float = 1e-5,
-                              # ★ 追加：θ近傍ブレンド（角方向スムージング）の強さ
-                              theta_neighbor_blend: int = 5
+                              theta_neighbor_blend: int = 2
                               ) -> Tuple[np.ndarray, dict]:
     """
-    Use the same sectorized inversion workflow as 2D_density_map.py.
-    Returns (ne_map [ny,nx], aux {theta_centers_deg, r_edges, Ne_profiles}).
+    Mk4+LASCO と同様に、“ビン単位の段差塗り（nearest bin）”で 2D Ne を作る。
+    双一次補間は使わない。
     """
-    # Build r-edges（必要なら clamp を小さくする）
+    import numpy as np
+
+    # --- r ビン境界 ---
     r_edges = _build_uniform_r_edges(r_min, r_max, params['px_per_rsun'],
                                      px_per_shell=radial_step_pix,
-                                     clamp=(0.005, 0.20))   # ★ finer 下限の例
-
+                                     clamp=(0.008, 0.20))
     theta_step_deg = 360.0 / float(max(1, n_theta))
 
-    # per-theta pB→Ne（2D_density_map.py の関数を使用）
+    # --- θごとの pB(r) → Ne(r) 反転プロファイル ---
     profiles = invert_per_theta_profiles(
         pb_image=pB_masked,
         r_map_rsun=r_map_rsun,
@@ -479,22 +629,48 @@ def invert_cor1_pb_to_density(pB_masked: np.ndarray,
         dr=(r_max - r_min) / max(len(r_edges) - 1, 1),
         theta_step_deg=theta_step_deg,
         r_edges=r_edges,
-        # ★ ここで角方向ブレンドを弱める/止める（解像感UP）
-        theta_neighbor_blend=int(theta_neighbor_blend)
+        # 段差塗りに合わせ、角度ブレンドは抑える（0〜1推奨）
+        theta_neighbor_blend=0
     )
 
-    ne_map = build_density_map_from_profiles(
-        r_map_rsun=r_map_rsun,
-        params_ref=params,
-        profiles=profiles,
-        valid_rmin=r_min,
-        valid_rmax=r_max,
-        mask_nan_outside=True,
-        theta_neighbor_fallback=0,
-        spatial_fill_mode="nearest",
-        spatial_fill_iters=2,
-        use_bilinear=True
-    )
+    # （任意）半径方向の穏やかな log 平滑は維持（ビン段差は保たれます）
+    profiles = smooth_profiles_along_r(profiles, window_r=0.03, min_bins=5, logspace=True)
+
+    # --- 段差塗りで 2D 展開（nearest bin in θ と r） ---
+    ny, nx = r_map_rsun.shape
+    cx = float(params['cx']); cy = float(params['cy'])
+    yy, xx = np.indices((ny, nx))
+    theta_pix = (np.degrees(np.arctan2(yy - cy, xx - cx)) % 360.0).ravel()
+    r_pix = r_map_rsun.ravel()
+
+    th_cent = np.asarray(profiles['theta_centers_deg'], float)  # shape: (n_th,)
+    r_mid   = np.asarray(profiles['r_mid'], float)              # shape: (n_r,)
+    Ne_tr   = np.asarray(profiles['Ne_profiles'], float)        # shape: (n_th, n_r)
+
+    n_th, n_r = Ne_tr.shape
+    if n_th < 1 or n_r < 1:
+        raise RuntimeError("Empty profiles in inversion result.")
+
+    # 角度：最近中心（round to nearest center）
+    step = float(360.0 / n_th) if n_th > 1 else 360.0
+    base = float(th_cent[0]) if n_th > 0 else 0.0
+    idx_f = ((theta_pix - base) % 360.0) / step
+    i_th = (np.floor(idx_f + 0.5).astype(int)) % n_th
+
+    # 半径：ビン段差（digitize で [edge_i, edge_{i+1}) に割当て）
+    j_r = np.digitize(r_pix, r_edges) - 1
+    valid_r = (j_r >= 0) & (j_r < n_r)
+
+    # 2D マップを段差塗りで構成
+    flat = np.full(r_pix.size, np.nan, float)
+    ok = valid_r
+    flat[ok] = Ne_tr[i_th[ok], j_r[ok]]
+
+    # r 範囲外は NaN
+    valid_shell = (r_pix >= r_min) & (r_pix <= r_max)
+    out = np.full(r_pix.size, np.nan, float)
+    out[valid_shell] = flat[valid_shell]
+    ne_map = out.reshape(ny, nx)
 
     aux = dict(theta_centers_deg=profiles['theta_centers_deg'],
                r_edges=profiles['r_edges'],
@@ -502,6 +678,154 @@ def invert_cor1_pb_to_density(pB_masked: np.ndarray,
                Ne_profiles=profiles['Ne_profiles'],
                pB_profiles=profiles.get('pB_profiles'))
     return ne_map, aux
+
+
+def invert_cor1_pb_to_density_axisymmetric(
+    pB_masked: np.ndarray,
+    r_map: np.ndarray,
+    params: dict,
+    r_min: float = 1.4,
+    r_max: float = 4.0,
+    radial_step_pix: int = 2,
+    n_theta: int = 360,
+    regularization: float = 1e-5,
+):
+    """
+    Axisymmetric version (Hayes et al., 2001) of the pB->Ne inversion.
+
+    Changes from the previous sector-wise (per-θ) implementation:
+      - Assume axisymmetry about the solar rotation axis and invert a single
+        azimuthally-averaged pB(r) annular profile.
+      - Use the same van de Hulst / Billings kernel as the original code.
+      - Map the resulting Ne(r) back to the 2D image by assigning each pixel
+        the Ne corresponding to its radial bin.
+
+    Returns
+    -------
+    ne_map : 2D array (cm^-3)
+    extra  : (r_edges, theta_edges=None, r_bin_centers, ne_profile_1d)
+    """
+    import numpy as _np
+    from constants_vdh import invert_ablation  # local import to avoid touching global imports
+
+    px_per_rsun = float(params["px_per_rsun"])
+    dr = float(radial_step_pix) / px_per_rsun
+
+    # --- radial bins in R_sun ---
+    r_edges = _np.arange(float(r_min), float(r_max) + dr, dr, dtype=float)
+    if r_edges.size < 2:
+        raise ValueError("r_edges has fewer than 2 points")
+    r_mid = 0.5 * (r_edges[:-1] + r_edges[1:])
+    n_r = r_mid.size
+
+    # --- azimuthally-averaged annular pB(r) ---
+    pb_prof = _np.full(n_r, _np.nan, dtype=float)
+    for i in range(n_r):
+        rin, rout = r_edges[i], r_edges[i+1]
+        mask = (r_map >= rin) & (r_map < rout) & _np.isfinite(pB_masked) & (pB_masked > 0)
+        if _np.any(mask):
+            pb_prof[i] = _np.nanmedian(pB_masked[mask])  # robust against outliers
+
+    # --- repair small radial gaps (keep edge NaNs) ---
+    def _interp_small_gaps_1d(row: _np.ndarray, max_gap_bins: int = 3) -> _np.ndarray:
+        x = _np.arange(row.size, dtype=float)
+        out = row.copy()
+        i = 0
+        while i < out.size:
+            if _np.isnan(out[i]):
+                j = i
+                while j < out.size and _np.isnan(out[j]):
+                    j += 1
+                L = j - i
+                if L <= max_gap_bins and i > 0 and j < out.size and _np.isfinite(out[i-1]) and _np.isfinite(out[j]):
+                    out[i:j] = _np.interp(_np.arange(i, j, dtype=float), [i-1, j], [out[i-1], out[j]])
+                i = j
+            else:
+                i += 1
+        return out
+
+    pb_prof = _interp_small_gaps_1d(pb_prof, max_gap_bins=3)
+
+    valid = _np.isfinite(pb_prof) & (pb_prof > 0)
+    if valid.sum() < 3:
+        raise RuntimeError("Too few valid annular samples in pB to invert. Check masks/background.")
+
+    # --- van de Hulst 殻ごと反転（1D） ---
+    ne_1d = invert_ablation(pb_prof[valid], r_mid[valid], r_edges[_np.r_[valid, False]], valid.sum())
+
+    # 全長に復元（無効部は NaN のまま）
+    ne_full = _np.full_like(pb_prof, _np.nan, dtype=float)
+    ne_full[valid] = ne_1d
+
+    # --- 2D 展開（半径最近傍） ---
+    ne_map = _np.full_like(pB_masked, _np.nan, dtype=float)
+    idx = _np.digitize(r_map.ravel(), r_edges) - 1
+    ok = (idx >= 0) & (idx < n_r)
+    flat = _np.full(idx.size, _np.nan, dtype=float)
+    flat[ok] = ne_full[idx[ok]]
+    ne_map = flat.reshape(r_map.shape)
+    ne_map[(r_map < r_min) | (r_map >= r_max)] = _np.nan
+
+    # --- 小島状 NaN の穏やかな補間（内側だけ、境界は保持） ---
+    def _fill_small_nan_islands(img: _np.ndarray, passes: int = 2, min_neighbors: int = 5) -> _np.ndarray:
+        out = img.copy()
+        for _ in range(int(passes)):
+            nanmask = ~_np.isfinite(out)
+            if not _np.any(nanmask):
+                break
+            neighs = []
+            for dy in (-1, 0, 1):
+                for dx in (-1, 0, 1):
+                    if dx == 0 and dy == 0:
+                        continue
+                    neighs.append(_np.roll(_np.roll(out, dy, axis=0), dx, axis=1))
+            neighs = _np.stack(neighs, axis=0)
+            finite = _np.isfinite(neighs)
+            num = finite.sum(axis=0)
+            ssum = _np.nansum(neighs, axis=0)
+            fill = ssum / _np.clip(num, 1, None)
+            to_fill = nanmask & (num >= int(min_neighbors))
+            out[to_fill] = fill[to_fill]
+        return out
+
+    ne_map = _fill_small_nan_islands(ne_map, passes=2, min_neighbors=5)
+
+    theta_edges = None  # 軸対称なので θ 分割はありません
+    return ne_map, (r_edges, theta_edges, r_mid, ne_full)
+
+def inpaint_small_nans(ne_map: np.ndarray,
+                       valid_mask: Optional[np.ndarray] = None,
+                       max_passes: int = 3,
+                       min_neighbors: int = 3) -> np.ndarray:
+    """
+    2D 密度マップの小さな NaN 島を、8近傍の有限値の平均で段階的に埋める。
+    r 範囲外などの大域マスク(valid_mask=False)は埋めない。
+    """
+    import numpy as np
+    ne = np.array(ne_map, dtype=float, copy=True)
+    if valid_mask is None:
+        valid_mask = np.isfinite(ne)
+
+    for _ in range(int(max_passes)):
+        nan_island = (~np.isfinite(ne)) & valid_mask
+        if not np.any(nan_island):
+            break
+        neighs = []
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                if dx == 0 and dy == 0:
+                    continue
+                neighs.append(np.roll(np.roll(ne, dy, axis=0), dx, axis=1))
+        neighs = np.stack(neighs, axis=0)
+        finite = np.isfinite(neighs)
+        num = finite.sum(axis=0)
+        ssum = np.nansum(neighs, axis=0)
+        fill = ssum / np.clip(num, 1, None)
+        to_fill = nan_island & (num >= int(min_neighbors))
+        if not np.any(to_fill):
+            break
+        ne[to_fill] = fill[to_fill]
+    return ne
 
 
 def export_density_csv_sta(
@@ -584,7 +908,7 @@ def plot_density_map_sta(ne_map: np.ndarray,
                          params: dict,
                          r_keep_min: float = 1.4,
                          r_keep_max: float = 4.0,
-                         title: str = "STEREO-A COR1 2D density (pB inversion)",
+                         title: str = "STEREO-A COR1 2D density (pB inversion) 2022-06-13 03:01:00 UT",
                          savepath: Optional[str] = None):
     """
     ne_map を対数カラースケールで描画。
@@ -603,7 +927,6 @@ def plot_density_map_sta(ne_map: np.ndarray,
     pps = float(params['px_per_rsun'])  # px per Rsun
 
     # --- arcsec/px の推定 ---
-    # 優先: params['arcsec_per_pix'] -> params['rsun_arcsec']/pps -> params['rsun_arc']/pps
     s_arc = None
     if 'arcsec_per_pix' in params and np.isfinite(params['arcsec_per_pix']):
         s_arc = float(params['arcsec_per_pix'])
@@ -615,7 +938,7 @@ def plot_density_map_sta(ne_map: np.ndarray,
     # --- r_map を計算（単位: Rsun） ---
     r_map = _radius_map(ne_map.shape, cx, cy, pps)
 
-    # --- extent（imshowの座標軸範囲）と contour 用座標グリッド（X, Y） ---
+    # --- extent & 座標グリッド ---
     if (s_arc is not None) and np.isfinite(s_arc):
         extent = [(-cx) * s_arc, (nx - cx) * s_arc, (-cy) * s_arc, (ny - cy) * s_arc]
         xlabel = 'X [arcsec from Sun center]'
@@ -624,7 +947,6 @@ def plot_density_map_sta(ne_map: np.ndarray,
         X = (xx - cx) * s_arc
         Y = (yy - cy) * s_arc
     else:
-        # フォールバック：pixel表示
         extent = [-cx, nx - cx, -cy, ny - cy]
         xlabel = 'X [pixel from Sun center]'
         ylabel = 'Y [pixel from Sun center]'
@@ -632,19 +954,21 @@ def plot_density_map_sta(ne_map: np.ndarray,
         X = xx - cx
         Y = yy - cy
 
-    # --- カラースケール ---
-    vmin, vmax = 1e5, 1e9  # cm^-3 の代表レンジ
+    # --- ステップ表示（補間 OFF） ---
+    vmin, vmax = 1e5, 1e9  # cm^-3
     fig, ax = plt.subplots(figsize=(10, 10))
     im = ax.imshow(ne_map, origin='lower', extent=extent,
-                   norm=LogNorm(vmin=vmin, vmax=vmax), cmap='plasma')
+                   norm=LogNorm(vmin=vmin, vmax=vmax),
+                   cmap='plasma',
+                   interpolation='nearest')   # ★ ここを追加（段差表示）
 
-    # --- 整数 Rsun の等高線（座標グリッドを与える：X, Y, r_map） ---
+    # --- 整数 Rsun の等高線 ---
     int_levels = np.arange(1, int(math.floor(r_keep_max)) + 1)
     if len(int_levels) > 0:
         ax.contour(X, Y, r_map, levels=int_levels,
                    colors='white', linewidths=1.0, linestyles='--', alpha=0.7)
 
-    # --- 解析範囲リング（r_keep_min / r_keep_max） ---
+    # --- 解析範囲リング ---
     for R, col, lab in [(r_keep_min, 'cyan',   f"{r_keep_min:.1f} R$_\\odot$"),
                         (r_keep_max, 'magenta',f"{r_keep_max:.1f} R$_\\odot$")]:
         if R <= np.nanmax(r_map):
@@ -652,32 +976,25 @@ def plot_density_map_sta(ne_map: np.ndarray,
                        colors=[col], linewidths=1.2, linestyles='-.')
             ax.plot([], [], color=col, linestyle='-.', label=lab)
 
-    # 中心マーク
     ax.plot(0, 0, '+', color='k', markersize=10, markeredgewidth=1.5)
-
-    # 軸体裁
     ax.set_title(title, fontsize=16)
-    ax.set_xlabel(xlabel, fontsize=12)
-    ax.set_ylabel(ylabel, fontsize=12)
+    ax.set_xlabel(xlabel, fontsize=14)
+    ax.set_ylabel(ylabel, fontsize=14)
     ax.set_aspect('equal')
 
-    # カラーバー
     divider = make_axes_locatable(ax)
     cax = divider.append_axes("right", size="1%", pad=0.01)
-    cb = fig.colorbar(im, cax=cax, label='N$_e$ [cm$^{-3}$]')
-    cb.ax.tick_params(labelsize=10)
-
+    cb = fig.colorbar(im, cax=cax)
+    cb.ax.tick_params(labelsize=14)
+    cb.set_label('N$_e$ [cm$^{-3}$]', fontsize=14)
     ax.legend(loc='upper right', fontsize=10)
     plt.tight_layout()
 
-    # 既定保存先（savepath未指定時）
     if not savepath or not isinstance(savepath, str):
         savepath = "/mnt/d/wsl/home/kinno-7010/Research/STEREO-A/SECCHI/COR1/2D_density_map_sta.png"
     fig.savefig(savepath, dpi=300)
     print(f"[save] Wrote {savepath}")
-    
     plt.show()
-
     return fig, ax
 
 
@@ -685,55 +1002,72 @@ def plot_density_map_sta(ne_map: np.ndarray,
 # Script entry point
 # --------------------
 if __name__ == "__main__":
-    RAW_DIR = "/mnt/d/wsl/home/kinno-7010/Research/STEREO-A/SECCHI/COR1/Rawdata"   # 実運用のRAW置き場に変更
-    BKG_DIR = "/mnt/d/wsl/home/kinno-7010/Research/STEREO-A/SECCHI/COR1/Rawdata"   # daily-med背景の置き場に変更
+    RAW_DIR = "/mnt/d/wsl/home/kinno-7010/Research/STEREO-A/SECCHI/COR1/Rawdata"
+    BKG_DIR = "/mnt/d/wsl/home/kinno-7010/Research/STEREO-A/SECCHI/COR1/Rawdata"
+
+    # === ここで反転モードを選ぶ ===
+    # "spherical"（= 局所球対称, 扇形ごと反転） or "axisym"（= 軸対称, 全周平均1D→2D）
+    MODE = "spherical"   # ← "axisym" に変えるだけで軸対称版に切替
 
     raw_files = [
         os.path.join(RAW_DIR, "20220613_030100_n4c1A.fts"),  # POLAR=0°
         os.path.join(RAW_DIR, "20220613_030118_n4c1A.fts"),  # POLAR=120°
         os.path.join(RAW_DIR, "20220613_030136_n4c1A.fts"),  # POLAR=240°
     ]
-    triplet = select_triplet_by_polar_header(raw_files)  # {0:...,120:...,240:...}
-    # 例: 背景ファイル名は dc1A_p{000,120,240}_220613.fts
-    auto_bkg_paths = guess_daily_med_paths_yyyymmdd(BKG_DIR, triplet[0])
-    # 直接指定したい場合はこちら（存在チェックはload_daily_med_backgrounds内で実施）
+    triplet = select_triplet_by_polar_header(raw_files)
+
+    # 背景（欠損角はp000で代替）
     p000 = os.path.join(BKG_DIR, "dc1A_p000_220613.fts")
     p120 = os.path.join(BKG_DIR, "dc1A_p120_220613.fts")
     p240 = os.path.join(BKG_DIR, "dc1A_p240_220613.fts")
-
-    # 背景のロード（欠損角はp000で代替）
     bkg_map = load_daily_med_backgrounds(p000=p000, p120=p120, p240=p240)
 
-    # pB合成（IPSUM補正は常に実施；SEBIPや小物体除去の閾値は必要に応じて指定）
+    # pB作成（IPSUM補正→IDL同等CALFAC→QUICKPOL）
     pB, h0 = build_pB_from_triplet(triplet[0], triplet[120], triplet[240], bkg_map,
                                    nocalfac_butcorrforipsum=True,
-                                   discri_pobj_on=False,   # 例: False or (sigma_high, sigma_low)
+                                   discri_pobj_on=False,
                                    sebip_off=False,
                                    silent=True)
 
-    # 幾何とマスク（1.4–4.0 R⊙）
+    # 幾何／マスク
     params = _params_from_header(h0)
     r_map = _radius_map((params['ny'], params['nx']), params['cx'], params['cy'], params['px_per_rsun'])
     pB_masked = _mask_cor1_pb(pB, r_map, r_keep_min=1.4, r_keep_max=4.0)
 
-    # 反転（2D_density_map.pyの同一関数群を流用）
-    ne_map, aux = invert_cor1_pb_to_density(
-        pB_masked, r_map, params,
-        r_min=1.4, r_max=4.0,
-        radial_step_pix=1.0, n_theta=360, regularization=1e-5,
-        theta_neighbor_blend=0
-    )
-    
-    output_csv_path = r"/mnt/d/wsl/home/kinno-7010/Research/STEREO-A/SECCHI/COR1/2D_density_map_sta.csv"
-    output_fits_path = r"/mnt/d/wsl/home/kinno-7010/Research/STEREO-A/SECCHI/COR1/2D_density_map_sta_result.fits"
+    # 反転安定化のための前処理（小穴を埋める／負値をNaN扱い）
+    pB_pre = sanitize_pb_for_inversion(pB_masked, floor_bsun=0.0, n_iter_fill=2)
+
+    # === 反転の選択 ===
+    if MODE.lower().startswith("axis"):
+        ne_map, aux = invert_cor1_pb_to_density_axisymmetric(
+            pB_masked=pB_pre,     # ★ sanitize後を渡す
+            r_map=r_map,
+            params=params,
+            r_min=1.4, r_max=4.0,
+            radial_step_pix=1.5
+        )
+        title = "STEREO-A COR1 2D density (Axisymmetric inversion)\n2022-06-13 03:01:00 UT"
+    else:
+        ne_map, aux = invert_cor1_pb_to_density_spherical(
+            pB_pre, r_map, params,
+            r_min=1.4, r_max=4.0,
+            radial_step_pix=0.5, n_theta=720,
+            theta_neighbor_blend=1
+        )
+        title = "STEREO-A COR1 2D density (Spherical symmetric inversion)\n2022-06-13 03:01:00 UT"
+
+    # 小さな NaN 島の穏やかな補間（r範囲内のみ）
+    valid = (r_map >= 1.4) & (r_map <= 4.0)
+    ne_map = inpaint_small_nans(ne_map, valid_mask=valid, max_passes=3, min_neighbors=3)
+
+    # 出力
+    output_csv_path  = "/mnt/d/wsl/home/kinno-7010/Research/STEREO-A/SECCHI/COR1/2D_density_map_sta.csv"
+    output_fits_path = "/mnt/d/wsl/home/kinno-7010/Research/STEREO-A/SECCHI/COR1/2D_density_map_sta_result.fits"
     export_density_csv_sta(ne_map, r_map, params, output_csv_path)
-    # print(f"Saved CSV to {output_csv_path}")
     # save_density_fits_sta(ne_map, params, output_fits_path)
-    # print(f"Saved FITS to {output_fits_path}")
 
     plot_density_map_sta(
         ne_map, params,
-        title="STEREO-A COR1 2D density (2022-06-13 03:01 UT)",
+        title=title,
         savepath="/mnt/d/wsl/home/kinno-7010/Research/STEREO-A/SECCHI/COR1/2D_density_map_sta.png"
     )
-    

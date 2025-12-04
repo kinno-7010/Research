@@ -39,7 +39,8 @@ from io_and_processing import (
     extract_pB_profile
 )
 from constants_vdh import (
-    invert_ablation
+    invert_ablation,
+    set_u_from_instrument
 )
 
 # -----------------------------
@@ -290,6 +291,213 @@ def digitize_radius(r_map_rsun: np.ndarray, r_edges: np.ndarray) -> np.ndarray:
 # ---------------------------------
 # Inversion & 2D map construction
 # ---------------------------------
+def invert_pb_to_density_axisymmetric(instrument: str,
+                                      pb_image,
+                                      r_map_rsun,
+                                      params_ref,
+                                      r_min,
+                                      r_max,
+                                      dr=0.02,
+                                      theta_step_deg=10.0,
+                                      r_edges=None,
+                                      theta_neighbor_blend=4,
+                                      theta_neighbor_fallback=10,
+                                      spatial_fill_mode="nearest",
+                                      spatial_fill_iters=2,
+                                      use_bilinear=True):
+    """
+    既存の per-θ 反転＋2D再配置をまとめて呼ぶユーティリティ。
+    - 角度方向は θ_step ごとに pB(r) を抽出し invert_ablation で Ne(r)。
+    - 2D への展開は build_density_map_from_profiles() を使用。
+    """
+    set_u_from_instrument(instrument)
+    
+    profiles = invert_per_theta_profiles(
+        pb_image=pb_image,
+        r_map_rsun=r_map_rsun,
+        params_ref=params_ref,
+        r_min=float(r_min),
+        r_max=float(r_max),
+        dr=float(dr),
+        theta_step_deg=float(theta_step_deg),
+        theta_mode='0to360',
+        theta_neighbor_blend=int(theta_neighbor_blend),
+        r_edges=r_edges
+    )
+
+    density_map = build_density_map_from_profiles(
+        r_map_rsun=r_map_rsun,
+        params_ref=params_ref,
+        profiles=profiles,
+        valid_rmin=float(r_min),
+        valid_rmax=float(r_max),
+        mask_nan_outside=True,
+        theta_neighbor_fallback=int(theta_neighbor_fallback),
+        spatial_fill_mode=str(spatial_fill_mode),
+        spatial_fill_iters=int(spatial_fill_iters),
+        use_bilinear=bool(use_bilinear)   # ← 双一次補間のON/OFF
+    )
+    return density_map, profiles
+
+def invert_pb_to_density_spherical(instrument: str,
+                                   pb_image,
+                                   r_map_rsun,
+                                   params_ref,
+                                   r_min,
+                                   r_max,
+                                   dr=0.02,
+                                   r_edges=None,
+                                   spatial_fill_mode="nearest",
+                                   spatial_fill_iters=1):
+    """
+    球対称（θ平均）で pB(r) → Ne(r) を 1D 反転し、半径ビン最近傍で 2D へ展開。
+    - 角度方向は平均化（pB>=0 を有効値）。
+    - 2D 展開は “ビン段差塗り（nearest）”で、補間は行わない。
+    """
+    import numpy as np
+    
+    set_u_from_instrument(instrument)
+    # --- 半径ビン（edges, mid）
+    if r_edges is None:
+        r_edges = np.arange(float(r_min), float(r_max) + float(dr), float(dr))
+    r_edges = np.asarray(r_edges, dtype=float)
+    if r_edges.ndim != 1 or r_edges.size < 2:
+        raise ValueError("r_edges must be 1D with at least 2 elements.")
+    r_mid = 0.5 * (r_edges[:-1] + r_edges[1:])
+    n_r = r_mid.size
+
+    # --- 半径ビンごとに pB 平均（θは全周を一括平均、pB>=0 を採用）
+    pB_prof = np.full(n_r, np.nan, float)
+    for i in range(n_r):
+        m = (r_map_rsun >= r_edges[i]) & (r_map_rsun < r_edges[i+1])
+        if np.any(m):
+            vals = pb_image[m]
+            good = np.isfinite(vals) & (vals >= 0.0)
+            if np.any(good):
+                pB_prof[i] = np.nanmean(vals[good])
+
+    # 小欠損の線形補間（端は残す）
+    def _interp_small_gaps_1d(arr, max_gap_bins=4):
+        x = np.arange(arr.size, dtype=float)
+        out = arr.copy()
+        isn = ~np.isfinite(out)
+        if not np.any(isn):
+            return out
+        # run 検出
+        runs = []
+        n = out.size; j = 0
+        while j < n:
+            if isn[j]:
+                k = j + 1
+                while k < n and isn[k]:
+                    k += 1
+                runs.append((j, k))  # [j, k)
+                j = k
+            else:
+                j += 1
+        for j, k in runs:
+            L = k - j
+            if L <= max_gap_bins and j > 0 and k < n and np.isfinite(out[j-1]) and np.isfinite(out[k]):
+                out[j:k] = np.interp(x[j:k], [x[j-1], x[k]], [out[j-1], out[k]])
+        return out
+
+    pB_prof = _interp_small_gaps_1d(pB_prof, max_gap_bins=4)
+
+    # --- 1D 反転（van de Hulst ablation）
+    from constants_vdh import invert_ablation
+    Ne_prof = np.full_like(pB_prof, np.nan)
+    finite = np.where(np.isfinite(pB_prof) & (pB_prof > 0))[0]
+    if finite.size >= 2:
+        last = int(finite[-1])
+        try:
+            Ne_sub = invert_ablation(pB_prof[:last+1], r_mid[:last+1], r_edges[:last+2], last+1)
+            Ne_prof[:last+1] = Ne_sub
+        except Exception as e:
+            print(f"[WARN] spherical inversion failed: {e}")
+
+    # --- 2D 段差塗り（最近傍ビンに割当て）
+    ny, nx = r_map_rsun.shape
+    ridx = np.digitize(r_map_rsun, r_edges) - 1
+    valid = (ridx >= 0) & (ridx < n_r)
+    density_map = np.full((ny, nx), np.nan, float)
+    density_map[valid] = Ne_prof[ridx[valid]]
+
+    # --- 2D 最近傍で最小限の穴埋め（任意）
+    if spatial_fill_mode in ("nearest", "itermean"):
+        from scipy.ndimage import distance_transform_edt, convolve
+        def _fill_nearest(arr, valid_mask):
+            filled = arr.copy()
+            src = valid_mask & np.isfinite(filled)
+            miss = valid_mask & ~src
+            if not (np.any(miss) and np.any(src)):
+                return filled
+            _, (iy, ix) = distance_transform_edt(~src, return_indices=True)
+            filled[miss] = filled[iy[miss], ix[miss]]
+            return filled
+
+        def _iter_mean(arr, valid_mask, max_iters=1):
+            out = arr.copy()
+            ker = np.array([[1,1,1],[1,0,1],[1,1,1]], float)
+            for _ in range(int(max_iters)):
+                nanm = valid_mask & ~np.isfinite(out)
+                if not np.any(nanm): break
+                fin = np.isfinite(out).astype(float)
+                cnt = convolve(fin, ker, mode='constant', cval=0.0)
+                sm  = convolve(np.nan_to_num(out, nan=0.0), ker, mode='constant', cval=0.0)
+                mean_nb = np.divide(sm, np.maximum(cnt, 1.0), where=(cnt>0))
+                fillable = nanm & (cnt > 0)
+                out[fillable] = mean_nb[fillable]
+            return out
+
+        if spatial_fill_mode == "nearest":
+            density_map = _fill_nearest(density_map, valid)
+        else:
+            density_map = _iter_mean(density_map, valid, max_iters=int(spatial_fill_iters))
+
+    aux = dict(r_edges=r_edges, r_mid=r_mid, Ne_profile_1d=Ne_prof)
+    return density_map, aux
+def invert_pb_to_density_2D(instrument,
+                            pb_image,
+                            r_map_rsun,
+                            params_ref,
+                            r_min,
+                            r_max,
+                            symmetry="axisymmetric",
+                            **kwargs):
+    """
+    symmetry in {"axisymmetric","spherical"} でモード切替。
+    返り値: (density_map_2D, aux_profiles_dict)
+
+    Parameters
+    ----------
+    instrument : str
+        set_u_from_instrument() に渡す観測機器名。
+        例: "Mk4", "K-Cor", "SOHO/LASCO", "lasco_c2" など。
+    """
+    sym = str(symmetry).lower()
+    if sym in ("axisymmetric", "axis", "axi"):
+        return invert_pb_to_density_axisymmetric(
+            instrument,
+            pb_image,
+            r_map_rsun,
+            params_ref,
+            r_min=r_min,
+            r_max=r_max,
+            **kwargs
+        )
+    elif sym in ("spherical", "sph", "sphere"):
+        return invert_pb_to_density_spherical(
+            instrument,
+            pb_image,
+            r_map_rsun,
+            params_ref,
+            r_min=r_min,
+            r_max=r_max,
+            **kwargs
+        )
+    else:
+        raise ValueError(f"Unknown symmetry='{symmetry}'. Use 'axisymmetric' or 'spherical'.")
+
 def invert_per_theta_profiles(
     pb_image: np.ndarray,
     r_map_rsun: np.ndarray,
@@ -654,55 +862,102 @@ def plot_density_map(
     r_ranges: dict,
     title: str = "2D Electron Density (from pB inversion)",
     vmin: float | None = None,
-    vmax: float | None = None
+    vmax: float | None = None,
+    xlim_pix: tuple[float, float] | None = None,
+    ylim_pix: tuple[float, float] | None = None,
 ):
     """
     Plot a 2D density map with logarithmic color scale.
-    Mirrors the style of your pB plot, but for Ne [cm^-3].
+    Axes coordinates are in *pixels* relative to the solar disk center (0,0).
+
+    Parameters
+    ----------
+    density_map : 2D array
+        Electron density [cm^-3].
+    r_map_plot : 2D array
+        Radial distance in R_sun (used only for contour levels).
+    params_ref : dict
+        Must contain 'cx', 'cy', 'nx', 'ny', 'px_per_rsun'.
+    r_ranges : dict
+        Keys: 'mk4_inner', 'mk4_outer_lasco_inner', 'lasco_outer' (in R_sun).
+    title : str
+        Plot title.
+    vmin, vmax : float or None
+        Color scale limits for Ne [cm^-3].
+    xlim_pix, ylim_pix : (min, max) or None
+        Display range in *pixels*, in the same coordinates as the axes
+        (0,0 at disk center). Example: xlim_pix=(-700, 700), ylim_pix=(0, 1400).
     """
     from mpl_toolkits.axes_grid1 import make_axes_locatable  # local import
+    from matplotlib.ticker import LogLocator
 
     ny, nx = density_map.shape
 
+    # 軸の単位は「太陽中心からのピクセル」
     extent_pixels = [-params_ref['cx'], params_ref['nx'] - params_ref['cx'],
                      -params_ref['cy'], params_ref['ny'] - params_ref['cy']]
 
-    # Determine color scale if not provided
-    valid = np.isfinite(density_map) & (density_map > 0.0)
+    # カラースケール
     if vmin is None:
-        vmin = np.nanpercentile(density_map[valid], 1) if np.any(valid) else 1e4
+        vmin = 1e5
     if vmax is None:
-        vmax = np.nanpercentile(density_map[valid], 99) if np.any(valid) else 1e8
-    if vmax <= vmin:
-        vmax = vmin * 1000.0
+        vmax = 1e9
 
     fig, ax = plt.subplots(figsize=(10, 10))
     cmap = plt.cm.plasma.copy()
     cmap.set_bad(color='lightgray')
 
-    im = ax.imshow(density_map, origin='lower', cmap=cmap,
-                   norm=LogNorm(vmin=vmin, vmax=vmax),
-                   extent=extent_pixels, aspect='equal')
+    im = ax.imshow(
+        density_map,
+        origin='lower',
+        cmap=cmap,
+        norm=LogNorm(vmin=vmin, vmax=vmax),
+        extent=extent_pixels,
+        aspect='equal'
+    )
 
-    # Overplot integer Rsun contours and radial cut lines (as in your pB plotter)
+    # 整数 Rsun の等高線
     int_levels = np.arange(1, int(np.floor(r_ranges['lasco_outer'])) + 1)
-    ax.contour(r_map_plot, levels=int_levels, colors='white', linewidths=1,
-               linestyles='--', extent=extent_pixels, alpha=0.7)
+    ax.contour(
+        r_map_plot,
+        levels=int_levels,
+        colors='white',
+        linewidths=1,
+        linestyles='--',
+        extent=extent_pixels,
+        alpha=0.7
+    )
 
-    # Boundaries
-    boundary_lines_for_legend = [] 
-    for level_val, (label_text, color) in [(r_ranges['mk4_inner'], (f"{r_ranges['mk4_inner']:.1f} $R_\\odot$ (Mk4 inner)", 'magenta')),
-                                           (r_ranges['mk4_outer_lasco_inner'], (f"{r_ranges['mk4_outer_lasco_inner']:.1f} $R_\\odot$ (Mk4/LASCO)", 'green')),
-                                           (r_ranges['lasco_outer'], (f"{r_ranges['lasco_outer']:.1f} $R_\\odot$ (LASCO outer)", 'blue'))]:
+    # 境界リング
+    boundary_lines_for_legend = []
+    for level_val, (label_text, color) in [
+        (r_ranges['mk4_inner'], (f"{r_ranges['mk4_inner']:.1f} $R_\\odot$ (Mk4 inner)", 'magenta')),
+        (r_ranges['mk4_outer_lasco_inner'], (f"{r_ranges['mk4_outer_lasco_inner']:.1f} $R_\\odot$ (Mk4/LASCO)", 'green')),
+        (r_ranges['lasco_outer'], (f"{r_ranges['lasco_outer']:.1f} $R_\\odot$ (LASCO outer)", 'blue')),
+    ]:
         if level_val <= np.nanmax(r_map_plot) and level_val >= np.nanmin(r_map_plot):
-            ax.contour(r_map_plot, levels=[level_val], colors=[color], linewidths=1.2,
-                       linestyles='-.', extent=extent_pixels)
+            ax.contour(
+                r_map_plot,
+                levels=[level_val],
+                colors=[color],
+                linewidths=1.2,
+                linestyles='-.',
+                extent=extent_pixels
+            )
             proxy_line = plt.Line2D([0], [0], linestyle='-.', color=color, linewidth=1.2, label=label_text)
             boundary_lines_for_legend.append(proxy_line)
 
+    # 太陽中心マーク
     ax.plot(0, 0, '+', color='black', markersize=12, markeredgewidth=1.5)
 
-    from matplotlib.ticker import LogLocator
+    # ★ ここで表示範囲をピクセル単位で指定 ★
+    if xlim_pix is not None:
+        ax.set_xlim(xlim_pix)
+    if ylim_pix is not None:
+        ax.set_ylim(ylim_pix)
+    # ---------------------------------------
+
+    # カラーバー
     divider = make_axes_locatable(ax)
     cax = divider.append_axes("right", size="1%", pad=0.1)
     cb = plt.colorbar(im, cax=cax)
@@ -714,8 +969,166 @@ def plot_density_map(
     ax.tick_params(axis='both', which='major', labelsize=14)
     if boundary_lines_for_legend:
         ax.legend(handles=boundary_lines_for_legend, loc='upper right', fontsize=12)
+
     plt.tight_layout()
     return fig, ax
+
+def plot_density_maps_combined(
+    density_mk4: np.ndarray,
+    r_map_mk4: np.ndarray,
+    params_mk4: dict,
+    density_lasco: np.ndarray,
+    r_map_lasco: np.ndarray,
+    params_lasco: dict,
+    r_ranges: dict,
+    title_mk4: str = "K-Cor Electron Density",
+    title_lasco: str = "SOHO/LASCO-C2 Electron Density",
+    vmin: float | None = None,
+    vmax: float | None = None,
+    xlim_pix_mk4: tuple[float, float] | None = None,
+    ylim_pix_mk4: tuple[float, float] | None = None,
+    xlim_pix_lasco: tuple[float, float] | None = None,
+    ylim_pix_lasco: tuple[float, float] | None = None,
+):
+    """
+    K-COR と LASCO-C2 の 2D density map を 1 つの Figure に 2 パネルとして描画する。
+    軸はどちらも「太陽中心を原点とした Pixel 座標」。
+    カラースケール (vmin, vmax) は 2 パネルで共通。
+    """
+    from mpl_toolkits.axes_grid1 import make_axes_locatable
+    from matplotlib.ticker import LogLocator
+
+    if vmin is None:
+        vmin = 1e5
+    if vmax is None:
+        vmax = 1e9
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 7), sharey=False)
+    ax_k, ax_l = axes
+
+    # --------- K-COR パネル ---------
+    ny_k, nx_k = density_mk4.shape
+    cx_k = params_mk4['cx']; cy_k = params_mk4['cy']
+    extent_k = [-cx_k, nx_k - cx_k, -cy_k, ny_k - cy_k]
+
+    cmap = plt.cm.plasma.copy()
+    cmap.set_bad(color='lightgray')
+
+    im_k = ax_k.imshow(
+        density_mk4,
+        origin='lower',
+        cmap=cmap,
+        norm=LogNorm(vmin=vmin, vmax=vmax),
+        extent=extent_k,
+        aspect='equal'
+    )
+
+    # Rs=整数の等高線
+    int_levels = np.arange(1, int(np.floor(r_ranges['lasco_outer'])) + 1)
+    # ピクセル座標グリッド
+    yy_k, xx_k = np.indices((ny_k, nx_k))
+    x_pix_k = xx_k - cx_k
+    y_pix_k = yy_k - cy_k
+    ax_k.contour(
+        x_pix_k, y_pix_k, r_map_mk4,
+        levels=int_levels,
+        colors='white',
+        linewidths=1,
+        linestyles='--',
+        alpha=0.7
+    )
+
+    # 境界リング
+    boundary_lines_for_legend = []
+    for level_val, (label_text, color) in [
+        (r_ranges['mk4_inner'], (f"{r_ranges['mk4_inner']:.1f} $R_\\odot$ (Mk4 inner)", 'magenta')),
+        (r_ranges['mk4_outer_lasco_inner'], (f"{r_ranges['mk4_outer_lasco_inner']:.1f} $R_\\odot$ (Mk4/LASCO)", 'green')),
+        (r_ranges['lasco_outer'], (f"{r_ranges['lasco_outer']:.1f} $R_\\odot$ (LASCO outer)", 'blue')),
+    ]:
+        if np.nanmin(r_map_mk4) <= level_val <= np.nanmax(r_map_mk4):
+            cs = ax_k.contour(
+                x_pix_k, y_pix_k, r_map_mk4,
+                levels=[level_val],
+                colors=[color],
+                linewidths=1.2,
+                linestyles='-.'
+            )
+            proxy_line = plt.Line2D([0], [0], linestyle='-.', color=color, linewidth=1.2, label=label_text)
+            boundary_lines_for_legend.append(proxy_line)
+
+    ax_k.plot(0, 0, '+', color='black', markersize=10, markeredgewidth=1.5)
+    if xlim_pix_mk4 is not None:
+        ax_k.set_xlim(xlim_pix_mk4)
+    if ylim_pix_mk4 is not None:
+        ax_k.set_ylim(ylim_pix_mk4)
+    ax_k.set_title(title_mk4, fontsize=14)
+    ax_k.set_xlabel("Solar-X [pixel]", fontsize=12)
+    ax_k.set_ylabel("Solar-Y [pixel]", fontsize=12)
+    ax_k.tick_params(axis='both', which='major', labelsize=10)
+    if boundary_lines_for_legend:
+        ax_k.legend(handles=boundary_lines_for_legend, loc='upper right', fontsize=9)
+
+    # --------- LASCO パネル ---------
+    ny_l, nx_l = density_lasco.shape
+    cx_l = params_lasco['cx']; cy_l = params_lasco['cy']
+    extent_l = [-cx_l, nx_l - cx_l, -cy_l, ny_l - cy_l]
+
+    im_l = ax_l.imshow(
+        density_lasco,
+        origin='lower',
+        cmap=cmap,
+        norm=LogNorm(vmin=vmin, vmax=vmax),
+        extent=extent_l,
+        aspect='equal'
+    )
+
+    yy_l, xx_l = np.indices((ny_l, nx_l))
+    x_pix_l = xx_l - cx_l
+    y_pix_l = yy_l - cy_l
+    ax_l.contour(
+        x_pix_l, y_pix_l, r_map_lasco,
+        levels=int_levels,
+        colors='white',
+        linewidths=1,
+        linestyles='--',
+        alpha=0.7
+    )
+
+    # LASCO 側にも境界リング（凡例は K-COR 側にまとめたのでここは線だけ）
+    for level_val, color in [
+        (r_ranges['mk4_inner'], 'magenta'),
+        (r_ranges['mk4_outer_lasco_inner'], 'green'),
+        (r_ranges['lasco_outer'], 'blue'),
+    ]:
+        if np.nanmin(r_map_lasco) <= level_val <= np.nanmax(r_map_lasco):
+            ax_l.contour(
+                x_pix_l, y_pix_l, r_map_lasco,
+                levels=[level_val],
+                colors=[color],
+                linewidths=1.2,
+                linestyles='-.'
+            )
+
+    ax_l.plot(0, 0, '+', color='black', markersize=10, markeredgewidth=1.5)
+    if xlim_pix_lasco is not None:
+        ax_l.set_xlim(xlim_pix_lasco)
+    if ylim_pix_lasco is not None:
+        ax_l.set_ylim(ylim_pix_lasco)
+    ax_l.set_title(title_lasco, fontsize=14)
+    ax_l.set_xlabel("Solar-X [pixel]", fontsize=12)
+    ax_l.tick_params(axis='both', which='major', labelsize=10)
+
+    # --------- 共通カラーバー ---------
+    # 右側に 1 本だけ付ける
+    divider = make_axes_locatable(ax_l)
+    cax = divider.append_axes("right", size="3%", pad=0.1)
+    cb = plt.colorbar(im_l, cax=cax)
+    cb.set_label('N$_e$ [cm$^{-3}$]', fontsize=12)
+    cb.ax.yaxis.set_major_locator(LogLocator(base=10.0, subs=(1.0, 2.0, 5.0)))
+    cb.ax.tick_params(labelsize=10)
+
+    fig.tight_layout()
+    return fig, (ax_k, ax_l)
 
 # ---------------------------------
 # Sampling helpers
@@ -830,84 +1243,188 @@ def export_density_csv(
 # ---------------------------------
 
 if __name__ == "__main__":
-    # --- File paths (same defaults as your current main.py) ---
-    filename_mk4 = r'/mnt/d/wsl/home/kinno-7010/Research/MK4_coronagraph/MK4_coronagraph_KCOR/pB/Rawdata/20220613_025810_kcor_l2.fts'
+    # === 入力ファイル（既存と同じ） ===
+    filename_mk4   = r'/mnt/d/wsl/home/kinno-7010/Research/MK4_coronagraph/MK4_coronagraph_KCOR/pB/Rawdata/20220613_025810_kcor_l2.fts'
     filename_lasco = r'/mnt/d/wsl/home/kinno-7010/Research/SOHO/pB/C2-PB-20220613_0258.fts'
 
-    # Load data
-    data_mk4, params_mk4 = load_and_prepare_instrument_data(filename_mk4, "Mk4")
-    data_lasco, params_lasco = load_and_prepare_instrument_data(filename_lasco, "SOHO/LASCO", is_lasco=True)
+    # === 反転モードを選択 ===
+    #   'axisymmetric'  : セクタ毎の軸対称反転（従来方式）
+    #   'spherical'     : 全周平均 → 1D 反転 → 2D 段差塗り
+    SYMMETRY = "axisymmetric"  # ← "spherical" に変えるだけで球対称版
 
-    # Geometry maps on LASCO grid
-    r_ranges = {'mk4_inner': 1.1, 'mk4_outer_lasco_inner': 2.2, 'lasco_outer': 7.0}
-    _y, _x = np.indices((params_lasco['ny'], params_lasco['nx']))
-    r_map_lasco = np.hypot((_x - params_lasco['cx']) / params_lasco['px_per_rsun'],
-                           (_y - params_lasco['cy']) / params_lasco['px_per_rsun'])
+    # === 読み込み・前処理 ===
+    # instrument 名は set_u_from_instrument() が解釈可能な文字列にしておく
+    inst_mk4   = "Mk4"
+    inst_lasco = "SOHO/LASCO"
 
-    # Merge pB (Mk4 inner + LASCO outer) on the LASCO grid
-    final_pb = combine_corona_data(data_lasco, params_lasco, data_mk4, params_mk4, r_map_lasco, r_ranges)
+    data_mk4,   params_mk4   = load_and_prepare_instrument_data(filename_mk4, inst_mk4)
+    data_lasco, params_lasco = load_and_prepare_instrument_data(filename_lasco, inst_lasco, is_lasco=True)
 
-    # --- Inversion per theta ---
-    # --- Adaptive r-edges based on instrument native sampling ---
+    # --- LASCO グリッド上の r マップ（従来通り） ---
+    r_ranges = {'mk4_inner': 1.0, 'mk4_outer_lasco_inner': 2.2, 'lasco_outer': 6.0}
+    _y_l, _x_l = np.indices((params_lasco['ny'], params_lasco['nx']))
+    r_map_lasco = np.hypot((_x_l - params_lasco['cx']) / params_lasco['px_per_rsun'],
+                           (_y_l - params_lasco['cy']) / params_lasco['px_per_rsun'])
+
+    # --- K-COR グリッド上の r マップ（新規：K-COR 単独反転用） ---
+    _y_k, _x_k = np.indices((params_mk4['ny'], params_mk4['nx']))
+    r_map_mk4 = np.hypot((_x_k - params_mk4['cx']) / params_mk4['px_per_rsun'],
+                         (_y_k - params_mk4['cy']) / params_mk4['px_per_rsun'])
+
+    # --- Mk4 + LASCO の合成 pB（必要なら今後も利用できるように残す） ---
+    final_pb = combine_corona_data(
+        data_lasco, params_lasco,
+        data_mk4,   params_mk4,
+        r_map_lasco,
+        r_ranges
+    )
+
+    # --- 自動 r-edges（Mk4 内側 + LASCO 外側に対応） ---
     r_min = r_ranges['mk4_inner']
-    r_trn = r_ranges['mk4_outer_lasco_inner']   # transition (Mk4 → LASCO)
+    r_trn = r_ranges['mk4_outer_lasco_inner']   # Mk4→LASCO の遷移半径
     r_max = r_ranges['lasco_outer']
 
-    # Mk4, LASCO の params を使って半径ビン幅を自動設計（2px 相当を目安）
     r_edges = build_adaptive_radial_edges(
         r_min=r_min,
         r_transition=r_trn,
         r_max=r_max,
         params_mk4=params_mk4,
         params_lasco=params_lasco,
-        inner_px_factor=3.0,   # Mk4 で “約2ピクセル” の厚み
-        outer_px_factor=2.0,   # LASCO で “約2ピクセル” の厚み
-        min_dr=0.01,           # 下限 (R_sun)
-        max_dr=0.25            # 上限 (R_sun)
+        inner_px_factor=3.0,   # Mk4 側は ~2–3 px 程度の厚み
+        outer_px_factor=2.0,   # LASCO 側は ~2 px 程度の厚み
+        min_dr=0.01,
+        max_dr=0.25
     )
 
-    # --- Inversion per theta with non-uniform r-edges ---
-    profiles = invert_per_theta_profiles(
-        pb_image=final_pb,
-        r_map_rsun=r_map_lasco,
-        params_ref=params_lasco,   # 反転基準グリッド（LASCO）
-        r_min=r_min,
-        r_max=r_max,
-        dr=0.01,                   # 無視される（r_edges優先）
-        theta_step_deg=1.0,       # extract_pB_profile は ±5° → タイル幅10°
-        theta_mode='0to360',
-        r_edges=r_edges            # ← ここが重要
-    )
+    # --- 各機器ごとの反転半径範囲 ---
+    # K-COR: 内側 1.1 R_sun 〜 合成切替半径 2.2 R_sun までを主に担当
+    r_min_mk4 = r_ranges['mk4_inner']
+    r_max_mk4 = r_ranges['mk4_outer_lasco_inner']
 
-    # --- Assemble 2D density map ---
-    density_map = build_density_map_from_profiles(
-        r_map_rsun=r_map_lasco,
-        params_ref=params_lasco,
-        profiles=profiles,
-        valid_rmin=r_min,
-        valid_rmax=r_max,
-        mask_nan_outside=True,
-        theta_neighbor_fallback=10,   # まず θ 近傍で埋める
-        spatial_fill_mode="nearest"  # それでも残る穴を2D最近傍で埋める
-        # spatial_fill_mode="itermean",  # それでも残る穴を2D最近傍で埋める
-        # spatial_fill_iters=4
-    )
+    # LASCO-C2: 2.2 R_sun 〜 7 R_sun を主に担当
+    r_min_lasco = r_ranges['mk4_outer_lasco_inner']
+    r_max_lasco = r_ranges['lasco_outer']
 
-    # --- Plot ---
+    # === 反転の実行（モード & instrument ごと） ===
+    if SYMMETRY.lower().startswith("sph"):
+        # --- 球対称：K-COR 単独 ---
+        density_map_mk4, aux_mk4 = invert_pb_to_density_2D(
+            instrument=inst_mk4,
+            pb_image=data_mk4,
+            r_map_rsun=r_map_mk4,
+            params_ref=params_mk4,
+            r_min=r_min_mk4,
+            r_max=r_max_mk4,
+            symmetry="spherical",
+            r_edges=r_edges,              # 共通 r-edges（必要部分のみ内部で切り出し）
+            spatial_fill_mode="nearest",  # ごく最小限の穴埋め
+            spatial_fill_iters=1
+        )
+
+        # --- 球対称：LASCO-C2 単独 ---
+        density_map_lasco, aux_lasco = invert_pb_to_density_2D(
+            instrument=inst_lasco,
+            pb_image=data_lasco,
+            r_map_rsun=r_map_lasco,
+            params_ref=params_lasco,
+            r_min=r_min_lasco,
+            r_max=r_max_lasco,
+            symmetry="spherical",
+            r_edges=r_edges,
+            spatial_fill_mode="nearest",
+            spatial_fill_iters=1
+        )
+
+        suffix = "sph"
+
+    else:
+        # --- 軸対称：K-COR 単独 ---
+        density_map_mk4, aux_mk4 = invert_pb_to_density_2D(
+            instrument=inst_mk4,
+            pb_image=data_mk4,
+            r_map_rsun=r_map_mk4,
+            params_ref=params_mk4,
+            r_min=r_min_mk4,
+            r_max=r_max_mk4,
+            symmetry="axisymmetric",
+            theta_step_deg=1.5,           # extract_pB_profile(±5°) とタイル一致
+            r_edges=r_edges,              # 非一様ビン（内側は Mk4 解像度）
+            use_bilinear=False,           # ビン段差塗り（nearest bin）
+            theta_neighbor_blend=2,       # 角度近傍の最小限ブレンド
+            theta_neighbor_fallback=6,    # 残欠損の θ 近傍フォールバック
+            spatial_fill_mode="nearest",  # 2D 最近傍で最小限穴埋め
+            spatial_fill_iters=1
+        )
+
+        # --- 軸対称：LASCO-C2 単独 ---
+        density_map_lasco, aux_lasco = invert_pb_to_density_2D(
+            instrument=inst_lasco,
+            pb_image=data_lasco,
+            r_map_rsun=r_map_lasco,
+            params_ref=params_lasco,
+            r_min=r_min_lasco,
+            r_max=r_max_lasco,
+            symmetry="axisymmetric",
+            theta_step_deg=1.5,
+            r_edges=r_edges,              # 外側は LASCO 解像度のビン幅
+            use_bilinear=False,
+            theta_neighbor_blend=2,
+            theta_neighbor_fallback=6,
+            spatial_fill_mode="nearest",
+            spatial_fill_iters=1
+        )
+
+        suffix = "axi"
+
+    # --- LASCO グリッド上で K-COR 範囲を重ね合わせる ---
+    if 'Ne_profiles' in aux_mk4:
+        mk4_on_lasco = build_density_map_from_profiles(
+            r_map_rsun=r_map_lasco,
+            params_ref=params_lasco,
+            profiles=aux_mk4,
+            valid_rmin=r_min_mk4,
+            valid_rmax=r_max_mk4,
+            mask_nan_outside=True,
+            theta_neighbor_fallback=6,
+            spatial_fill_mode="nearest",
+            spatial_fill_iters=1,
+            use_bilinear=True
+        )
+    else:
+        mk4_on_lasco = np.full_like(r_map_lasco, np.nan, dtype=float)
+        ridx_mk4 = np.digitize(r_map_lasco, aux_mk4['r_edges']) - 1
+        valid_bins = (ridx_mk4 >= 0) & (ridx_mk4 < aux_mk4['Ne_profile_1d'].size)
+        mk4_on_lasco[valid_bins] = aux_mk4['Ne_profile_1d'][ridx_mk4[valid_bins]]
+        mk4_on_lasco[(r_map_lasco < r_min_mk4) | (r_map_lasco > r_max_mk4)] = np.nan
+
+    combined_density = np.full_like(r_map_lasco, np.nan, dtype=float)
+    lasco_mask = (r_map_lasco >= r_min_lasco) & (r_map_lasco <= r_max_lasco) & np.isfinite(density_map_lasco)
+    combined_density[lasco_mask] = density_map_lasco[lasco_mask]
+    mk4_mask = (r_map_lasco >= r_min_mk4) & (r_map_lasco < r_max_mk4) & np.isfinite(mk4_on_lasco)
+    combined_density[mk4_mask] = mk4_on_lasco[mk4_mask]
+
+    # === プロット & 保存（重ね合わせ結果） ===
+    out_base = r"/mnt/d/wsl/home/kinno-7010/Research/SDO_Mk4_SOHO/pB/2D_density_map"
+
+    title_combined = (
+        f"K-COR (1.0-2.2 $R_\\odot$) + SOHO/LASCO-C2 (2.2-6.0 $R_\\odot$)\n"
+        f"Electron Density ({SYMMETRY} inversion) 2022-06-13 03:01:00 UT"
+    )
     fig, ax = plot_density_map(
-        density_map=density_map,
+        density_map=combined_density,
         r_map_plot=r_map_lasco,
         params_ref=params_lasco,
         r_ranges=r_ranges,
-        title=f"2D Electron Density Map from pB Inversion (2022-06-13 02:58:10)"
+        title=title_combined,
+        xlim_pix=(-150, 0),
+        ylim_pix=(-100, 150)
     )
-    output_path = r"/mnt/d/wsl/home/kinno-7010/Research/SDO_Mk4_SOHO/pB/2D_density_map.png"
-    plt.savefig(output_path, dpi=300)
-    print(f"Saved 2D density map to {output_path}")
-    
-        # --- CSV Export ---
-    output_csv_path = r"/mnt/d/wsl/home/kinno-7010/Research/SDO_Mk4_SOHO/pB/2D_density_map.csv"
-    export_density_csv(density_map, r_map_lasco, params_lasco, output_csv_path, include_all=False)
-    print(f"Saved CSV to {output_csv_path}")
+    png_path = f"{out_base}_Mk4_LASCO_{suffix}_20220613_0300.png"
+    csv_path = f"{out_base}_Mk4_LASCO_{suffix}_20220613_0300.csv"
+    fig.savefig(png_path, dpi=300)
+    print(f"Saved combined 2D density map to {png_path}")
+    export_density_csv(combined_density, r_map_lasco, params_lasco, csv_path, include_all=False)
+    print(f"Saved combined CSV to {csv_path}")
 
     plt.show()
+

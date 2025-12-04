@@ -31,6 +31,7 @@ import astropy.units as u
 from astropy.coordinates import SkyCoord
 import sunpy.map
 from sunpy.coordinates import frames
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 # --- import your existing helpers (assume this file sits alongside them or PYTHONPATH is set) ---
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -277,12 +278,6 @@ def _get_attr_or_key(container, *names):
     return None
 
 
-def _as_value(arr, unit=None):
-    """Astropy Quantity -> numpy 値。unit を指定すれば変換して .value、なければ numpy.asarray。"""
-    if hasattr(arr, "to") and hasattr(arr, "value"):
-        return arr.to(unit).value if unit is not None else arr.value
-    return np.asarray(arr)
-
 # 置換：既存の resolve_pfss_axes をこの定義に差し替え
 def resolve_pfss_axes(pfss_solution, fallback: dict | None = None):
     """
@@ -357,7 +352,63 @@ def resolve_pfss_components(pfss_solution):
     """
     obj = _unwrap_pfss(pfss_solution)
 
-    # 1) 代表的な属性名（pfsspy.Output を含む）
+    # 0) pfsspy.Output: bg（球座標）→ そのまま (Br, Bt, Bp)、bc（直交座標）→ 球座標に変換
+    bg = _get_attr_or_key(obj, "bg")
+    if bg is not None:
+        # bg は通常 (3, nr, nt, np) または (nr, nt, np, 3) の配列/Quantity
+        bunit_attr = _get_attr_or_key(obj, "bunit")
+        bunit = _mag_unit_or_none(bunit_attr) or u.G
+        try:
+            arr = _as_value(bg, u.G)
+        except Exception:
+            # 次善策：無次元なら bunit を付与して Gauss へ
+            try:
+                arr = (np.asarray(getattr(bg, "value", bg)) * bunit).to(u.G).value
+            except Exception:
+                arr = np.asarray(getattr(bg, "value", bg))
+        arr = np.asarray(arr)
+        if arr.ndim >= 4:
+            if arr.shape[0] == 3:
+                return arr[0], arr[1], arr[2]
+            if arr.shape[-1] == 3:
+                return arr[..., 0], arr[..., 1], arr[..., 2]
+        # 形が想定外なら一般ルートへ継続
+
+    bc = _get_attr_or_key(obj, "bc")
+    if bc is not None:
+        bunit_attr = _get_attr_or_key(obj, "bunit")
+        bunit = _mag_unit_or_none(bunit_attr) or u.G
+        try:
+            arr = _as_value(bc, u.G)
+        except Exception:
+            try:
+                arr = (np.asarray(getattr(bc, "value", bc)) * bunit).to(u.G).value
+            except Exception:
+                arr = np.asarray(getattr(bc, "value", bc))
+        arr = np.asarray(arr)
+
+        # (3, nr, nt, np) or (nr, nt, np, 3) を解釈
+        Bx = By = Bz = None
+        if arr.ndim >= 4:
+            if arr.shape[0] == 3:
+                Bx, By, Bz = arr[0], arr[1], arr[2]
+            elif arr.shape[-1] == 3:
+                Bx, By, Bz = arr[..., 0], arr[..., 1], arr[..., 2]
+        if Bx is not None:
+            # 軸取得して球座標成分へ変換
+            r_ax, th_ax, ph_ax = resolve_pfss_axes(obj, fallback=None)
+            TH, PH = np.meshgrid(th_ax, ph_ax, indexing="ij")  # (nt, np)
+            sin_th = np.sin(TH)[None, ...]  # (1, nt, np) → broadcast
+            cos_th = np.cos(TH)[None, ...]
+            sin_ph = np.sin(PH)[None, ...]
+            cos_ph = np.cos(PH)[None, ...]
+
+            Br = Bx * (sin_th * cos_ph) + By * (sin_th * sin_ph) + Bz * (cos_th)
+            Bt = Bx * (cos_th * cos_ph) + By * (cos_th * sin_ph) - Bz * (sin_th)
+            Bp = -Bx * (sin_ph) + By * (cos_ph)
+            return Br, Bt, Bp
+
+    # 1) 代表的な属性名（pfsspy.Output 以外で Br, Bt, Bp を別々に持つケース）
     cand_sets = [
         ("br", "bt", "bp"),
         ("br", "btheta", "bphi"),
@@ -383,28 +434,36 @@ def resolve_pfss_components(pfss_solution):
         arr = _as_value(pack, u.G)
         arr = np.asarray(arr)
         if arr.ndim >= 4:
-            # (3, nr, nt, np) or (nr, nt, np, 3)
             if arr.shape[0] == 3:
-                return arr[0], arr[1], arr[2]
+                Br, Bt, Bp = arr[0], arr[1], arr[2]
+                return Br, Bt, Bp
             if arr.shape[-1] == 3:
-                return arr[..., 0], arr[..., 1], arr[..., 2]
+                Br, Bt, Bp = arr[..., 0], arr[..., 1], arr[..., 2]
+                return Br, Bt, Bp
 
-    # 3) dict でまとめ持ち（よくあるキー）
-    for k in ("B_components", "b_components", "field", "bfield"):
-        pack = _get_attr_or_key(obj, k)
-        if isinstance(pack, (list, tuple)) and len(pack) == 3:
-            Br, Bt, Bp = (np.asarray(_as_value(x, u.G)) for x in pack)
-            return Br, Bt, Bp
-        if isinstance(pack, dict):
-            Br = _get_attr_or_key(pack, "br", "Br", "b_r")
-            Bt = _get_attr_or_key(pack, "bt", "Bt", "b_t", "btheta", "Btheta")
-            Bp = _get_attr_or_key(pack, "bp", "Bp", "b_p", "bphi", "Bphi")
-            if Br is not None and Bt is not None and Bp is not None:
-                Br = _as_value(Br, u.G); Bt = _as_value(Bt, u.G); Bp = _as_value(Bp, u.G)
+    # 3) dict や tuple など、名前付きコンテナ
+    if isinstance(obj, (tuple, list)) and len(obj) == 3:
+        Br, Bt, Bp = (np.asarray(_as_value(x, u.G)) for x in obj)
+        return Br, Bt, Bp
+    if isinstance(obj, dict):
+        for keys in (
+            ("Br", "Bt", "Bp"),
+            ("br", "bt", "bp"),
+            ("b_r", "b_t", "b_p"),
+            ("b_r", "b_theta", "b_phi"),
+        ):
+            if all(k in obj for k in keys):
+                Br = _as_value(obj[keys[0]], u.G)
+                Bt = _as_value(obj[keys[1]], u.G)
+                Bp = _as_value(obj[keys[2]], u.G)
                 return Br, Bt, Bp
 
     # 4) 取得失敗：型と属性のヒントを出す
-    msg = f"Unsupported PFSS object for components. type={type(obj)} attrs={sorted([a for a in dir(obj) if not a.startswith('_')])[:30]}"
+    public_attrs = [a for a in dir(obj) if not a.startswith("_")]
+    msg = (
+        "Unsupported PFSS object for components. "
+        f"type={type(obj)} attrs={public_attrs[:30]}"
+    )
     raise TypeError(msg)
 
 def ensure_ascending_axes_and_reorder(r_ax, th_ax, ph_ax, Br, Bt, Bp):
@@ -559,9 +618,22 @@ def plot_B_map(
     r_ranges: dict,
     title: str = "2D Magnetic Field Map from PFSS (POS sampling)",
     out_png: str | None = None,
+    xlim_pix: tuple[float, float] | None = None,
+    ylim_pix: tuple[float, float] | None = None,
+    vmin: float = 0.01,
+    vmax: float = 1.0,
 ):
     """
     Show |B| (or Br) on the LASCO grid, with the same look-and-feel as your density map.
+
+    Axes coordinates:
+        X, Y = pixels from Sun center (0,0).
+    Parameters
+    ----------
+    xlim_pix, ylim_pix : (min, max) in pixels from Sun center (optional)
+        e.g., xlim_pix = (-700, 700), ylim_pix = (0, 1400)
+    vmin, vmax : float
+        Color scale range for B [G] in LogNorm.
     """
     from matplotlib.colors import LogNorm
 
@@ -578,7 +650,7 @@ def plot_B_map(
         B_map,
         origin="lower",
         cmap="plasma",
-        norm=LogNorm(vmin=0.1, vmax=1),
+        norm=LogNorm(vmin=vmin, vmax=vmax),
         extent=extent_pixels,
         aspect="equal",
     )
@@ -598,15 +670,24 @@ def plot_B_map(
     # Inner/outer annuli same as density-figure
     call_add_radial_guides(ax, r_map, r_ranges, params_lasco, extent_pixels)
 
-
-
+    # 太陽中心マーク
     ax.plot(0, 0, "+", color="black", markersize=12, markeredgewidth=1.5)
+
+    # ★ ここで表示範囲をピクセル単位で指定 ★
+    if xlim_pix is not None:
+        ax.set_xlim(xlim_pix)
+    if ylim_pix is not None:
+        ax.set_ylim(ylim_pix)
+    # -----------------------------------------
+
     ax.set_title(title, fontsize=16)
     ax.set_xlabel("X [pixels from Sun center]")
     ax.set_ylabel("Y [pixels from Sun center]")
 
-    cbar = plt.colorbar(im, ax=ax, pad=0.01, shrink=0.5)
-    cbar.set_label("Magnetic Field Strength [Gauss]", fontsize=14)
+    divider = make_axes_locatable(ax)
+    cax = divider.append_axes("right", size="1%", pad=0.1)
+    cb = plt.colorbar(im, cax=cax)
+    cb.set_label("Magnetic Field Strength [Gauss]", fontsize=14)
 
     plt.tight_layout()
     if out_png:
@@ -614,6 +695,8 @@ def plot_B_map(
         plt.savefig(out_png, dpi=300, bbox_inches="tight")
         print(f"✓ Saved: {out_png}")
     plt.show()
+
+    return fig, ax
 
 
 # -----------------------------
@@ -656,15 +739,10 @@ def main():
     filename_lasco = r"/mnt/d/wsl/home/kinno-7010/Research/SOHO/pB/C2-PB-20220613_0258.fts"
 
     # PFSS / HMI input
-    hmi_file = r"/mnt/d/wsl/home/kinno-7010/Research/SDO/HMI/Rawdata/hmi.M_720s.20220613_030000_TAI.fits"
-
-    # Output directory (adjust if needed)
-    out_dir = r"/mnt/d/wsl/home/kinno-7010/Research/PFSS"
-    out_png = os.path.join(out_dir, "Bmap_2D_POS.png")
-    out_csv = os.path.join(out_dir, "Bmap_2D_POS.csv")
+    hmi_file = r"/mnt/d/wsl/home/kinno-7010/Research/SDO/HMI/Rawdata/hmi.M_720s.20110922_090000_TAI.fits"
 
     # Same annulus as density figure
-    r_ranges = {"mk4_inner": 1.1, "mk4_outer_lasco_inner": 2.2, "lasco_outer": 7.0}
+    r_ranges = {"mk4_inner": 1.0, "mk4_outer_lasco_inner": 2.2, "lasco_outer": 7.0}
 
     # ---- Step 1: replicate LASCO grid (same as density) ----
     final_image, r_map, theta_map, params_lasco = make_lasco_grid_and_final_image(
@@ -704,6 +782,13 @@ def main():
 
     # Mask outside the valid annulus (exactly same as density map used)
     B_map = np.where((r_map >= r_ranges["mk4_inner"]) & (r_map <= r_ranges["lasco_outer"]), B_map, np.nan)
+    
+        # Output directory (adjust if needed)
+    out_dir = r"/mnt/d/wsl/home/kinno-7010/Research/PFSS"
+    # out_png = os.path.join(out_dir, f"2D_magnetic_field_map_rss={rss}.png")
+    # out_csv = os.path.join(out_dir, f"2D_magnetic_field_map_rss={rss}.csv")
+    out_png = os.path.join(out_dir, f"2D_magnetic_field_map_rss={rss}_20110922_0900.png")
+    out_csv = os.path.join(out_dir, f"2D_magnetic_field_map_rss={rss}_20110922_0900.csv")
 
     # ---- Step 4: plot ----
     plot_B_map(
@@ -711,8 +796,13 @@ def main():
         r_map,
         params_lasco,
         r_ranges,
-        title=f"2D Magnetic Field Map from PFSS (POS, rss={rss} Rs)",
+        # title="2D Magnetic Field Map from PFSS (POS, $R_{\\mathrm{ss}}$="+f"{rss}"+" $R_\\odot$)",
+        title="2D Magnetic Field Map from PFSS (POS, $R_{\\mathrm{ss}}$="+f"{rss}"+" $R_\\odot$)\n2011-09-22 09:00:00 UT",
         out_png=out_png,
+        # xlim_pix=(-150, 0),
+        # ylim_pix=(-100, 150),
+        vmin=0.01,
+        vmax=10.0,
     )
 
     # ---- Step 5: optional CSV ----

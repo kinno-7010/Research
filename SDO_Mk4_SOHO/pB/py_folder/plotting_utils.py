@@ -177,53 +177,108 @@ def generate_ne_profile_plot(ax,
     setup_ne_plot_axes_and_legend(ax, (plot_r_min, plot_r_max), density_plot_limits, title)
     add_frequency_secondary_axis(ax)
 
-def plot_combined_image(image_data, r_map_plot, params_lasco, r_ranges, theta_deg_overlay=None):
+def plot_combined_image(image_data, r_map_plot, params_lasco, r_ranges,
+                        theta_deg_overlay=None,
+                        xlim_pix=None, ylim_pix=None):
+    """
+    image_data, r_map_plot : 2D array
+    params_lasco : dict with keys 'cx', 'cy', 'nx', 'ny', 'px_per_rsun'
+    r_ranges : dict with keys 'mk4_inner', 'mk4_outer_lasco_inner', 'lasco_outer'
+    theta_deg_overlay : float or None
+    xlim_pix, ylim_pix : tuple (min, max) in *pixel* units, in the same
+                         coordinate system as the axes (0 at disk center).
+                         e.g., xlim_pix = (-500, 500)
+    """
+
     fig, ax = plt.subplots(figsize=(10, 10))
+
+    # 座標軸の単位は「太陽中心からのピクセル」
     extent_pixels = [-params_lasco['cx'], params_lasco['nx'] - params_lasco['cx'],
                      -params_lasco['cy'], params_lasco['ny'] - params_lasco['cy']]
+
+    # カラースケール範囲の自動決定
     valid_data = image_data[~np.isnan(image_data) & (image_data > 0)]
     plot_vmin = np.min(valid_data) if len(valid_data) > 0 else 1e-11
     plot_vmax = np.max(valid_data) if len(valid_data) > 0 else 1e-6
-    if plot_vmin <= 0: plot_vmin = 1e-12
-    if plot_vmax <= plot_vmin: plot_vmax = plot_vmin * 1000
+    if plot_vmin <= 0:
+        plot_vmin = 1e-12
+    if plot_vmax <= plot_vmin:
+        plot_vmax = plot_vmin * 1000
+
     cmap = plt.cm.plasma.copy()
     cmap.set_bad(color='lightgray')
+
     im = ax.imshow(image_data, origin='lower', cmap=cmap,
                    norm=LogNorm(vmin=plot_vmin, vmax=plot_vmax),
                    extent=extent_pixels, aspect='equal')
+
+    # 整数 Rsun の等高線
     int_levels = np.arange(1, int(np.floor(r_ranges['lasco_outer'])) + 1)
     ax.contour(r_map_plot, levels=int_levels, colors='white', linewidths=1,
                linestyles='--', extent=extent_pixels, alpha=0.7)
-    boundary_lines_for_legend = [] 
-    for level_val, (label_text, color) in [(r_ranges['mk4_inner'], (f"{r_ranges['mk4_inner']:.1f} $R_\\odot$ (Mk4 inner)", 'magenta')),
-                                           (r_ranges['mk4_outer_lasco_inner'], (f"{r_ranges['mk4_outer_lasco_inner']:.1f} $R_\\odot$ (Mk4/LASCO)", 'green')),
-                                           (r_ranges['lasco_outer'], (f"{r_ranges['lasco_outer']:.1f} $R_\\odot$ (LASCO outer)", 'blue'))]:
+
+    # 境界リング + 凡例用プロキシ
+    boundary_lines_for_legend = []
+    for level_val, (label_text, color) in [
+        (r_ranges['mk4_inner'], (f"{r_ranges['mk4_inner']:.1f} $R_\\odot$ (Mk4 inner)", 'magenta')),
+        (r_ranges['mk4_outer_lasco_inner'], (f"{r_ranges['mk4_outer_lasco_inner']:.1f} $R_\\odot$ (Mk4/LASCO)", 'green')),
+        (r_ranges['lasco_outer'], (f"{r_ranges['lasco_outer']:.1f} $R_\\odot$ (LASCO outer)", 'blue'))
+    ]:
         if level_val <= np.nanmax(r_map_plot) and level_val >= np.nanmin(r_map_plot):
             ax.contour(r_map_plot, levels=[level_val], colors=[color], linewidths=1.2,
                        linestyles='-.', extent=extent_pixels)
             proxy_line = plt.Line2D([0], [0], linestyle='-.', color=color, linewidth=1.2, label=label_text)
             boundary_lines_for_legend.append(proxy_line)
+
+    # 太陽中心マーク
     ax.plot(0, 0, '+', color='black', markersize=12, markeredgewidth=1.5)
+
+    # 位置角ガイドライン (オプション)
     if theta_deg_overlay is not None:
         theta_rad_overlay = np.radians(theta_deg_overlay)
         r_line_min_rsun = 0
         r_line_max_rsun = r_ranges['lasco_outer']
         r_coords_rsun = np.array([r_line_min_rsun, r_line_max_rsun])
+
+        # Rsun -> ピクセル
         x_overlay_pix = r_coords_rsun * params_lasco['px_per_rsun'] * np.cos(theta_rad_overlay)
         y_overlay_pix = r_coords_rsun * params_lasco['px_per_rsun'] * np.sin(theta_rad_overlay)
-        line_artist_theta, = ax.plot(x_overlay_pix, y_overlay_pix, 
-                                      color='cyan', linestyle='-', linewidth=2, 
-                                      label=f'θ={theta_deg_overlay:.0f}°')
-        boundary_lines_for_legend.append(line_artist_theta)
+
+        # line_artist_theta, = ax.plot(x_overlay_pix, y_overlay_pix,
+        #                              color='cyan', linestyle='-', linewidth=2,
+        #                              label=f'θ={theta_deg_overlay:.0f}°')
+        # boundary_lines_for_legend.append(line_artist_theta)
+
+    # ---- ここで描画範囲をピクセル単位で制限 ----
+    if xlim_pix is not None:
+        ax.set_xlim(xlim_pix)
+    if ylim_pix is not None:
+        ax.set_ylim(ylim_pix)
+    # ------------------------------------------
+
+    # カラーバー
     divider = make_axes_locatable(ax)
     cax = divider.append_axes("right", size="1%", pad=0.1)
-    cb = plt.colorbar(im, cax=cax, label='pB [B$_\\odot$]')
+    cb = plt.colorbar(im, cax=cax)
+    cb.set_label('pB [B$_\\odot$]', fontsize=14)
     cb.ax.tick_params(labelsize=12)
-    ax.set_title(f"Combined Mk4 & LASCO pB ({r_ranges['mk4_inner']:.1f}–{r_ranges['lasco_outer']:.1f} $R_\\odot$)", fontsize=18)
+
+    ax.set_title(f"Combined Mk4 & LASCO pB ({r_ranges['mk4_inner']:.1f}–{r_ranges['lasco_outer']:.1f} $R_\\odot$)",
+                 fontsize=18)
+
     if boundary_lines_for_legend:
         ax.legend(handles=boundary_lines_for_legend, loc='upper right', fontsize=10)
+
     ax.tick_params(axis='both', which='major', labelsize=12)
     plt.tight_layout()
+    
+    output_path = f"/mnt/d/wsl/home/kinno-7010/Research/SDO_Mk4_SOHO/pB/pB_combined_image.png"
+    fig.savefig(output_path, dpi=300)
+    print(f"✓ pB combined image saved: {output_path}")
+    plt.show()
+
+    # # 必要なら戻り値として fig, ax を返しておくと拡張しやすい
+    # return fig, ax
 
 def add_radial_guides_on_ax(ax,
                             r_map_plot,

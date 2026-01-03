@@ -63,11 +63,22 @@ if os.path.isdir(SDO_MK4_SOHO_DIR) and (SDO_MK4_SOHO_DIR not in sys.path):
 from secchi_prep import first_stage_calibration_and_background
 from cor1_quickpol import COR1_QUICKPOL
 
-# Dynamically import '2D_density_map.py' (filename begins with a digit)
+# 置換（66-71行あたり）
 import importlib.util as _ilu
-_d2_path = os.path.join(SDO_MK4_SOHO_DIR, "2D_density_map.py")
+
+_candidates = ["density_2D_map.py", "2D_density_map.py"]
+_d2_path = None
+for fn in _candidates:
+    p = os.path.join(SDO_MK4_SOHO_DIR, fn)
+    if os.path.exists(p):
+        _d2_path = p
+        break
+if _d2_path is None:
+    raise FileNotFoundError(f"Cannot find any of {_candidates} under {SDO_MK4_SOHO_DIR}")
+
 _spec = _ilu.spec_from_file_location("d2map", _d2_path)
 _d2 = _ilu.module_from_spec(_spec); _spec.loader.exec_module(_d2)  # type: ignore
+
 
 # Re-export what we need under local names
 angle_map_deg = _d2.angle_map_deg
@@ -871,34 +882,94 @@ def export_density_csv_sta(
     header = "y_pix,x_pix,x_arcsec,y_arcsec,x_Rsun,y_Rsun,r_Rsun,theta_deg,Ne_cm^-3"
     np.savetxt(csv_path, data, delimiter=",", header=header, comments="")
 
-def save_density_fits_sta(density_map: np.ndarray, params_ref: dict, fits_path: str) -> None:
+def save_map_fits_sta(data2d: np.ndarray, base_header, fits_path: str, *, bunit: str, comment: str = "") -> None:
+    """
+    COR1のヘッダ（h0）をできるだけ保持して、派生マップ(pB/ne/fpe)をFITS保存する。
+
+    NOTE:
+      astropy.io.fits.Header(dict) は、dict値が list/tuple の場合（例: HISTORY が list）に
+      ValueError("Illegal value") を投げます。SECCHI/IDL系のヘッダは HISTORY が複数行になるため、
+      ここで安全に Header を組み立て直します。
+    """
     from astropy.io import fits
     import numpy as np
+    import os
 
-    # Let astropy build the required FITS keywords (SIMPLE, BITPIX, NAXIS, …)
-    hdu = fits.PrimaryHDU(density_map.astype('float32'))
-    h = hdu.header
-    h['BUNIT']   = 'cm^-3'
-    h['COMMENT'] = 'Electron density from pB inversion (COR1)'
-    h['CRPIX1']  = float(params_ref.get('cx', 0.0)) + 1.0  # FITS 1-origin
-    h['CRPIX2']  = float(params_ref.get('cy', 0.0)) + 1.0
-    # WCS-like keywords (arcsec/pix if available)
-    arcsec_per_pix = params_ref.get('arcsec_per_pix', np.nan)
-    px_per_rsun = float(params_ref.get('px_per_rsun', np.nan))
-    rsun_arcsec = float(params_ref.get('rsun_arcsec', np.nan))
-    if np.isfinite(arcsec_per_pix):
-        cdelt = float(arcsec_per_pix)
-    elif np.isfinite(px_per_rsun) and np.isfinite(rsun_arcsec) and px_per_rsun > 0:
-        cdelt = rsun_arcsec / px_per_rsun
-    else:
-        cdelt = 1.0
-    h['CDELT1']  = cdelt
-    h['CDELT2']  = cdelt
-    h['CUNIT1']  = 'arcsec'
-    h['CUNIT2']  = 'arcsec'
-    h['CTYPE1']  = 'HPLN-TAN'
-    h['CTYPE2']  = 'HPLT-TAN'
-    hdu.writeto(fits_path, overwrite=True)
+    def _as_header(obj) -> fits.Header:
+        # Header はそのままコピー
+        if isinstance(obj, fits.Header):
+            return obj.copy()
+
+        # dict から安全に構築
+        if isinstance(obj, dict):
+            hdr = fits.Header()
+
+            for k, v in obj.items():
+                if k is None:
+                    continue
+                key = str(k).upper().strip()
+                if key == "":
+                    continue
+
+                # FITSキーワードは8文字制限（HIERARCH を使わない運用のため切る）
+                key8 = key[:8]
+
+                # HISTORY / COMMENT は複数行（list）を想定して個別カードとして追加
+                if key8 in ("HISTORY", "COMMENT"):
+                    if v is None:
+                        continue
+                    if isinstance(v, (list, tuple, np.ndarray)):
+                        for vv in v:
+                            if vv is None:
+                                continue
+                            s = str(vv)
+                            if key8 == "HISTORY":
+                                hdr.add_history(s)
+                            else:
+                                hdr.add_comment(s)
+                    else:
+                        s = str(v)
+                        if key8 == "HISTORY":
+                            hdr.add_history(s)
+                        else:
+                            hdr.add_comment(s)
+                    continue
+
+                # list/tuple/dict などの「FITSに直接入らない型」は安全に文字列化（またはスキップ）
+                if isinstance(v, (list, tuple, dict, set, np.ndarray)):
+                    try:
+                        hdr[key8] = str(v)
+                    except Exception:
+                        pass
+                    continue
+
+                # 通常キーはそのまま
+                try:
+                    hdr[key8] = v
+                except Exception:
+                    try:
+                        hdr[key8] = str(v)
+                    except Exception:
+                        pass
+
+            return hdr
+
+        # それ以外は最小ヘッダで
+        return fits.Header()
+
+    hdr = _as_header(base_header)
+
+    # 形状と単位の更新
+    hdr["NAXIS"]  = 2
+    hdr["NAXIS1"] = int(data2d.shape[1])
+    hdr["NAXIS2"] = int(data2d.shape[0])
+    hdr["BUNIT"]  = str(bunit)
+
+    if comment:
+        hdr.add_comment(str(comment))
+
+    os.makedirs(os.path.dirname(fits_path), exist_ok=True)
+    fits.PrimaryHDU(np.asarray(data2d, dtype=np.float32), header=hdr).writeto(fits_path, overwrite=True)
 
 
 # --------------------
@@ -998,6 +1069,23 @@ def plot_density_map_sta(ne_map: np.ndarray,
     return fig, ax
 
 
+
+def write_2d_fits(data2d: np.ndarray, hdr_like: dict, out_fits: str, *, bunit: str, overwrite: bool = True) -> None:
+    """
+    COR1ヘッダ（dict）をベースに、派生データ（pB/Ne/fpe）をFITSに保存。
+    """
+    hdr = fits.Header()
+    for k, v in hdr_like.items():
+        # fits.Header はキーの型にうるさいので安全に
+        try:
+            hdr[str(k)[:8]] = v
+        except Exception:
+            pass
+    hdr["BUNIT"] = bunit
+    os.makedirs(os.path.dirname(out_fits), exist_ok=True)
+    fits.PrimaryHDU(np.asarray(data2d, dtype=np.float32), header=hdr).writeto(out_fits, overwrite=overwrite)
+
+
 # --------------------
 # Script entry point
 # --------------------
@@ -1007,7 +1095,7 @@ if __name__ == "__main__":
 
     # === ここで反転モードを選ぶ ===
     # "spherical"（= 局所球対称, 扇形ごと反転） or "axisym"（= 軸対称, 全周平均1D→2D）
-    MODE = "spherical"   # ← "axisym" に変えるだけで軸対称版に切替
+    MODE = "axisym"   # ← "axisym" に変えるだけで軸対称版に切替
 
     raw_files = [
         os.path.join(RAW_DIR, "20220613_030100_n4c1A.fts"),  # POLAR=0°
@@ -1021,6 +1109,13 @@ if __name__ == "__main__":
     p120 = os.path.join(BKG_DIR, "dc1A_p120_220613.fts")
     p240 = os.path.join(BKG_DIR, "dc1A_p240_220613.fts")
     bkg_map = load_daily_med_backgrounds(p000=p000, p120=p120, p240=p240)
+    
+    # === FITS保存と出力量（parseはしない：ここを編集して切替） ===
+    SAVE_FITS = True
+    OUTPUT_QUANTITY = "ne"   # or "fpe"
+    FPE_HARMONIC = 1
+    FPE_UNIT = "MHz"
+
 
     # pB作成（IPSUM補正→IDL同等CALFAC→QUICKPOL）
     pB, h0 = build_pB_from_triplet(triplet[0], triplet[120], triplet[240], bkg_map,
@@ -1051,7 +1146,7 @@ if __name__ == "__main__":
         ne_map, aux = invert_cor1_pb_to_density_spherical(
             pB_pre, r_map, params,
             r_min=1.4, r_max=4.0,
-            radial_step_pix=0.5, n_theta=720,
+            radial_step_pix=1.0, n_theta=360,
             theta_neighbor_blend=1
         )
         title = "STEREO-A COR1 2D density (Spherical symmetric inversion)\n2022-06-13 03:01:00 UT"
@@ -1063,8 +1158,39 @@ if __name__ == "__main__":
     # 出力
     output_csv_path  = "/mnt/d/wsl/home/kinno-7010/Research/STEREO-A/SECCHI/COR1/2D_density_map_sta.csv"
     output_fits_path = "/mnt/d/wsl/home/kinno-7010/Research/STEREO-A/SECCHI/COR1/2D_density_map_sta_result.fits"
-    export_density_csv_sta(ne_map, r_map, params, output_csv_path)
+    # export_density_csv_sta(ne_map, r_map, params, output_csv_path)
     # save_density_fits_sta(ne_map, params, output_fits_path)
+
+    if SAVE_FITS:
+        out_dir = "/mnt/d/wsl/home/kinno-7010/Research/STEREO-A/SECCHI/COR1/Rawdata"
+        pb_fits_path = os.path.join(out_dir, "COR1A_pb_pre_20220613_030100.fits")
+
+        # 1) トモグラフィ入力に必要になる pB（前処理後を推奨：pB_pre）
+        save_map_fits_sta(
+            pB_pre, h0, pb_fits_path,
+            bunit="Bsun",
+            comment="COR1A pB (preprocessed for inversion)"
+        )
+        print(f"Saved COR1A pB FITS: {pb_fits_path}")
+
+        # 2) 派生量（QA用）：ne または fpe
+        if OUTPUT_QUANTITY.lower() == "ne":
+            out_map = ne_map
+            out_unit = "cm^-3"
+            tag = "ne"
+        else:
+            out_map = ne_to_fpe(ne_map, harmonic=FPE_HARMONIC, out_unit=FPE_UNIT)
+            out_unit = FPE_UNIT
+            tag = f"fpe_{FPE_UNIT.lower()}_h{FPE_HARMONIC}"
+
+        derived_fits_path = os.path.join(out_dir, f"COR1A_{tag}_20220613_030100.fits")
+        save_map_fits_sta(
+            out_map, h0, derived_fits_path,
+            bunit=out_unit,
+            comment=f"COR1A derived map from pB inversion ({tag})"
+        )
+        print(f"Saved COR1A derived FITS: {derived_fits_path}")
+
 
     plot_density_map_sta(
         ne_map, params,

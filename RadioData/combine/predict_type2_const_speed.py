@@ -47,34 +47,74 @@ from matplotlib.ticker import MultipleLocator, FuncFormatter
 from matplotlib.dates import SecondLocator
 
 RS_KM = 6.957e5  # solar radius in km
+R_SCALE = 2.0
 # Plasma frequency conversion constant (MHz · cm^{3/2})
 # Matches the value used in `wind_hf_assa_dynamic_spectrum.py`
-kappa = 9.0e-3
+_e = 1.60217663e-19 # C
+_m_e = 9.1093837015e-31
+_eps0 = 8.8541878128e-12 # F/m
+kappa = (1/(2*np.pi) * np.sqrt((_e)**2 / (_eps0 * _m_e)) * 1e-3)  # exact factor to MHz
 
+def density_fitting_line(r_rs: np.ndarray | float) -> np.ndarray | float:
+    # IMPORTANT: the fitted coefficients were obtained using x = r / R_SCALE as the independent variable.
+    r = np.asarray(r_rs, dtype=float) /2
+    A_parameter = np.asarray([
+        76839.7457212611,
+        12642227.30363713,
+        4698168.97749618,
+        210.87185287253882,
+        11477.26555446258,
+        77609.54776763255,
+    ], dtype=float)
+    p_parameter = np.asarray([
+        0,
+        -4.863372858745182,
+        -11.999999999999796,
+        -11.999996970334259,
+        -11.999986208070741,
+        -11.999999137777131,
+    ], dtype=float)
+
+    # 形状をフラット化して A0*r**p0 + ... + A5*r**p5 を計算し、元の形状に戻す
+    if r.ndim == 0:
+        r_safe = float(max(r, 1e-6))
+        return float(np.sum(A_parameter * r_safe**p_parameter))
+
+    r_flat = r.ravel()
+    r_safe = np.clip(r_flat, 1e-6, None)
+    ne_flat = np.sum(A_parameter[:, None] * r_safe[None, :] ** p_parameter[:, None], axis=0)
+    return ne_flat.reshape(r.shape)
 
 # ---------- Density model wrapper (Factor × Saito1977) ----------
-def ne_saito_factor(r_rs: np.ndarray | float, factor: float = 6.0) -> np.ndarray | float:
+def ne_saito_factor(r_rs: np.ndarray | float, factor: float = 1.0) -> np.ndarray | float:
     """Electron density model: n_e(r) = Factor × Saito1977(r) in cm^-3."""
     return factor * Saito1977(np.asarray(r_rs))
 
+def ne_density_fitting_line(r_rs: np.ndarray | float, factor: float = 1.0) -> np.ndarray | float:
+    """Electron density model: n_e(r) = Factor × density_fitting_line(r) in cm^-3."""
+    return factor * density_fitting_line(r_rs)
 
-def f_model_from_r(r_rs: np.ndarray | float, branch: str = "F", factor: float = 6.0) -> np.ndarray | float:
+
+
+def f_model_from_r(r_rs: np.ndarray | float, branch: str = "F", factor: float = 1.0) -> np.ndarray | float:
     """Map radius to plasma emission frequency (F/H)."""
-    ne = ne_saito_factor(r_rs, factor=factor)
+    # ne = ne_saito_factor(r_rs, factor=factor)
+    ne = ne_density_fitting_line(r_rs, factor=factor)
     f_f = kappa * np.sqrt(ne)  # MHz
     return 2.0 * f_f if branch.upper() == "H" else f_f
 
 
-def invert_r_from_f(f_mhz: float, branch: str = "F", factor: float = 6.0,
-                    r_lo: float = 1.2, r_hi: float = 30.0, max_iter: int = 120) -> float:
+def invert_r_from_f(f_mhz: float, branch: str = "F", factor: float = 1.0,
+                    r_lo: float = 1.1, r_hi: float = 30.0, max_iter: int = 120) -> float:
     """Given frequency in MHz, find radius r [R_s] such that f_model_from_r(r) ≈ f_mhz (robust bisection)."""
     target = float(f_mhz) * (0.5 if branch.upper() == "H" else 1.0)
     lo, hi = float(r_lo), float(r_hi)
 
     # Try to ensure bracketing by gentle expansion
     for _ in range(12):
-        f_lo = kappa * math.sqrt(float(ne_saito_factor(lo, factor)))
-        f_hi = kappa * math.sqrt(float(ne_saito_factor(hi, factor)))
+        # f_lo = kappa * math.sqrt(float(ne_saito_factor(lo, factor)))
+        f_lo = kappa * math.sqrt(float(ne_density_fitting_line(lo, factor)))
+        f_hi = kappa * math.sqrt(float(ne_density_fitting_line(hi, factor)))
         if f_lo >= target >= f_hi:
             break
         lo = max(1.05, 0.9 * lo)
@@ -82,7 +122,8 @@ def invert_r_from_f(f_mhz: float, branch: str = "F", factor: float = 6.0,
 
     for _ in range(max_iter):
         mid = 0.5 * (lo + hi)
-        f_mid = kappa * math.sqrt(float(ne_saito_factor(mid, factor)))
+        # f_mid = kappa * math.sqrt(float(ne_saito_factor(mid, factor)))
+        f_mid = kappa * math.sqrt(float(ne_density_fitting_line(mid, factor)))
         if f_mid > target:
             lo = mid
         else:
@@ -90,6 +131,22 @@ def invert_r_from_f(f_mhz: float, branch: str = "F", factor: float = 6.0,
         if abs(hi - lo) < 1e-6:
             break
     return 0.5 * (lo + hi)
+
+
+def frequency_to_r_saito_factor(
+    f_mhz: np.ndarray | float, branch: str = "F", factor: float = 1.0
+) -> np.ndarray | float:
+    """Map frequency (MHz) to r [R_s] using Factor × Saito1977 (vectorized)."""
+    f_arr = np.asarray(f_mhz, dtype=float)
+    vec = np.vectorize(lambda val: invert_r_from_f(float(val), branch=branch, factor=factor))
+    return vec(f_arr)
+
+
+def r_to_frequency_saito_factor(
+    r_rs: np.ndarray | float, branch: str = "F", factor: float = 1.0
+) -> np.ndarray | float:
+    """Map r [R_s] back to frequency (MHz) using Factor × Saito1977."""
+    return f_model_from_r(r_rs, branch=branch, factor=factor)
 
 
 # ---------- Constant-speed prediction (half-line generator) ----------
@@ -250,7 +307,7 @@ def plot_type2_prediction(
     yscale: str = "log",
     dt_s: float = 2.0,
     outfile: str | None = None,
-    figsize: Tuple[float, float] = (12, 6),
+    figsize: Tuple[float, float] = (16, 8),
     cmap: str = "viridis",
     clim: Tuple[float, float] = (0.0, 2.5),
     seed_point: Tuple[pd.Timestamp | str, float] | None = None,
@@ -307,24 +364,24 @@ def plot_type2_prediction(
         ax.set_yscale("log" if log_scale else "linear")
         ax.set_xlabel("Time [UT]", fontsize=16)
         ax.set_title(
-            "Dynamic Spectrum (combined: Wind/RAD2 + HF + ASSA)",
+            "Dynamic Spectrum (Wind/RAD2 (1-14 MHz) + HF (15-40 MHz) + ASSA (40-85 MHz)) and Density Fitting Line",
             fontsize=18,
         )
         ax.set_xlim(mdates.date2num(time_axis[0]), mdates.date2num(time_axis[-1]))
         ax.set_ylim(min_frequency, max_frequency)
 
         ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M:%S"))
-        ax.xaxis.set_major_locator(mdates.SecondLocator(interval=10 * 60))
-        ax.yaxis.set_major_locator(MultipleLocator(5.0))
+        ax.xaxis.set_major_locator(mdates.SecondLocator(interval=60))
+        ax.yaxis.set_major_locator(MultipleLocator(1.0))
         ax.yaxis.set_major_formatter(FuncFormatter(lambda val, _: f"{val:.0f}"))
         ax.tick_params(axis="x", rotation=0, labelrotation=0, labelsize=14)
         ax.tick_params(axis="y", labelsize=12)
 
-        cbar = fig.colorbar(mesh, ax=ax, pad=0.01, shrink=0.5)
-        cbar.set_label(
-            "Intensity normalized to per-frequency median",
-            fontsize=14,
-        )
+        # cbar = fig.colorbar(mesh, ax=ax, pad=0.01, shrink=0.5)
+        # cbar.set_label(
+        #     "Intensity normalized to per-frequency median",
+        #     fontsize=14,
+        # )
     # combineコードここまで
     #------------------------------------------------------------
     # Type II の点
@@ -333,7 +390,7 @@ def plot_type2_prediction(
         xs = [mdates.date2num(t) for t, _ in pts]
         ys = [f for _, f in pts]
         (points_handle,) = ax.plot(
-            xs, ys, "o", color="red", ms=5, mec="k", mew=1, alpha=0.95, label="Type II points"
+            xs, ys, "o", color="magenta", ms=10, mec="k", mew=1, alpha=0.95, label="Type II points"
         )
 
     def resolve_seed_point(
@@ -355,14 +412,15 @@ def plot_type2_prediction(
     if branch.upper() == "H":
         primary_style.setdefault("color", "red")
         primary_style.setdefault("linestyle", "--")
-        primary_style.setdefault("alpha", 0.8)
+        primary_style.setdefault("alpha", 0.7)
 
     else:
-        primary_style.setdefault("color", "blue")
-        primary_style.setdefault("linestyle", "-")
-        primary_style.setdefault("alpha", 0.9)
+        primary_style.setdefault("color", "#A0E4FF")
+        primary_style.setdefault("linestyle", "--")
+        primary_style.setdefault("alpha", 0.7)
 
-    primary_style.setdefault("label", f"{factor}× Saito 1977 ({branch.upper()})")
+    # primary_style.setdefault("label", f"{factor}× Saito 1977 ({branch.upper()})")
+    primary_style.setdefault("label", f"{factor}× Density Fitting Line ({branch.upper()})")
 
     line = overlay_prediction_fullspan(
         ax,
@@ -399,7 +457,8 @@ def plot_type2_prediction(
             plot_kwargs.setdefault("linestyle", "-")
             plot_kwargs.setdefault("alpha", 0.9)
 
-        plot_kwargs.setdefault("label", f"{pred_factor}× Saito 1977 ({pred_branch})")
+        # plot_kwargs.setdefault("label", f"{pred_factor}× Saito 1977 ({pred_branch})")
+        plot_kwargs.setdefault("label", f"{pred_factor}× Density Fitting Line ({pred_branch})")
 
         line_extra = overlay_prediction_fullspan(
             ax,
@@ -432,10 +491,65 @@ def plot_type2_prediction(
         )
     ax.set_xlim(mdates.date2num(start_time), mdates.date2num(end_time))
     ax.set_ylim(min_frequency, max_frequency)
+
+    # 第2軸: 周波数→r (5× Saito 1977, Fundamental)
+    secax = ax.secondary_yaxis(
+        "right",
+        functions=(
+            lambda f_mhz: frequency_to_r_saito_factor(f_mhz, branch="H", factor=factor),
+            lambda r_rs: r_to_frequency_saito_factor(r_rs, branch="H", factor=factor),
+        ),
+    )
+    # secax.set_ylabel(f"Radial distance [R$_\\odot$] ({factor}× Saito 1977)", fontsize=14)
+    secax.set_ylabel(f"Radial distance (Harmonic) [R$_\\odot$] (Density Fitting Line)", fontsize=14)
+    secax.tick_params(axis="y", labelsize=12)
+    secax.yaxis.set_major_locator(MultipleLocator(0.1))
+    secax.yaxis.set_major_formatter(FuncFormatter(lambda val, _: f"{val:.1f}"))
+    secax.set_ylim(1.5, 6.0)
+    
+    ax.axhline(14.0, color="white", linestyle=":", linewidth=1)
+    ax.text(mdates.date2num(end_time), 14.0, "Wind/RAD2", color="white", fontsize=14, ha="right", va="top", fontweight="bold")
+    ax.axhline(40.0, color="white", linestyle=":", linewidth=1)
+    ax.text(mdates.date2num(end_time), 40.0, "Iitate HF antenna", color="white", fontsize=14, ha="right", va="top", fontweight="bold")
+    ax.text(mdates.date2num(end_time), 85.0, "Australia-ASSA", color="white", fontsize=14, ha="right", va="top", fontweight="bold")
+    
+    CME_time = mdates.date2num(pd.Timestamp("2022-06-13 03:12:00"))
+    flare_time = mdates.date2num(pd.Timestamp("2022-06-13 04:07:00"))
+    SRB_start_time = mdates.date2num(pd.Timestamp("2022-06-13 03:25:40"))
+    SRB_end_time = mdates.date2num(pd.Timestamp("2022-06-13 03:31:20"))
+    SRB_end_time_harmonic = mdates.date2num(pd.Timestamp("2022-06-13 03:50:00"))
+    # ax.axvline(CME_time, color="white", linestyle="--", linewidth=1)
+    # ax.text(CME_time, 5.7, " Main CME\n erupted\n 03:12 UT", color="white", fontsize=14, ha="left", va="bottom", fontweight="bold")
+    # ax.axvline(flare_time, color="white", linestyle="--", linewidth=1)
+    # ax.text(flare_time, 85, " M3.4 flare peaked\n 04:07 UT", color="white", fontsize=14, ha="left", va="top", fontweight="bold")
+    # ax.axvline(SRB_start_time, color="red", linestyle="--", linewidth=1)
+    # ax.text(SRB_start_time, 85, " SRB II start\n 03:25:40 UT", color="red", fontsize=14, ha="left", va="top", fontweight="bold")
+    # ax.axvline(SRB_end_time, color="red", linestyle="--", linewidth=1)
+    # ax.text(SRB_end_time, 85, " SRB II end\n 03:31:20 UT", color="red", fontsize=14, ha="left", va="top", fontweight="bold")
+    # ax.axvline(SRB_end_time_harmonic, color="red", linestyle="--", linewidth=1)
+    # ax.text(SRB_end_time_harmonic, 85, " SRB II (Harmonic) end\n 03:50:00 UT", color="red", fontsize=14, ha="left", va="top", fontweight="bold")
+    
+    # 2.2 Rsの位置にホリゾンタルラインを追加
+    # ax.axhline(y=r_to_frequency_saito_factor(2.2, branch="F", factor=factor), color="#A0E4FF", linestyle=":", linewidth=1.5)
+    # ax.text(mdates.date2num(end_time), r_to_frequency_saito_factor(2.2, branch="F", factor=factor), "2.2 $R_\\odot$ \n(Fundamental) ",
+    #     color="#A0E4FF", fontsize=14, ha="right", va="top", fontweight="bold")
+    ax.axhline(y=r_to_frequency_saito_factor(2.736, branch="H", factor=factor), color="white", linestyle=":", linewidth=1.5)
+    ax.text(mdates.date2num(end_time), r_to_frequency_saito_factor(2.736, branch="H", factor=factor), "2.736 $R_\\odot$ \n(Harmonic) ",
+        color="white", fontsize=14, ha="right", va="top", fontweight="bold")
+    ax.axhline(y=r_to_frequency_saito_factor(2.2, branch="H", factor=factor), color="pink", linestyle=":", linewidth=1.5)
+    ax.text(mdates.date2num(end_time), r_to_frequency_saito_factor(2.2, branch="H", factor=factor), "2.2 $R_\\odot$ \n(Harmonic) ",
+        color="pink", fontsize=14, ha="right", va="top", fontweight="bold")
+    
+    ax.text(mdates.date2num(pd.Timestamp("2022-06-13T05:00:00")), 7, "Second Harmonic ", fontsize=14, ha="right", va="bottom", fontweight="bold", color="pink")
+    ax.text(mdates.date2num(pd.Timestamp("2022-06-13T05:00:00")), 4, "Fundamental ", fontsize=14, ha="right", va="top", fontweight="bold", color="#A0E4FF")
+    
+    # ensure secondary axis range stays fixed after any autoscale adjustments
+    secax.set_ylim(1.5, 6.0)
+    
     fig.tight_layout()
 
     if outfile:
-        fig.savefig(outfile, dpi=300, bbox_inches="tight")
+        fig.savefig(outfile, dpi=200)
         print(f"Saved figure to {outfile}")
         plt.show()
     else:
@@ -447,33 +561,36 @@ def plot_type2_prediction(
 if __name__ == "__main__":
     # ==== USER CONFIG START ====
     # Plot range
+    # start_time = "2022-06-13T03:00:00"   
+    # end_time = "2022-06-13T05:00:00"
+    # min_frequency = 1.0     # MHz
+    # max_frequency = 87.0    # MHz
+    
     start_time = "2022-06-13T03:25:00"
-    end_time = "2022-06-13T03:33:00"
+    end_time = "2022-06-13T03:34:00"
     min_frequency = 25.0     # MHz
     max_frequency = 38.0    # MHz
-    
-    end_time = "2022-06-13T05:00:00"
-    min_frequency = 1.0     # MHz
-    max_frequency = 43.0    # MHz
 
-    # (Option A) Multiple picked points; the last is used unless seed_point is set
+    # (Option A) Multiple picked points; the last is used unless seed_point is set.
+    start_point_time, end_point_time = "2022-06-13T03:25:30", "2022-06-13T03:31:20"
+    start_point_frequency, end_point_frequency = 35, 28
     points = [
-        ("2022-06-13T03:25:40", 35.5),
-        ("2022-06-13T03:31:20", 28),
+        (start_point_time, start_point_frequency),
+        (end_point_time, end_point_frequency),
     ]
 
-    # (Option B) Seed points for prediction curves
-    seed_point_fundamental = ("2022-06-13T03:25:40", 17.75)  # Fundamental branch
-    seed_point_harmonic = ("2022-06-13T03:25:40", 35.5)      # Second harmonic branch
+    # (Option B) Seed points for prediction curve
+    seed_point_fundamental, seed_point_harmonic = (start_point_time, start_point_frequency/2), (start_point_time, start_point_frequency)  # Fundamental branch
 
     # Prediction params
-    speed_kms = 440.0       # km/s (constant speed)
+    speed_kms = 480.0       # km/s (constant speed)
     branch = "F"             # Primary branch ('F' for fundamental)
-    factor = 3.0             # Factor × Saito1977
+    factor = 1.0             # Factor × Saito1977
     yscale = "log"           # display scale
     with_spectrum = True
     dt_s = 1.0               # sampling for the line across the window
-    outfile = "/mnt/d/wsl/home/kinno-7010/Research/RadioData/combine/dynamic_spectra_with_density_model_line.png"           # e.g., "./type2_fullspan_demo.png"
+    # outfile = f"/mnt/d/wsl/home/kinno-7010/Research/RadioData/combine/dynamic_spectra_with_fitting_line_from_pB_convert.png"
+    outfile = f"/mnt/d/wsl/home/kinno-7010/Research/RadioData/combine/harmonic_dynamic_spectra_with_fitting_line.png"
     # ==== USER CONFIG END ====
 
     plot_type2_prediction(

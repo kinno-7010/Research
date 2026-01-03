@@ -138,11 +138,13 @@ def load_and_prepare_instrument_data(filename, instrument_name, is_lasco=False):
 
     return data, params
 
-def combine_corona_data(data_lasco, params_lasco, data_mk4, params_mk4, r_map_lasco, r_ranges,
+def combine_corona_data(data_lasco, params_lasco, data_kcor, params_kcor, r_map_lasco, r_ranges,
                         blend_r_inner=None, blend_r_outer=None):
     """
     Mk4をLASCOグリッドに一次補間し、半径で結合する。
     2.2 R_sun 近傍にブレンディング帯を設け、pBの外側ビン抜けを防ぐ。
+    r_ranges は 'kcor_inner'/'kcor_outer_lasco_inner' もしくは
+    'mk4_inner'/'mk4_outer_lasco_inner' のキーを受け付ける。
     """
     # --- LASCO グリッドでの正規化座標
     y_l_idx, x_l_idx = np.indices((params_lasco['ny'], params_lasco['nx']))
@@ -150,30 +152,35 @@ def combine_corona_data(data_lasco, params_lasco, data_mk4, params_mk4, r_map_la
     y_norm_on_lasco_grid = (y_l_idx - params_lasco['cy']) / params_lasco['px_per_rsun']
 
     # --- Mk4 データを LASCO グリッドへ補間
-    coords_for_mk4_sampling_y = y_norm_on_lasco_grid * params_mk4['px_per_rsun'] + params_mk4['cy']
-    coords_for_mk4_sampling_x = x_norm_on_lasco_grid * params_mk4['px_per_rsun'] + params_mk4['cx']
-    coords_mk4_sampling = np.vstack([coords_for_mk4_sampling_y.ravel(),
-                                     coords_for_mk4_sampling_x.ravel()])
-    interp_mk4_on_lasco_grid = map_coordinates(
-        data_mk4, coords_mk4_sampling, order=1, mode='constant', cval=np.nan
+    coords_for_kcor_sampling_y = y_norm_on_lasco_grid * params_kcor['px_per_rsun'] + params_kcor['cy']
+    coords_for_kcor_sampling_x = x_norm_on_lasco_grid * params_kcor['px_per_rsun'] + params_kcor['cx']
+    coords_kcor_sampling = np.vstack([coords_for_kcor_sampling_y.ravel(),
+                                     coords_for_kcor_sampling_x.ravel()])
+    interp_kcor_on_lasco_grid = map_coordinates(
+        data_kcor, coords_kcor_sampling, order=1, mode='constant', cval=np.nan
     ).reshape((params_lasco['ny'], params_lasco['nx']))
 
     final_image = np.full_like(data_lasco, np.nan)
 
-    # --- ラジアル領域
-    r_mk4_in   = float(r_ranges['mk4_inner'])
-    r_switch   = float(r_ranges['mk4_outer_lasco_inner'])
+    # --- ラジアル領域（キー互換: kcor_* または mk4_*）
+    r_kcor_in = r_ranges.get('kcor_inner', r_ranges.get('mk4_inner'))
+    r_switch = r_ranges.get('kcor_outer_lasco_inner', r_ranges.get('mk4_outer_lasco_inner'))
+    if r_kcor_in is None or r_switch is None:
+        raise KeyError("r_ranges に 'kcor_inner'/'kcor_outer_lasco_inner' あるいは "
+                       "'mk4_inner'/'mk4_outer_lasco_inner' が必要です")
+    r_kcor_in = float(r_kcor_in)
+    r_switch = float(r_switch)
     r_lasco_out = float(r_ranges['lasco_outer'])
 
     mask_lasco = (r_map_lasco >= r_switch) & (r_map_lasco <= r_lasco_out)
-    mask_mk4   = (r_map_lasco >= r_mk4_in) & (r_map_lasco <  r_switch)
+    mask_kcor   = (r_map_lasco >= r_kcor_in) & (r_map_lasco <  r_switch)
 
     final_image[mask_lasco] = data_lasco[mask_lasco]
-    final_image[mask_mk4]   = interp_mk4_on_lasco_grid[mask_mk4]
+    final_image[mask_kcor]   = interp_kcor_on_lasco_grid[mask_kcor]
 
     # --- 境界ブレンド帯（既定：±0.15 R_sun）
     if blend_r_inner is None:
-        blend_r_inner = max(r_mk4_in, r_switch - 0.15)
+        blend_r_inner = max(r_kcor_in, r_switch - 0.15)
     if blend_r_outer is None:
         blend_r_outer = min(r_lasco_out, r_switch + 0.15)
     if blend_r_outer > blend_r_inner:
@@ -183,17 +190,17 @@ def combine_corona_data(data_lasco, params_lasco, data_mk4, params_mk4, r_map_la
             w = (r_map_lasco - blend_r_inner) / (blend_r_outer - blend_r_inner)
             w = np.clip(w, 0.0, 1.0)
 
-            mk4v  = interp_mk4_on_lasco_grid
+            kcorv  = interp_kcor_on_lasco_grid
             lasv  = data_lasco
             # どちらかが NaN のときはもう片方を採用
-            blended = (1.0 - w) * mk4v + w * lasv
-            blended = np.where(np.isnan(mk4v), lasv, blended)
-            blended = np.where(np.isnan(lasv), mk4v, blended)
+            blended = (1.0 - w) * kcorv + w * lasv
+            blended = np.where(np.isnan(kcorv), lasv, blended)
+            blended = np.where(np.isnan(lasv), kcorv, blended)
 
             final_image[bm] = blended[bm]
 
     # 範囲外マスク
-    final_image[r_map_lasco < r_mk4_in]   = np.nan
+    final_image[r_map_lasco < r_kcor_in]   = np.nan
     final_image[r_map_lasco > r_lasco_out] = np.nan
     return final_image
 

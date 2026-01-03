@@ -1,42 +1,64 @@
+# sunpyの警告を抑制
+import warnings
+from sunpy.util.exceptions import SunpyMetadataWarning
+warnings.filterwarnings('ignore', category=SunpyMetadataWarning)
+
+import config
+import numpy as np
+from astropy.time import Time
+import astropy.units as u
+from pathlib import Path
+import matplotlib.pyplot as plt
+import sunpy.map
+from astropy.visualization import ImageNormalize, LinearStretch
+from matplotlib.colors import Normalize
+import gc
+from scipy.ndimage import map_coordinates
+from reproject import reproject_interp
+
+out_dir_str = "/mnt/d/wsl/home/kinno-7010/Research/SDO_Mk4_SOHO/raw"
+# --- 1. 時刻パースとデータリスト取得 ---
+
+out_dir = Path(out_dir_str)
+
+# print(f"生データ統合画像作成: target={target_time_str}")
+
+# 出力ディレクトリを作成
+# out_dir.mkdir(parents=True, exist_ok=True)
+
+# integrated_analysis.pyから必要な関数をインポート
+from integrated_analysis import (
+    get_data_list, create_fully_corrected_lasco_map, 
+    select_by_midpoint, calculate_r_map, combine_corona_data
+)
+
+def plot_multi_degree_lines(ax, angles_deg, r_ranges: dict, params_ref: dict, extent_global):
+    """
+    角度リストに従って複数のラインを描画。プロファイル計算は行わず幾何学線のみ。
+    """
+    try:
+        cmap = plt.cm.get_cmap("viridis")
+        norm = plt.Normalize(vmin=min(angles_deg), vmax=max(angles_deg))
+        scale = params_ref['px_per_rsun']
+        max_r_pix = max(abs(extent_global[0]), abs(extent_global[1]), abs(extent_global[2]), abs(extent_global[3]))
+        max_r = max_r_pix / scale
+        r_line = np.linspace(0, max_r, 300)
+        for th in angles_deg:
+            angle_rad = np.deg2rad(th)
+            x_vals = r_line * scale * np.cos(angle_rad)
+            y_vals = r_line * scale * np.sin(angle_rad)
+            color = cmap(norm(th))
+            ax.plot(x_vals, y_vals, color=color, linewidth=1.8, alpha=0.9, label=f"θ={th:.0f}°")
+    except Exception as e:
+        print(f"Multi-angle guideline draw error: {e}")
+
+
 def create_single_raw_image(ax, target_time_str: str):
     """生データ統合画像作成関数（差分なし）"""
-    
-    # sunpyの警告を抑制
-    import warnings
-    from sunpy.util.exceptions import SunpyMetadataWarning
-    warnings.filterwarnings('ignore', category=SunpyMetadataWarning)
-    
-    import config
-    import numpy as np
-    from astropy.time import Time
-    import astropy.units as u
-    from pathlib import Path
-    import matplotlib.pyplot as plt
-    import sunpy.map
-    from astropy.visualization import ImageNormalize, LinearStretch
-    from matplotlib.colors import Normalize
-    import gc
-    from scipy.ndimage import map_coordinates
-    from reproject import reproject_interp
-    
-    out_dir_str = "/mnt/d/wsl/home/kinno-7010/Research/SDO_Mk4_SOHO/raw"
-    # --- 1. 時刻パースとデータリスト取得 ---
+
     target_time_obj = Time(target_time_str)
     scan_start = target_time_obj - 20*u.min
     scan_end = target_time_obj + 20*u.min
-    out_dir = Path(out_dir_str)
-    
-    print(f"生データ統合画像作成: target={target_time_str}")
-    
-    # 出力ディレクトリを作成
-    out_dir.mkdir(parents=True, exist_ok=True)
-    
-    # integrated_analysis.pyから必要な関数をインポート
-    from integrated_analysis import (
-        get_data_list, create_fully_corrected_lasco_map, 
-        select_by_midpoint, calculate_r_map, combine_corona_data
-    )
-    
     # データリスト取得
     mk4_list, lasco_list, aia193_list = get_data_list(scan_start, scan_end)
     data_dict = {'mk4': mk4_list, 'lasco': lasco_list, 'aia193': aia193_list}
@@ -127,7 +149,7 @@ def create_single_raw_image(ax, target_time_str: str):
     n_mk4 = mk4_norm(mk4_map.data)
 
     # LASCO生データ正規化
-    lasco_vmin, lasco_vmax = 80, 350
+    lasco_vmin, lasco_vmax = 60, 380
     print('lasco_vmin', lasco_vmin, 'lasco_vmax', lasco_vmax)
     lasco_norm = ImageNormalize(lasco_map.data, vmin=lasco_vmin, vmax=lasco_vmax, stretch=LinearStretch(), clip=True)
     n_lasco = lasco_norm(lasco_map.data)
@@ -151,7 +173,7 @@ def create_single_raw_image(ax, target_time_str: str):
 
     # 半径マップ・合成
     r_map = calculate_r_map(p_lasco)
-    ranges = dict(mk4_inner=1.1, mk4_outer_lasco_inner=2.1, lasco_outer=6.0)
+    ranges = dict(mk4_inner=1.1, mk4_outer_lasco_inner=2.2, lasco_outer=6.0)
     composite, imk4, ia = combine_corona_data(
         n_lasco, p_lasco,
         n_mk4, p_mk4,
@@ -207,19 +229,24 @@ def create_single_raw_image(ax, target_time_str: str):
     # 境界円＆凡例
     r1 = ranges['mk4_inner']*scale
     ax.plot(r1*np.cos(theta), r1*np.sin(theta),
-            '--',color='yellow',linewidth=1.5,
+            '-.',color='magenta',linewidth=1.5,
             label=f"{ranges['mk4_inner']} $R_\\odot$")
     r2 = ranges['mk4_outer_lasco_inner']*scale
     ax.plot(r2*np.cos(theta), r2*np.sin(theta),
-            '--',color='cyan',linewidth=1.5,
+            '-.',color='green',linewidth=1.5,
             label=f"{ranges['mk4_outer_lasco_inner']} $R_\\odot$")
 
+    # 140–200°を10°刻みでガイドラインを描画
+    angles_deg = np.arange(140.0, 201.0, 10.0)
+    plot_multi_degree_lines(ax, angles_deg, ranges, p_lasco, extent_global)
+    
     # 軸範囲を global に固定
-    ax.set_xlim(-400, 0); ax.set_ylim(-200, 300)
+    ax.set_xlim(-350, 0); ax.set_ylim(-100, 200)
     # ax.set_xlabel('X [pixel]'); ax.set_ylabel('Y [pixel]'); ax.set_facecolor('gray')
     ax.set_title(
         f"Raw Data | SDO/AIA 193 Å: {aia193_map.date.strftime('%Y-%m-%d %H:%M:%S')}\n"
-        f"Mk4: {mk4_map.date.strftime('%H:%M:%S')} | LASCO-C2: {lasco_map.date.strftime('%H:%M:%S')}"
+        f"K-Cor: {mk4_map.date.strftime('%H:%M:%S')} | LASCO-C2: {lasco_map.date.strftime('%H:%M:%S')}",
+        fontsize=18
     )
     ax.legend(loc='best')
     
@@ -230,3 +257,16 @@ def create_single_raw_image(ax, target_time_str: str):
         'lasco_map': lasco_map,
         'mk4_map': mk4_map
     }
+
+if __name__ == "__main__":
+    import matplotlib.pyplot as plt
+    from astropy.time import Time
+    target_time_str = "2022-06-13T03:37:00"
+    target_time_obj = Time(target_time_str)
+    fig, ax = plt.subplots(figsize=(12, 12))
+    create_single_raw_image(ax, target_time_str)
+    output_dir = Path(f"/mnt/d/wsl/home/kinno-7010/Research/SDO_Mk4_SOHO/raw/single_raw_image_multiline_{target_time_obj.strftime('%Y%m%d_%H%M%S')}.png")
+    output_dir.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_dir, dpi=300, bbox_inches="tight")
+    print(f"Saved figure to {output_dir}")
+    plt.show()

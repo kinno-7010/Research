@@ -213,12 +213,136 @@ def print_rsun_check(hmi_map: Map, aia_r_map: Map):
 
 
 def draw_field_lines(ax, hmi_map: Map, field_lines, rss: float):
+    """
+    PFSS field lines overlay.
+
+    run_pipeline() が draw_field_lines() の後で ax.set_xlim/ylim を再度実行するため、
+    X_RANGE_PIX/Y_RANGE_PIX が画像外を含む場合でも「クリップされた範囲」に戻ってしまう。
+
+    ここでは
+      1) plot_pfss.py と同様に ax.plot_coord で WCS-aware に描画
+      2) X_RANGE_PIX/Y_RANGE_PIX から求めた「非クリップ」範囲を設定
+      3) その後 caller が「クリップ範囲」を set_xlim/ylim した場合だけ one-shot で復元
+    を行う（他コードは変更しない）。
+    """
+
+    # -------------------------
+    # (A) Axis-range expansion (NO clipping) + one-shot restore
+    # -------------------------
+    try:
+        x_rng = globals().get("X_RANGE_PIX", None)
+        y_rng = globals().get("Y_RANGE_PIX", None)
+
+        if (x_rng is not None) and (y_rng is not None):
+            # Disk center (0 arcsec, 0 arcsec) -> pixel
+            dc = SkyCoord(0 * u.arcsec, 0 * u.arcsec, frame=hmi_map.coordinate_frame)
+            dc_pix = hmi_map.world_to_pixel(dc)
+            cx_pix = float(dc_pix.x.value)
+            cy_pix = float(dc_pix.y.value)
+
+            x0 = cx_pix + float(x_rng[0])
+            x1 = cx_pix + float(x_rng[1])
+            y0 = cy_pix + float(y_rng[0])
+            y1 = cy_pix + float(y_rng[1])
+
+            # Preserve current axis direction (WCSAxes can be inverted)
+            curx0, curx1 = ax.get_xlim()
+            cury0, cury1 = ax.get_ylim()
+
+            if curx0 <= curx1:
+                desired_xlim = (min(x0, x1), max(x0, x1))
+            else:
+                desired_xlim = (max(x0, x1), min(x0, x1))
+
+            if cury0 <= cury1:
+                desired_ylim = (min(y0, y1), max(y0, y1))
+            else:
+                desired_ylim = (max(y0, y1), min(y0, y1))
+
+            # Apply desired (unclipped) limits now
+            ax.set_xlim(*desired_xlim)
+            ax.set_ylim(*desired_ylim)
+
+            # Prepare the "clipped" version (what run_pipeline likely sets later)
+            nx = int(hmi_map.data.shape[1])
+            ny = int(hmi_map.data.shape[0])
+
+            dx0, dx1 = sorted([x0, x1])
+            dy0, dy1 = sorted([y0, y1])
+
+            clipped_xlim = (max(0.0, dx0), min(float(nx - 1), dx1))
+            clipped_ylim = (max(0.0, dy0), min(float(ny - 1), dy1))
+
+            # Install a one-shot callback (restore only if overwritten by clipped limits)
+            if not hasattr(ax, "_pfss_unclipped_xlim_guard"):
+                state = {
+                    "busy": False,
+                    "desired_xlim": desired_xlim,
+                    "desired_ylim": desired_ylim,
+                    "clipped_xlim": clipped_xlim,
+                    "clipped_ylim": clipped_ylim,
+                    "cid": None,
+                }
+
+                def _sorted_pair(lim):
+                    a, b = lim
+                    return (min(a, b), max(a, b))
+
+                def _close_pair(p, q, tol=1e-6):
+                    return (abs(p[0] - q[0]) <= tol) and (abs(p[1] - q[1]) <= tol)
+
+                def _on_ylim_changed(_ax):
+                    if state["busy"]:
+                        return
+
+                    try:
+                        cur_xlim_s = _sorted_pair(_ax.get_xlim())
+                        cur_ylim_s = _sorted_pair(_ax.get_ylim())
+
+                        # Only restore when the caller overwrote with the clipped limits
+                        if _close_pair(cur_xlim_s, state["clipped_xlim"]) and _close_pair(cur_ylim_s, state["clipped_ylim"]):
+                            state["busy"] = True
+                            try:
+                                _ax.set_xlim(*state["desired_xlim"])
+                                _ax.set_ylim(*state["desired_ylim"])
+                            finally:
+                                state["busy"] = False
+                    finally:
+                        # Disconnect after first ylim change (one-shot)
+                        try:
+                            if state["cid"] is not None:
+                                _ax.callbacks.disconnect(state["cid"])
+                        except Exception:
+                            pass
+                        state["cid"] = None
+
+                # Connect AFTER our own set_ylim so we don't immediately trigger
+                state["cid"] = ax.callbacks.connect("ylim_changed", _on_ylim_changed)
+                ax._pfss_unclipped_xlim_guard = state
+            else:
+                # Update stored limits if function is called multiple times
+                st = ax._pfss_unclipped_xlim_guard
+                st["desired_xlim"] = desired_xlim
+                st["desired_ylim"] = desired_ylim
+                st["clipped_xlim"] = clipped_xlim
+                st["clipped_ylim"] = clipped_ylim
+
+    except Exception:
+        pass
+
+    # -------------------------
+    # (B) Field-line drawing (WCS-aware, plot_pfss.py-like)
+    # -------------------------
     with SphericalScreen(hmi_map.observer_coordinate):
         for fl in field_lines:
             coords = fl.coords  # HGS 3D
-            # open判定（終端半径がRss到達近傍）
+
+            # open/closed 判定
             try:
-                is_open = (coords.radius[-1].to_value(u.Rsun) >= (rss - 0.05))
+                if hasattr(fl, "is_open"):
+                    is_open = bool(fl.is_open)
+                else:
+                    is_open = (coords.radius[-1].to_value(u.Rsun) >= (rss - 0.05))
             except Exception:
                 is_open = False
 
@@ -227,34 +351,44 @@ def draw_field_lines(ax, hmi_map: Map, field_lines, rss: float):
                 coords_hpc = coords.transform_to(hmi_map.coordinate_frame)
             except Exception:
                 continue
-            pixel_coords = hmi_map.world_to_pixel(coords_hpc)
-            if hasattr(pixel_coords, 'x'):
-                xs = np.array(pixel_coords.x.value)
-                ys = np.array(pixel_coords.y.value)
-            else:
-                xs = np.array(pixel_coords[0].value)
-                ys = np.array(pixel_coords[1].value)
-            valid = np.isfinite(xs) & np.isfinite(ys)
-            if not np.any(valid):
-                continue
-            xs_valid, ys_valid = xs[valid], ys[valid]
 
-            # 始点極性で色分け
+            # finite 部分だけ抽出（NaN混入で plot_coord が落ちるのを防ぐ）
             try:
-                start_idx = np.argmax(valid)
+                pix = hmi_map.world_to_pixel(coords_hpc)
+                xs = np.asarray(pix.x.value)
+                ys = np.asarray(pix.y.value)
+                valid = np.isfinite(xs) & np.isfinite(ys)
+                if not np.any(valid):
+                    continue
+                coords_hpc_valid = coords_hpc[valid]
+            except Exception:
+                continue
+
+            # 始点極性で色分け（最初の valid 点を使用）
+            pol = 0.0
+            try:
+                start_idx = np.where(valid)[0][0]
                 x_idx = int(round(xs[start_idx]))
                 y_idx = int(round(ys[start_idx]))
                 if (0 <= y_idx < hmi_map.data.shape[0]) and (0 <= x_idx < hmi_map.data.shape[1]):
-                    pol = hmi_map.data[y_idx, x_idx]
-                else:
-                    pol = 0
+                    pol = float(hmi_map.data[y_idx, x_idx])
             except Exception:
-                pol = 0
+                pol = 0.0
 
-            color = 'black'
+            color = "black"
             if is_open:
-                color = 'red' if pol > 0 else 'blue'
-            ax.plot(xs_valid, ys_valid, color=color, linewidth=0.6, alpha=0.85)
+                color = "red" if pol > 0 else "blue"
+
+            # WCS-aware plot
+            try:
+                ax.plot_coord(coords_hpc_valid, color=color, linewidth=0.6, alpha=0.85)
+            except Exception:
+                # fallback
+                try:
+                    ax.plot(xs[valid], ys[valid], color=color, linewidth=0.6, alpha=0.85)
+                except Exception:
+                    pass
+
 
 
 # =========================
@@ -266,8 +400,71 @@ def run_pipeline(HMI_FILE, AIA_ROOT, TIME_OBJ,
                  USE_STRONG=True, THRESH=200.0,
                  WIN_PIXELS=(1024, 1024),
                  X_RANGE_PIX=None, Y_RANGE_PIX=None,
-                 RMAX=None, STEP_DR=0.01, BLEND_DR=0.6,
+                 PIXEL_TICKS=True,
+                #  RMAX=None, STEP_DR=0.01, BLEND_DR=0.6,
                  SAVE_PATH=None):
+    def _arcsec_per_pixel(hmi_map: Map):
+        """HMIのピクセルスケール(arcsec/pix)を取得（符号込み）"""
+        scale = hmi_map.scale
+        def _to_val(obj):
+            try:
+                return obj.to_value(u.arcsec/u.pixel)
+            except Exception:
+                return float(obj)
+        try:
+            sx = _to_val(scale.x)
+            sy = _to_val(scale.y)
+        except AttributeError:
+            try:
+                sx = _to_val(scale.axis1)
+                sy = _to_val(scale.axis2)
+            except AttributeError:
+                vals = list(scale)
+                sx = _to_val(vals[0]); sy = _to_val(vals[1])
+        return float(sx), float(sy)
+
+    def _pix_to_arcsec_range(hmi_map: Map, xlim_pix, ylim_pix):
+        """ピクセル範囲をHPC(arcsec)範囲へ変換"""
+        x0, x1 = xlim_pix
+        y0, y1 = ylim_pix
+        corners = [
+            (x0, y0), (x0, y1),
+            (x1, y0), (x1, y1),
+        ]
+        xs_arcsec, ys_arcsec = [], []
+        for x, y in corners:
+            coord = hmi_map.pixel_to_world(x * u.pixel, y * u.pixel)
+            try:
+                xs_arcsec.append(coord.Tx.to_value(u.arcsec))
+                ys_arcsec.append(coord.Ty.to_value(u.arcsec))
+            except Exception:
+                # fallback: assume (lon, lat) ordering
+                xs_arcsec.append(coord[0].to_value(u.arcsec))
+                ys_arcsec.append(coord[1].to_value(u.arcsec))
+        return (min(xs_arcsec), max(xs_arcsec)), (min(ys_arcsec), max(ys_arcsec))
+
+    def _origin_pix(hmi_map: Map):
+        """(0 arcsec, 0 arcsec) をピクセルに変換し、x/y を返す"""
+        origin = SkyCoord(0*u.arcsec, 0*u.arcsec, frame=hmi_map.coordinate_frame)
+        pix = hmi_map.world_to_pixel(origin)
+        try:
+            return float(pix.x.value), float(pix.y.value)
+        except AttributeError:
+            return float(pix[0].value), float(pix[1].value)
+
+    def _clip_range_from_origin(rng, center_pix, max_size, label: str):
+        """(0 arcsec, 0 arcsec) を (0,0) とみなし、相対px範囲を実pxに変換"""
+        if len(rng) != 2:
+            raise ValueError(f"{label} は (min, max) の2要素で指定してください。")
+        p0 = center_pix + float(rng[0])
+        p1 = center_pix + float(rng[1])
+        p0, p1 = sorted([p0, p1])
+        p0 = int(np.floor(max(0, p0)))
+        p1 = int(np.ceil(min(max_size - 1, p1)))
+        if p1 <= p0:
+            raise ValueError(f"{label} の幅がゼロ以下です。値を見直してください。")
+        return p0, p1
+
     # 1) 読み込み
     hmi = read_hmi(HMI_FILE)
     a211 = read_aia(AIA_ROOT, TIME_OBJ, RCH)  # R
@@ -287,24 +484,23 @@ def run_pipeline(HMI_FILE, AIA_ROOT, TIME_OBJ,
     pfss_out = compute_pfss_solution(hmi, nrho=NRHO, rss=RSS)
 
     # 5) 表示窓とシード点
+    cx_pix, cy_pix = _origin_pix(hmi)  # 以降で軸変換に利用するため先に取得
     if X_RANGE_PIX is not None or Y_RANGE_PIX is not None:
         if X_RANGE_PIX is None or Y_RANGE_PIX is None:
             raise ValueError("X_RANGE_PIX と Y_RANGE_PIX は両方とも指定してください。")
-        if len(X_RANGE_PIX) != 2 or len(Y_RANGE_PIX) != 2:
-            raise ValueError("X_RANGE_PIX, Y_RANGE_PIX は (min, max) の2要素で指定してください。")
-        x0, x1 = sorted(int(v) for v in X_RANGE_PIX)
-        y0, y1 = sorted(int(v) for v in Y_RANGE_PIX)
-        x0 = max(0, min(x0, hmi.data.shape[1]-1))
-        x1 = max(0, min(x1, hmi.data.shape[1]-1))
-        y0 = max(0, min(y0, hmi.data.shape[0]-1))
-        y1 = max(0, min(y1, hmi.data.shape[0]-1))
-        xlim, ylim = (x0, x1), (y0, y1)
+        xlim = _clip_range_from_origin(X_RANGE_PIX, cx_pix, hmi.data.shape[1], "X_RANGE_PIX")
+        ylim = _clip_range_from_origin(Y_RANGE_PIX, cy_pix, hmi.data.shape[0], "Y_RANGE_PIX")
+        x0 = cx_pix + float(X_RANGE_PIX[0]); x1 = cx_pix + float(X_RANGE_PIX[1])
+        y0 = cy_pix + float(Y_RANGE_PIX[0]); y1 = cy_pix + float(Y_RANGE_PIX[1])
+        xlim_disp = (min(x0, x1), max(x0, x1))
+        ylim_disp = (min(y0, y1), max(y0, y1))
     else:
         xlim, ylim = compute_window_in_pixels(hmi,
                                               cx=0*u.arcsec, cy=0*u.arcsec,
                                               width_pix=WIN_PIXELS[0],
                                               height_pix=WIN_PIXELS[1])
-    seeds = define_seed_points(hmi, xlim, ylim, n_x=25, n_y=25,
+        xlim_disp, ylim_disp = xlim, ylim
+    seeds = define_seed_points(hmi, xlim, ylim, n_x=20, n_y=20,
                                strong_only=USE_STRONG, thr=THRESH)
     flines = trace_field_lines(seeds, pfss_out)
 
@@ -330,10 +526,52 @@ def run_pipeline(HMI_FILE, AIA_ROOT, TIME_OBJ,
     #         linewidth=0.8, alpha=0.9, linestyle='--'
     #     )
 
+    # NOTE: WCSAxes (projection=hmi) expects axis limits in *pixel* coordinates.
+    #       Use xlim_disp/ylim_disp (pixel indices; may extend beyond the array) to expand the view.
+    ax.set_xlim(*xlim_disp)
+    ax.set_ylim(*ylim_disp)
 
-    ax.set_xlim(*xlim); ax.set_ylim(*ylim)
-    ax.set_xlabel("Solar X (arcsec)"); ax.set_ylabel("Solar Y (arcsec)")
-    ax.set_title(f"AIA RGB (211/193/171) + HMI PFSS  Rss={RSS}, nrho={NRHO}\n"
+
+    if PIXEL_TICKS:
+        class _PixelFormatter:
+            def __init__(self, hmi_map, cx, cy, axis='x'):
+                self.hmi_map = hmi_map
+                self.cx = cx
+                self.cy = cy
+                self.axis = axis
+                self.sx, self.sy = _arcsec_per_pixel(hmi_map)
+
+            def __call__(self, values, spacing=None, format=None, **kwargs):
+                vals = np.atleast_1d(values)
+                outs = []
+                for v in vals:
+                    # values は Quantity の場合があるので arcsec に揃える
+                    try:
+                        v_arcsec = u.Quantity(v).to_value(u.arcsec)
+                    except Exception:
+                        v_arcsec = float(v)
+
+                    if self.axis == 'x':
+                        if abs(self.sx) < 1e-12:
+                            outs.append("0")
+                        else:
+                            px = v_arcsec / abs(self.sx)
+                            outs.append(f"{px:.0f}")
+                    else:
+                        if abs(self.sy) < 1e-12:
+                            outs.append("0")
+                        else:
+                            py = v_arcsec / self.sy
+                            outs.append(f"{py:.0f}")
+                return outs if len(outs) > 1 else outs[0]
+
+        ax.coords[0].set_major_formatter(_PixelFormatter(hmi, cx_pix, cy_pix, axis='x'))
+        ax.coords[1].set_major_formatter(_PixelFormatter(hmi, cx_pix, cy_pix, axis='y'))
+        ax.set_xlabel("Solar X (pixel, 0 at disk center)")
+        ax.set_ylabel("Solar Y (pixel, 0 at disk center)")
+    else:
+        ax.set_xlabel("Solar X (arcsec)"); ax.set_ylabel("Solar Y (arcsec)")
+    ax.set_title(f"AIA RGB (211/193/171) + HMI PFSS  Rss={RSS}\n"
                  f"{hmi.date.strftime('%Y-%m-%d %H:%M:%S UT')}")
 
     # 凡例（簡易）
@@ -433,7 +671,7 @@ if __name__ == "__main__":
     RCH, GCH, BCH = "211", "193", "171"
 
     # PFSS設定
-    RSS = 2.0
+    RSS = 2.5
     NRHO = 50
 
     # シード点抽出
@@ -442,8 +680,8 @@ if __name__ == "__main__":
 
     # 表示窓サイズ[pixel]（HMI座標で統一）
     WIN_PIXELS = (1024, 1024)
-    X_RANGE_PIX = (-512, 0)
-    Y_RANGE_PIX = (0, 512)
+    X_RANGE_PIX = (-900, 100)
+    Y_RANGE_PIX = (-150, 900)
     
     RMAX = 6.0          # 例: 6 R⊙ まで延長
     CONT_MODE = 'radial'  # もしくは 'parker'
@@ -451,7 +689,7 @@ if __name__ == "__main__":
     BLEND_DR = 0.6     # 非放射成分をゼロにするまでの厚み [Rsun]    
 
     # 出力先（Noneなら表示のみ）
-    SAVE_PATH = fr"/mnt/d/wsl/home/kinno-7010/Research/PFSS/aia_pfss_Rss{RSS}_nrho{NRHO}_{TIME_OBJ.strftime('%Y%m%d_%H%M')}.png"
+    SAVE_PATH = fr"/mnt/d/wsl/home/kinno-7010/Research/PFSS/aia_pfss_Rss{RSS}_nrho{NRHO}_{TIME_OBJ.strftime('%Y%m%d_%H%M')}_triming.png"
 
     # 実行
     run_pipeline(HMI_FILE, AIA_ROOT, TIME_OBJ,
@@ -459,6 +697,6 @@ if __name__ == "__main__":
                  RSS=RSS, NRHO=NRHO,
                  USE_STRONG=USE_STRONG, THRESH=THRESH,
                  WIN_PIXELS=WIN_PIXELS,
-                #  X_RANGE_PIX=X_RANGE_PIX, Y_RANGE_PIX=Y_RANGE_PIX,
-                 RMAX=RMAX, STEP_DR=STEP_DR, BLEND_DR=BLEND_DR,
+                 X_RANGE_PIX=X_RANGE_PIX, Y_RANGE_PIX=Y_RANGE_PIX,
+                #  RMAX=RMAX, STEP_DR=STEP_DR, BLEND_DR=BLEND_DR,
                  SAVE_PATH=SAVE_PATH)

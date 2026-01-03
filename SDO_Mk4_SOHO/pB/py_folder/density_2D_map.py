@@ -31,6 +31,11 @@ from __future__ import annotations
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
+# 追加（density_2D_map.py の import 付近）
+import os
+import argparse
+from astropy.io import fits
+
 
 # --- Reuse from your existing modules ---
 from io_and_processing import (
@@ -42,10 +47,89 @@ from constants_vdh import (
     invert_ablation,
     set_u_from_instrument
 )
+from plotting_utils import (
+    plot_combined_image, 
+    save_density_map_to_fits
+)
 
 # -----------------------------
 # Core utilities (polar helpers)
 # -----------------------------
+def save_combined_pb_fits_for_tomography(
+    pb_image: np.ndarray,
+    lasco_fits_path: str,
+    kcor_fits_path: str,
+    out_fits_path: str,
+    *,
+    bunit: str = "B/Bsun",
+) -> None:
+    """
+    Save an Earth-view combined pB map (K-COR inner + LASCO C2 outer) as a FITS file
+    suitable for regularized tomography.
+
+    - Uses LASCO header as the base (keeps plate scale etc.)
+    - Copies RSUN_OBS + observer lon/lat (CRLN_OBS/CRLT_OBS) from K-COR if missing
+    - Ensures minimal HPC WCS (CTYPE1/2, CUNIT1/2)
+    - Removes BLANK for float images (avoids astropy warning)
+    """
+    from astropy.io import fits
+    import numpy as _np
+    import os as _os
+
+    hdr = fits.getheader(lasco_fits_path)
+    hdr_k = fits.getheader(kcor_fits_path)
+
+    # BLANK is only valid for integer images
+    if "BLANK" in hdr:
+        try:
+            del hdr["BLANK"]
+        except Exception:
+            pass
+
+    # Minimal HPC WCS
+    if "CTYPE1" not in hdr:
+        hdr["CTYPE1"] = hdr_k.get("CTYPE1", "HPLN-TAN")
+    if "CTYPE2" not in hdr:
+        hdr["CTYPE2"] = hdr_k.get("CTYPE2", "HPLT-TAN")
+    if "CUNIT1" not in hdr:
+        hdr["CUNIT1"] = hdr_k.get("CUNIT1", "arcsec")
+    if "CUNIT2" not in hdr:
+        hdr["CUNIT2"] = hdr_k.get("CUNIT2", "arcsec")
+
+    # Observer lon/lat (Carrington preferred)
+    for key in ("CRLN_OBS", "CRLT_OBS", "HGLN_OBS", "HGLT_OBS", "CAR_ROT", "DSUN_OBS"):
+        if key in hdr_k and key not in hdr:
+            hdr[key] = hdr_k[key]
+
+    # RSUN in arcsec (required by tomography normalization)
+    rsun_arcsec = None
+    for key in ("RSUN_OBS", "RSUN"):
+        if key in hdr_k:
+            rsun_arcsec = float(hdr_k[key])
+            break
+    if rsun_arcsec is None and ("R_SUN" in hdr_k) and ("CDELT1" in hdr_k):
+        try:
+            rsun_arcsec = float(hdr_k["R_SUN"]) * abs(float(hdr_k["CDELT1"]))
+        except Exception:
+            rsun_arcsec = None
+    if rsun_arcsec is not None:
+        hdr["RSUN_OBS"] = float(rsun_arcsec)
+        hdr["RSUN"] = float(rsun_arcsec)
+
+    hdr["POLAR"] = "PB"
+    hdr["BUNIT"] = str(bunit)
+    hdr.add_history("Combined K-COR (inner) and LASCO-C2 (outer) pB for Earth-view tomography.")
+    hdr.add_history("Copied observer keywords (CRLN_OBS/CRLT_OBS, RSUN_OBS) from K-COR header when missing.")
+
+    # Ensure dimensions consistent
+    hdr["NAXIS"] = 2
+    hdr["NAXIS1"] = int(_np.asarray(pb_image).shape[1])
+    hdr["NAXIS2"] = int(_np.asarray(pb_image).shape[0])
+
+    _os.makedirs(_os.path.dirname(out_fits_path), exist_ok=True)
+    fits.PrimaryHDU(_np.asarray(pb_image, dtype=_np.float32), header=hdr).writeto(out_fits_path, overwrite=True)
+
+
 def _pixel_size_rsun(params: dict) -> float:
     """
     Return pixel size in units of R_sun for the given instrument params.
@@ -522,7 +606,7 @@ def invert_per_theta_profiles(
     cx = params_ref['cx']
     
     th_map_deg = angle_map_deg(ny, nx, cy, cx, mode='0to360')
-    r_bin_idx_full = digitize_radius(r_map_rsun, r_edges)
+    
 
     # --- radial bins ---
     if r_edges is not None:
@@ -541,6 +625,8 @@ def invert_per_theta_profiles(
             raise ValueError("r_edges has fewer than 2 points")
         r_mid = 0.5 * (r_edges[:-1] + r_edges[1:])
     n_r = len(r_mid)
+    
+    r_bin_idx_full = digitize_radius(r_map_rsun, r_edges)
 
     # --- theta centers ---
     if theta_mode == '0to360':
@@ -799,9 +885,11 @@ def build_density_map_from_profiles(
     r_idx = np.digitize(r_map_rsun, r_edges) - 1  # 左ビン
     r_idx = np.where(r_idx < 0, -1, np.where(r_idx >= n_r, -1, r_idx))
     valid &= (r_idx >= 0)
+    r_idx_safe = np.clip(r_idx, 0, n_r - 1)  # n_r = len(r_centers)
+
     # 小数部（右端では 0）
-    re_left = r_edges[r_idx]
-    re_right = r_edges[np.clip(r_idx+1, 0, n_r)]
+    re_left  = r_edges[r_idx_safe]
+    re_right = r_edges[r_idx_safe + 1]
     dr = np.maximum(re_right - re_left, 1e-12)
     r_frac = np.clip((r_map_rsun - re_left) / dr, 0.0, 1.0)
     r_idxp1 = np.clip(r_idx + 1, 0, n_r - 1)
@@ -865,6 +953,9 @@ def plot_density_map(
     vmax: float | None = None,
     xlim_pix: tuple[float, float] | None = None,
     ylim_pix: tuple[float, float] | None = None,
+    min_angle_deg: float = 140.0,
+    max_angle_deg: float = 201.0,
+    angle_step_deg: float = 10.0,
 ):
     """
     Plot a 2D density map with logarithmic color scale.
@@ -949,6 +1040,25 @@ def plot_density_map(
 
     # 太陽中心マーク
     ax.plot(0, 0, '+', color='black', markersize=12, markeredgewidth=1.5)
+
+    # 140–200°を10°刻みでガイドラインを描画（プロファイル計算は行わない）
+    try:
+        angles_deg = np.arange(min_angle_deg, max_angle_deg, angle_step_deg)
+        cmap = plt.cm.get_cmap("viridis")
+        norm = plt.Normalize(vmin=angles_deg.min(), vmax=angles_deg.max())
+        r_line = np.linspace(r_ranges['mk4_inner'], r_ranges['lasco_outer'], 200)
+        scale = params_ref['px_per_rsun']
+        for th in angles_deg:
+            angle_rad = np.deg2rad(th)
+            x_vals = r_line * scale * np.cos(angle_rad)
+            y_vals = r_line * scale * np.sin(angle_rad)
+            color = cmap(norm(th))
+            ax.plot(x_vals, y_vals, color=color, linewidth=1.8, alpha=0.9)
+        # 簡易凡例（範囲のみ表示）
+        proxy = plt.Line2D([0], [0], color=cmap(norm(angles_deg.mean())), linewidth=2, label="θ=140–200° (10° step)")
+        ax.legend(handles=[proxy], loc='upper right', fontsize=10)
+    except Exception as e:
+        print(f"Multi-angle guideline draw error: {e}")
 
     # ★ ここで表示範囲をピクセル単位で指定 ★
     if xlim_pix is not None:
@@ -1055,7 +1165,25 @@ def plot_density_maps_combined(
             )
             proxy_line = plt.Line2D([0], [0], linestyle='-.', color=color, linewidth=1.2, label=label_text)
             boundary_lines_for_legend.append(proxy_line)
+            
+    theta_deg_overlay = 150.0
+    angle_rad = np.deg2rad(theta_deg_overlay)
 
+    # 軸は「太陽中心を原点とした pixel 座標」なので、Rsun→pixel変換が必要
+    px_per_rsun_k = float(params_mk4['px_per_rsun'])
+
+    # どこまで線を出すか（ここではLASCO outerまで）
+    r_line = np.linspace(r_ranges['mk4_inner'], r_ranges['lasco_outer'], 400)
+    x_vals = r_line * px_per_rsun_k * np.cos(angle_rad)
+    y_vals = r_line * px_per_rsun_k * np.sin(angle_rad)
+
+    line_artist_theta, = ax_k.plot(
+        x_vals, y_vals,
+        color='cyan', linestyle='-', linewidth=2,
+        label=f'θ={theta_deg_overlay:.0f}°'
+    )
+
+    
     ax_k.plot(0, 0, '+', color='black', markersize=10, markeredgewidth=1.5)
     if xlim_pix_mk4 is not None:
         ax_k.set_xlim(xlim_pix_mk4)
@@ -1238,23 +1366,67 @@ def export_density_csv(
 
 
 
+
+def ne_to_fpe(ne_cm3: np.ndarray, harmonic: int = 1, out_unit: str = "MHz") -> np.ndarray:
+    """
+    f_pe[Hz] = 8980 * sqrt(n_e[cm^-3])
+    harmonic=1: fpe, harmonic=2: 2fpe
+    """
+    ne = np.asarray(ne_cm3, dtype=float)
+    ne = np.where(ne > 0, ne, np.nan)
+    f_hz = 8980.0 * np.sqrt(ne) * float(harmonic)
+
+    u = out_unit.lower()
+    if u == "hz":
+        return f_hz
+    if u == "khz":
+        return f_hz / 1e3
+    if u == "mhz":
+        return f_hz / 1e6
+    raise ValueError(f"out_unit must be Hz/kHz/MHz, got {out_unit}")
+
+
+def write_2d_fits_like(ref_header, data2d: np.ndarray, out_path: str, *, bunit: str, comment: str = "") -> None:
+    """
+    ref_header（LASCOヘッダなど）を可能な限り保持して2D FITSを書き出す。
+    """
+    hdr = fits.Header(ref_header)  # Headerでもdictでも受けられる
+    # 形が違う場合は軸サイズだけ合わせる（WCSが破綻するなら前処理側を見直す）
+    hdr["NAXIS"]  = 2
+    hdr["NAXIS1"] = int(data2d.shape[1])
+    hdr["NAXIS2"] = int(data2d.shape[0])
+    hdr["BUNIT"]  = bunit
+    if comment:
+        hdr.add_comment(comment)
+
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    fits.PrimaryHDU(np.asarray(data2d, dtype=np.float32), header=hdr).writeto(out_path, overwrite=True)
+
 # ---------------------------------
 # Example main (optional demo)
 # ---------------------------------
 
 if __name__ == "__main__":
     # === 入力ファイル（既存と同じ） ===
-    filename_mk4   = r'/mnt/d/wsl/home/kinno-7010/Research/MK4_coronagraph/MK4_coronagraph_KCOR/pB/Rawdata/20220613_025810_kcor_l2.fts'
+    filename_mk4   = r'/mnt/d/wsl/home/kinno-7010/Research/MK4_coronagraph/MK4_coronagraph_KCOR/pB/Rawdata/20220613_025810_kcor_l2_pb.fts'
     filename_lasco = r'/mnt/d/wsl/home/kinno-7010/Research/SOHO/pB/C2-PB-20220613_0258.fts'
 
     # === 反転モードを選択 ===
     #   'axisymmetric'  : セクタ毎の軸対称反転（従来方式）
     #   'spherical'     : 全周平均 → 1D 反転 → 2D 段差塗り
     SYMMETRY = "axisymmetric"  # ← "spherical" に変えるだけで球対称版
+    
+    # === FITS保存と出力量（parseはしない：ここを編集して切替） ===
+    SAVE_FITS = True
+
+    # "ne" か "fpe" を選ぶ（fpeの場合は MHz 等に変換して保存）
+    OUTPUT_QUANTITY = "ne"     # or "fpe"
+    FPE_HARMONIC = 1           # 1: fpe, 2: 2fpe
+    FPE_UNIT = "MHz"           # "Hz" / "kHz" / "MHz"
 
     # === 読み込み・前処理 ===
     # instrument 名は set_u_from_instrument() が解釈可能な文字列にしておく
-    inst_mk4   = "Mk4"
+    inst_mk4   = "K-Cor"
     inst_lasco = "SOHO/LASCO"
 
     data_mk4,   params_mk4   = load_and_prepare_instrument_data(filename_mk4, inst_mk4)
@@ -1347,7 +1519,7 @@ if __name__ == "__main__":
             r_min=r_min_mk4,
             r_max=r_max_mk4,
             symmetry="axisymmetric",
-            theta_step_deg=1.5,           # extract_pB_profile(±5°) とタイル一致
+            theta_step_deg=2,           # extract_pB_profile(±5°) とタイル一致
             r_edges=r_edges,              # 非一様ビン（内側は Mk4 解像度）
             use_bilinear=False,           # ビン段差塗り（nearest bin）
             theta_neighbor_blend=2,       # 角度近傍の最小限ブレンド
@@ -1365,7 +1537,7 @@ if __name__ == "__main__":
             r_min=r_min_lasco,
             r_max=r_max_lasco,
             symmetry="axisymmetric",
-            theta_step_deg=1.5,
+            theta_step_deg=2,
             r_edges=r_edges,              # 外側は LASCO 解像度のビン幅
             use_bilinear=False,
             theta_neighbor_blend=2,
@@ -1416,13 +1588,77 @@ if __name__ == "__main__":
         params_ref=params_lasco,
         r_ranges=r_ranges,
         title=title_combined,
-        xlim_pix=(-150, 0),
-        ylim_pix=(-100, 150)
+        xlim_pix=(-200, 0),
+        ylim_pix=(-100, 150),
+        min_angle_deg=140.0,
+        max_angle_deg=161.0,
+        angle_step_deg=10.0
     )
     png_path = f"{out_base}_Mk4_LASCO_{suffix}_20220613_0300.png"
     csv_path = f"{out_base}_Mk4_LASCO_{suffix}_20220613_0300.csv"
-    fig.savefig(png_path, dpi=300)
+    fig.savefig(png_path, dpi=200)
     print(f"Saved combined 2D density map to {png_path}")
+    #     # === FITS保存（トモグラフィ入力の pB と、QA用の ne / fpe） ===
+    if SAVE_FITS:
+        # LASCOの元ヘッダ（観測者座標・WCSをできるだけ保持したいのでLASCOを基準にする）
+        hdr_lasco = fits.getheader(filename_lasco)
+        
+        try:
+            hdr_kcor = fits.getheader(filename_mk4)
+        except Exception as e:
+            hdr_kcor = None
+            print(f"[WARN] Could not read K-COR header for observer keywords: {e}")
+
+        # (2) WCS 最低限（LASCO pb の元ヘッダに CTYPE が無いケースへの対処）
+        if "CTYPE1" not in hdr_lasco:
+            hdr_lasco["CTYPE1"] = "HPLN-TAN"
+        if "CTYPE2" not in hdr_lasco:
+            hdr_lasco["CTYPE2"] = "HPLT-TAN"
+        if "CUNIT1" not in hdr_lasco:
+            hdr_lasco["CUNIT1"] = "arcsec"
+        if "CUNIT2" not in hdr_lasco:
+            hdr_lasco["CUNIT2"] = "arcsec"
+        hdr_lasco.add_history("Added/verified minimal HPC WCS keywords (CTYPE1/2, CUNIT1/2)")
+        
+        out_dir = "/mnt/d/wsl/home/kinno-7010/Research/SDO_Mk4_SOHO/pB/Rawdata"
+        # 1) 合成pB（SSCトモグラフィで本質的に必要になるのはこれの“時系列”）
+        pb_fits_path = os.path.join(out_dir, f"pB_Kcor_LASCO_{suffix}_20220613_0300.fits")
+        # === Save Earth-view combined pB FITS for regularized tomography ===
+        SAVE_COMBINED_PB_FITS = True
+        pb_fits_path = f"{out_base}_Mk4_LASCO_pB_{suffix}_20220613_0300.fits"
+
+        if SAVE_COMBINED_PB_FITS:
+            # (A) トモグラフィ入力用：必須ヘッダ(RSUN_OBS等)を整形して保存
+            pb_tomo_path = pb_fits_path  # 既存の変数名をそのまま使うならこれでOK
+            save_combined_pb_fits_for_tomography(
+                pb_image=final_pb,
+                lasco_fits_path=filename_lasco,
+                kcor_fits_path=filename_mk4,   # ここはあなたのK-COR(or Mk4)ヘッダのFITS
+                out_fits_path=pb_tomo_path,
+            )
+            print(f"Saved combined pB FITS (tomography input) to {pb_tomo_path}")
+
+            # (B) 任意：QA/比較用に「素の合成pB」を別名で保存（上書きしない）
+            pb_plain_path = pb_tomo_path.replace(".fits", "_plain.fits")
+            write_2d_fits_like(
+                hdr_lasco, final_pb, pb_plain_path,
+                bunit="Bsun",
+                comment="Combined pB map (MK4 inner + LASCO outer) on LASCO grid (plain header)"
+            )
+            print(f"Saved combined pB FITS (plain) to {pb_plain_path}")
+
+        # 2) 2D密度（QA用。SSCトモグラフィの入力は基本pBだが、比較用に残す）
+        if OUTPUT_QUANTITY.lower() == "ne":
+            out_map = combined_density
+            out_unit = "cm^-3"
+            tag = "ne"
+        else:
+            out_map = ne_to_fpe(combined_density, harmonic=FPE_HARMONIC, out_unit=FPE_UNIT)
+            out_unit = FPE_UNIT
+            tag = f"fpe_{FPE_UNIT.lower()}_h{FPE_HARMONIC}"
+
+        ne_fits_path = os.path.join(out_dir, f"ne_Kcor_LASCO_{suffix}_20220613_0300.fits")
+
     export_density_csv(combined_density, r_map_lasco, params_lasco, csv_path, include_all=False)
     print(f"Saved combined CSV to {csv_path}")
 

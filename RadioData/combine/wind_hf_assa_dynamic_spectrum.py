@@ -347,18 +347,30 @@ def plot_dynamic_spectrum(
         vmin=vmin,
         vmax=vmax,
     )
-    
     ax.axhline(14.0, color="white", linestyle="--", linewidth=1)
     ax.text(mdates.date2num(end_time), 14.0, "Wind/RAD2", color="white", fontsize=14, ha="right", va="top", fontweight="bold")
     ax.axhline(40.0, color="white", linestyle="--", linewidth=1)
     ax.text(mdates.date2num(end_time), 40.0, "Iitate HF antenna", color="white", fontsize=14, ha="right", va="top", fontweight="bold")
     ax.text(mdates.date2num(end_time), 85.0, "Australia-ASSA", color="white", fontsize=14, ha="right", va="top", fontweight="bold")
+    
     CME_time = mdates.date2num(pd.Timestamp("2022-06-13 03:12:00"))
     flare_time = mdates.date2num(pd.Timestamp("2022-06-13 04:07:00"))
+    SRB_start_time = mdates.date2num(pd.Timestamp("2022-06-13 03:25:40"))
+    SRB_end_time = mdates.date2num(pd.Timestamp("2022-06-13 03:31:20"))
+    SRB_end_time_harmonic = mdates.date2num(pd.Timestamp("2022-06-13 03:50:00"))
     ax.axvline(CME_time, color="white", linestyle="--", linewidth=1)
-    ax.text(CME_time, 5, " CME erupted\n 03:12 UT", color="white", fontsize=14, ha="left", va="bottom", fontweight="bold")
+    ax.text(CME_time, 5.7, " Main CME\n erupted\n 03:12 UT", color="white", fontsize=14, ha="left", va="bottom", fontweight="bold")
     ax.axvline(flare_time, color="white", linestyle="--", linewidth=1)
-    ax.text(flare_time, 85, " M3.4 flare peaked\n 04:07 UT", color="white", fontsize=14, ha="left", va="top", fontweight="bold")
+    # ax.text(flare_time, 85, " M3.4 flare peaked\n 04:07 UT", color="white", fontsize=14, ha="left", va="top", fontweight="bold")
+    ax.axvline(SRB_start_time, color="red", linestyle="--", linewidth=1)
+    # ax.text(SRB_start_time, 85, " SRB II start\n 03:25:40 UT", color="red", fontsize=14, ha="left", va="top", fontweight="bold")
+    ax.axvline(SRB_end_time, color="red", linestyle="--", linewidth=1)
+    # ax.text(SRB_end_time, 85, " SRB II end\n 03:31:20 UT", color="red", fontsize=14, ha="left", va="top", fontweight="bold")
+    ax.axvline(SRB_end_time_harmonic, color="red", linestyle="--", linewidth=1)
+    # ax.text(SRB_end_time_harmonic, 85, " SRB II (Harmonic) end\n 03:50:00 UT", color="red", fontsize=14, ha="left", va="top", fontweight="bold")
+    
+    # ax.text(mdates.date2num(pd.Timestamp("2022-06-13T05:00:00")), 8, "Second Harmonic ", fontsize=14, ha="right", va="bottom", fontweight="bold", color="pink")
+    # ax.text(mdates.date2num(pd.Timestamp("2022-06-13T05:00:00")), 4, "Fundamental ", fontsize=14, ha="right", va="top", fontweight="bold", color="#A0E4FF")
     
     ax.set_ylabel("Frequency [MHz]", fontsize=16)
     if log_scale is not False:
@@ -423,27 +435,7 @@ def plot_dynamic_spectrum(
         if legend_handles:
             ax.legend(legend_handles, legend_labels, loc="lower right")
 
-    
-        ax.text(
-            mdates.date2num(pd.Timestamp("2022-06-13T03:35:00")),
-            40,
-            "Second Harmonic ",
-            color="pink",
-            fontsize=14,
-            ha="left",
-            va="bottom",
-            fontweight="bold",
-        )
-        ax.text(
-            mdates.date2num(pd.Timestamp("2022-06-13T03:30:00")),
-            10,
-            "Fundamental ",
-            color="white",
-            fontsize=14,
-            ha="right",
-            va="bottom",
-            fontweight="bold",
-        )
+
 
     cbar = fig.colorbar(mesh, ax=ax, pad=0.01, shrink=0.5)
     cbar.set_label(
@@ -470,7 +462,7 @@ def export_dataframe(df: pd.DataFrame, output_path: Path) -> None:
     
     
 def Saito1977(rho):  # 2.5-5.5Rs
-    C1 = [1.36e6, 5.27e4, 3.15e5]
+    C1 = [1.36e6, 5.27e6, 3.15e6]
     C2 = [1.68e8, 3.54e6, 1.60e6]
     d1 = [2.14, 3.30, 4.71]
     d2 = [6.13, 5.80, 3.01]
@@ -560,7 +552,7 @@ def main(
     figure_path = Path(f"/mnt/d/wsl/home/kinno-7010/Research/RadioData/combine/wind_hf_assa_dynamic_spectrum_{start_time.strftime('%Y-%m-%d_%H%M%S')}_{end_time.strftime('%H%M%S')}.png")
     data_output_path.parent.mkdir(parents=True, exist_ok=True)
     figure_path.parent.mkdir(parents=True, exist_ok=True)
-    export_dataframe(combined, data_output_path)
+    # export_dataframe(combined, data_output_path)
     
     plot_dynamic_spectrum(
         combined,
@@ -592,7 +584,7 @@ if __name__ == "__main__":
     end_time = pd.Timestamp("2022-06-13 05:00:00")
     min_frequency = 1.0
     max_frequency = 90.0
-    draw_lines = True
+    draw_lines = False
     
     # harmonic
     point_start_time_1 = pd.Timestamp("2022-06-13 03:26:00")

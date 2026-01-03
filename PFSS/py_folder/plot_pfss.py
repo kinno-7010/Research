@@ -16,8 +16,8 @@ def plot_pfss(hmi_map, field_lines, x_lims_pix, y_lims_pix, RSS_VAL):
     # HMI画像範囲より広い軸範囲を設定（磁力線を画像範囲外まで表示）
     # extended_x_range = (x_lims_pix[0] - 400, x_lims_pix[1])
     # extended_y_range = (y_lims_pix[0], y_lims_pix[1] + 400)
-    extended_x_range = (x_lims_pix[0], x_lims_pix[1])
-    extended_y_range = (y_lims_pix[0], y_lims_pix[1])
+    extended_x_range = (x_lims_pix[0]-700, x_lims_pix[1])
+    extended_y_range = (y_lims_pix[0]-100, y_lims_pix[1]+512)
     ax4.set_xlim(extended_x_range)
     ax4.set_ylim(extended_y_range)
     

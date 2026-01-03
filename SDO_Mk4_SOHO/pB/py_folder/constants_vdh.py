@@ -60,15 +60,19 @@ def u_from_LASCO(use_allen: bool = False) -> float:
 
     instrument 名は set_u_from_instrument() 側では "lasco", "lasco_c2", "soho/lasco" などで認識される。
     """
-    u_val = compute_u_for_instrument("lasco_c2", use_allen=use_allen)
-    return set_u(u_val)
+    # u_val = compute_u_for_instrument("lasco_c2", use_allen=use_allen)
+    u_val_lasco = 0.6134999999999997
+    # return set_u(u_val)
+    return u_val_lasco
 
 def u_from_KCOR(use_allen: bool = False) -> float:
     """
     MLSO COSMO K-Coronagraph (K-Cor) 用の u と K_CONST を設定し、その u を返す。
     """
-    u_val = compute_u_for_instrument("kcor", use_allen=use_allen)
-    return set_u(u_val)
+    # u_val = compute_u_for_instrument("kcor", use_allen=use_allen)
+    u_val_kcor = 0.45300000000000007
+    # return set_u(u_val)
+    return u_val_kcor
 
 def set_u_from_instrument(instrument: str, use_allen: bool = False) -> float:
     """
@@ -86,12 +90,17 @@ def set_u_from_instrument(instrument: str, use_allen: bool = False) -> float:
     # LASCO C2 系
     if "lasco" in inst or " c2" in inst or inst == "lasco_c2":
         print(f"u_from_LASCO(use_allen={use_allen}): {u_from_LASCO(use_allen=use_allen)}")
-        return u_from_LASCO(use_allen=use_allen)
+        u_val_lasco = 0.6134999999999997
+        set_u(u_val_lasco)
+        return u_val_lasco
+        
 
     # K-Cor / Mk4 系
     if "kcor" in inst or "k-cor" in inst or "kcoronagraph" in inst or "mk4" in inst:
         print(f"u_from_KCOR(use_allen={use_allen}): {u_from_KCOR(use_allen=use_allen)}")
-        return u_from_KCOR(use_allen=use_allen)
+        u_val_kcor = 0.45300000000000007
+        set_u(u_val_kcor)
+        return u_val_kcor
     
 
     raise ValueError(f"Unknown instrument name for limb darkening: {instrument!r}")
@@ -186,6 +195,10 @@ def frequency_from_density(dens_cm3: float | np.ndarray) -> float | np.ndarray:
     n_m3 = dens_cm3 * 1e6
     f_hz_harmonic = np.sqrt(n_m3 * _e**2 / (_eps0 * _m_e))
     return f_hz_harmonic / (2 * np.pi) / 1e6
+
+
+def BaumbachAllen(rho):
+    return 1e8*(2.99*rho**(-16) + 1.55*rho**(-6))
 
 # --- Empirical coronal density models ---
 def Saito1970(rho, phi: float = 0.0):

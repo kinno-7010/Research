@@ -60,3 +60,5 @@ def plot_segments(ax, segments, color, label=None, divide_by_two=True):
         )
     time_avg = np.average(rates, weights=dts)
     return rates, dts, time_avg
+
+

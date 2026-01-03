@@ -6,6 +6,7 @@ from matplotlib.dates import SecondLocator
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from scipy.ndimage import median_filter
 from scipy.stats import zscore
+from scipy.stats import linregress
 
 try:
     from .utils import _to_datetime, _slice_data
@@ -14,6 +15,23 @@ except ImportError:
     from utils import _to_datetime, _slice_data
     from spectrum_plot import time, frequency_mhz, data
 
+def calculate_fit_with_error(ax, times, freqs):
+    """
+    times: np.ndarray of datetime
+    freqs: np.ndarray of float (MHz)
+    Returns (slope, stderr)
+    """
+    # datetime → プロット用数字
+    xnum = mdates.date2num(times)
+    # 秒に変換
+    t_sec = (xnum - xnum[0]) * 86400.0
+
+    # 線形回帰
+    res = linregress(t_sec, freqs)
+    slope, intercept, stderr = res.slope, res.intercept, res.stderr
+
+    return slope, intercept, stderr
+
 def calculate_dynamic_spectrum_with_peak(
     fig, ax,
     start_time, end_time,
@@ -21,7 +39,9 @@ def calculate_dynamic_spectrum_with_peak(
     time_tick_sec, freq_tick_mhz,
     med_filter_size,
     vmin, vmax,
-    title, scatter_color
+    title, scatter_color,
+    outlier_z=3.0,
+    time_array=None, freq_array=None, data_array=None
 ):
     """
     Plot dynamic spectrum and mark peak frequencies over time.
@@ -32,10 +52,15 @@ def calculate_dynamic_spectrum_with_peak(
     start_dt = _to_datetime(start_time)
     end_dt = _to_datetime(end_time)
 
+    # Use provided arrays when指定, otherwise fall back to globals
+    t_arr = time if time_array is None else time_array
+    f_arr = frequency_mhz if freq_array is None else freq_array
+    d_arr = data if data_array is None else data_array
+
     # Slice data
     t_sel, f_sel, d_sel = _slice_data(
-        time, data, start_dt, end_dt,
-        frequency_mhz, freq_min, freq_max
+        t_arr, d_arr, start_dt, end_dt,
+        f_arr, freq_min, freq_max
     )
 
     # Median filter to reduce noise
@@ -77,7 +102,9 @@ def calculate_dynamic_spectrum_with_peak(
     if peak_times.size > 0:
         ax.scatter(
             mdates.date2num(peak_times), peak_freqs,
-            c=scatter_color, s=50, alpha=0.7
+            s=30, facecolors=scatter_color,
+            edgecolors='black', linewidth=0.8,
+            alpha=0.9, zorder=5
         )
 
     # ── Plot formatting ────────────────────────────────────
@@ -92,14 +119,17 @@ def calculate_dynamic_spectrum_with_peak(
     ax.tick_params(axis='both', which='major', labelsize=14)
 
     # ── Colorbar ───────────────────────────────────────────
-    divider = make_axes_locatable(ax)
-    cax = divider.append_axes("right", size="1%", pad=0.1)
-    cbar = fig.colorbar(im, cax=cax)
-    cbar.ax.tick_params(labelsize=14)
-    cbar.set_label('Intensity (dB)', fontsize=16)
+    # divider = make_axes_locatable(ax)
+    # cax = divider.append_axes("right", size="1%", pad=0.1)
+    # cbar = fig.colorbar(im, cax=cax)
+    # cbar.ax.tick_params(labelsize=14)
+    # cbar.set_label('Intensity (dB)', fontsize=16)
+
+    return peak_times, peak_freqs
 
 
 def calculate_peak_time_and_freq(
+    time_array, freq_mhz, data_array,
     start_time, end_time,
     freq_min, freq_max,
     med_filter_size,
@@ -118,8 +148,8 @@ def calculate_peak_time_and_freq(
 
     # 2) スライス
     t_sel, f_sel, d_sel = _slice_data(
-        time, data, t0, t1,
-        frequency_mhz, freq_min, freq_max
+        time_array, data_array, t0, t1,
+        freq_mhz, freq_min, freq_max
     )
 
     # 3) メディアンフィルタ
@@ -155,7 +185,8 @@ def plot_removed_dynamic_spectrum_with_peak(
     start_time, end_time,
     freq_min, freq_max,
     time_tick_sec, freq_tick_mhz,
-    med_filter_size, vmin, vmax, title, scatter_color
+    med_filter_size, vmin, vmax, title, scatter_color,
+    outlier_z=3.0
 ):
     """
     Apply 3σ cleaning in 35–40 MHz, then plot dynamic spectrum with peaks.
@@ -172,12 +203,6 @@ def plot_removed_dynamic_spectrum_with_peak(
     # Mask data below threshold
     masked_data = np.where(data > threshold, data, np.nan)
 
-    # Temporarily save original data and use masked data
-    original_data = data
-    globals()['data'] = masked_data
-    
-    outlier_z = 3.0
-    
     # Delegate to calculate_dynamic_spectrum_with_peak
     calculate_dynamic_spectrum_with_peak(
         fig, ax,
@@ -186,11 +211,14 @@ def plot_removed_dynamic_spectrum_with_peak(
         time_tick_sec, freq_tick_mhz,
         med_filter_size,
         vmin, vmax,
-        title, scatter_color
+        title, scatter_color,
+        outlier_z=outlier_z,
+        time_array=time,
+        freq_array=frequency_mhz,
+        data_array=masked_data
     )
     
-    # Restore original data
-    globals()['data'] = original_data
+    return masked_data
 
 def plot_removed_dynamic_spectrum_with_peak_2(
     fig, ax,
@@ -198,14 +226,16 @@ def plot_removed_dynamic_spectrum_with_peak_2(
     freq_min, freq_max,
     time_tick_sec, freq_tick_mhz,
     med_filter_size, vmin, vmax,
-    title  # 上限閾値
+    title,
+    scatter_color='blue',
+    threshold_high=93,
+    outlier_z=3.0
 ):
     """
     Apply 3σ cleaning in 35–40 MHz, then plot dynamic spectrum with peaks.
     Lower threshold = mean of 3σ-cleaned band * 1.05
     Upper threshold = threshold_high
     """
-    threshold_high = 93
     # 1) 35–40 MHz帯だけを取り出し、flatten
     mask_band = (frequency_mhz >= 35) & (frequency_mhz <= 40)
     band_data = data[:, mask_band]
@@ -222,16 +252,22 @@ def plot_removed_dynamic_spectrum_with_peak_2(
 
     # 4) クリーニング後スペクトルをピークプロット関数へ委譲
     peak_times, peak_freqs = calculate_dynamic_spectrum_with_peak(
-        fig, ax, time, frequency_mhz, masked_data,
+        fig, ax,
         start_time, end_time, freq_min, freq_max,
         time_tick_sec, freq_tick_mhz, med_filter_size,
-        vmin, vmax, title, 'blue'
+        vmin, vmax, title, scatter_color,
+        outlier_z=outlier_z,
+        time_array=time,
+        freq_array=frequency_mhz,
+        data_array=masked_data
     )
     
     ax.scatter(
         mdates.date2num(peak_times),
         peak_freqs,
-        s=30, facecolors='blue', edgecolors='black'
+        s=30, facecolors=scatter_color,
+        edgecolors='black', linewidth=0.8,
+        alpha=0.9, zorder=5
     )
     
     return masked_data

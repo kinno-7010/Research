@@ -54,14 +54,14 @@ def main():
     print(f"Data shape: {data.shape}")
     
     # Example analysis parameters
-    start_time = "2022-06-13T03:00:00"
-    end_time = "2022-06-13T04:00:00"
-    freq_min = 20.0
-    freq_max = 80.0
-    med_filter_size = (3, 3)
-    vmin = 40
-    vmax = 80
-    outlier_z = 2.0
+    start_time = "2022-06-13T03:25:00"
+    end_time = "2022-06-13T03:34:00"
+    freq_min = 25.0
+    freq_max = 38.0
+    med_filter_size = (1, 1)
+    vmin = 80
+    vmax = 95
+    outlier_z = 3.0
     
     # Create figure
     fig, ax = plt.subplots(figsize=(12, 8))

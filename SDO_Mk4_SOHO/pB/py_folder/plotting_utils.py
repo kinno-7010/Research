@@ -1,13 +1,15 @@
 # -*- coding: utf-8 -*-
+from __future__ import annotations
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.ticker import LogLocator, FuncFormatter
 from matplotlib.colors import LogNorm
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
+from astropy.io import fits
 from constants_vdh import (
     triple_power, density_from_frequency, frequency_from_density,
-    Newkirk1961, Saito1970, Saito1977, find_rho_for_value
+    Newkirk1961, Saito1977, BaumbachAllen, find_rho_for_value
 )
 
 def plot_ne_scatter_and_fit(ax,
@@ -95,7 +97,7 @@ def find_r_from_density_local(target_density, r_search_range, fit_params, fallba
 def plot_frequency_radii(ax, r_plot_max, fit_params_tuple, density_plot_min):
     ne_14MHz = density_from_frequency(14)
     ne_42MHz = density_from_frequency(42)
-    fallback_model = lambda rho: Saito1970(rho, phi=0)
+    fallback_model = None
     r_14MHz = find_r_from_density_local(ne_14MHz, (1.0, r_plot_max), fit_params_tuple, fallback_model=fallback_model)
     r_42MHz = find_r_from_density_local(ne_42MHz, (1.0, r_plot_max), fit_params_tuple, fallback_model=fallback_model)
 
@@ -111,14 +113,14 @@ def plot_frequency_radii(ax, r_plot_max, fit_params_tuple, density_plot_min):
 
 def plot_reference_density_models(ax, r_curve, model_multipliers):
     nc = model_multipliers.get('Newkirk_C', 1)
-    s70c = model_multipliers.get('Saito1970_C', 5.3)
     s77c = model_multipliers.get('Saito1977_C', 4.9)
+    ba_c = model_multipliers.get('BaumbachAllen_C', 1.0)
     ax.plot(r_curve, nc * Newkirk1961(r_curve), 
-            label=f'{nc} fold Newkirk 1961', linestyle='--', linewidth=2)
-    ax.plot(r_curve, s70c * Saito1970(r_curve, phi=0),
-            label=f'{s70c} fold Saito 1970 (eq.)', linestyle='--', linewidth=2)
+            label=f'{nc} fold Newkirk 1961', linestyle='--', linewidth=2, alpha=0.8)
     ax.plot(r_curve, s77c * Saito1977(r_curve), 
-            label=f'{s77c} fold Saito+ 1977', linestyle='--', linewidth=2)
+            label=f'{s77c} fold Saito+ 1977', linestyle='--', linewidth=2, alpha=0.8)
+    ax.plot(r_curve, ba_c * BaumbachAllen(r_curve),
+            label=f'{ba_c} fold Baumbach-Allen', linestyle='--', linewidth=2, alpha=0.8)
 
 def plot_hf_antenna_band(ax, r_plot_max):
     ne_14MHz = density_from_frequency(14)
@@ -154,6 +156,7 @@ def generate_ne_profile_plot(ax,
                               r_fit_data_points, Ne_fit_data_points,
                               fit_params_tuple,
                               plot_r_min, plot_r_max,
+                              fit_r_min, fit_r_max,
                               theta_deg_val,
                               density_plot_limits,
                               model_multipliers_dict,
@@ -168,12 +171,13 @@ def generate_ne_profile_plot(ax,
                             density_lower_highlight_bound, density_upper_highlight_bound)
     
     density_min_for_plot, _ = density_plot_limits
+    if len(fit_params_tuple) >= 7:  # allow current 11-param fit
+        plot_reference_density_models(ax, r_curve_for_line_drawing, model_multipliers_dict)
     if len(fit_params_tuple) == 10:
         plot_frequency_radii(ax, plot_r_max, fit_params_tuple, density_min_for_plot)
-        plot_reference_density_models(ax, r_curve_for_line_drawing, model_multipliers_dict)
 
     plot_hf_antenna_band(ax, r_plot_max=plot_r_max)
-    title = f'Electron Density Profile (θ={theta_deg_val:.0f}°)'
+    title = f'Electron Density Profile (θ={theta_deg_val:.0f}°, fit: {fit_r_min:.1f}--{fit_r_max:.1f} $R_\\odot$)'
     setup_ne_plot_axes_and_legend(ax, (plot_r_min, plot_r_max), density_plot_limits, title)
     add_frequency_secondary_axis(ax)
 
@@ -183,7 +187,7 @@ def plot_combined_image(image_data, r_map_plot, params_lasco, r_ranges,
     """
     image_data, r_map_plot : 2D array
     params_lasco : dict with keys 'cx', 'cy', 'nx', 'ny', 'px_per_rsun'
-    r_ranges : dict with keys 'mk4_inner', 'mk4_outer_lasco_inner', 'lasco_outer'
+    r_ranges : dict with keys 'kcor_inner', 'kcor_outer_lasco_inner', 'lasco_outer'
     theta_deg_overlay : float or None
     xlim_pix, ylim_pix : tuple (min, max) in *pixel* units, in the same
                          coordinate system as the axes (0 at disk center).
@@ -220,8 +224,8 @@ def plot_combined_image(image_data, r_map_plot, params_lasco, r_ranges,
     # 境界リング + 凡例用プロキシ
     boundary_lines_for_legend = []
     for level_val, (label_text, color) in [
-        (r_ranges['mk4_inner'], (f"{r_ranges['mk4_inner']:.1f} $R_\\odot$ (Mk4 inner)", 'magenta')),
-        (r_ranges['mk4_outer_lasco_inner'], (f"{r_ranges['mk4_outer_lasco_inner']:.1f} $R_\\odot$ (Mk4/LASCO)", 'green')),
+        (r_ranges['kcor_inner'], (f"{r_ranges['kcor_inner']:.1f} $R_\\odot$ (K-Cor inner)", 'magenta')),
+        (r_ranges['kcor_outer_lasco_inner'], (f"{r_ranges['kcor_outer_lasco_inner']:.1f} $R_\\odot$ (K-Cor/LASCO)", 'green')),
         (r_ranges['lasco_outer'], (f"{r_ranges['lasco_outer']:.1f} $R_\\odot$ (LASCO outer)", 'blue'))
     ]:
         if level_val <= np.nanmax(r_map_plot) and level_val >= np.nanmin(r_map_plot):
@@ -244,10 +248,10 @@ def plot_combined_image(image_data, r_map_plot, params_lasco, r_ranges,
         x_overlay_pix = r_coords_rsun * params_lasco['px_per_rsun'] * np.cos(theta_rad_overlay)
         y_overlay_pix = r_coords_rsun * params_lasco['px_per_rsun'] * np.sin(theta_rad_overlay)
 
-        # line_artist_theta, = ax.plot(x_overlay_pix, y_overlay_pix,
-        #                              color='cyan', linestyle='-', linewidth=2,
-        #                              label=f'θ={theta_deg_overlay:.0f}°')
-        # boundary_lines_for_legend.append(line_artist_theta)
+        line_artist_theta, = ax.plot(x_overlay_pix, y_overlay_pix,
+                                     color='cyan', linestyle='-', linewidth=2,
+                                     label=f'θ={theta_deg_overlay:.0f}°')
+        boundary_lines_for_legend.append(line_artist_theta)
 
     # ---- ここで描画範囲をピクセル単位で制限 ----
     if xlim_pix is not None:
@@ -263,7 +267,7 @@ def plot_combined_image(image_data, r_map_plot, params_lasco, r_ranges,
     cb.set_label('pB [B$_\\odot$]', fontsize=14)
     cb.ax.tick_params(labelsize=12)
 
-    ax.set_title(f"Combined Mk4 & LASCO pB ({r_ranges['mk4_inner']:.1f}–{r_ranges['lasco_outer']:.1f} $R_\\odot$)",
+    ax.set_title(f"pB | K-Cor ({r_ranges['kcor_inner']:.1f}–{r_ranges['lasco_outer']:.1f} $R_\\odot$) & LASCO ({r_ranges['kcor_inner']:.1f}–{r_ranges['lasco_outer']:.1f} $R_\\odot$)",
                  fontsize=18)
 
     if boundary_lines_for_legend:
@@ -288,7 +292,7 @@ def add_radial_guides_on_ax(ax,
     """
     Draw standard radial guides on an axis:
       - integer-Rsun contours (white dashed)
-      - boundary rings at mk4_inner / mk4_outer_lasco_inner / lasco_outer
+      - boundary rings at kcor_inner / kcor_outer_lasco_inner / lasco_outer
       - optional position-angle guide line at theta_deg_overlay
     Returns a list of legend handles you can pass to ax.legend(handles=...).
     """
@@ -305,8 +309,8 @@ def add_radial_guides_on_ax(ax,
     # boundary rings & legend proxies
     boundary_lines_for_legend = []
     for level_val, (label_text, color) in [
-        (r_ranges['mk4_inner'], (f"{r_ranges['mk4_inner']:.1f} $R_\\odot$ (Mk4 inner)", 'magenta')),
-        (r_ranges['mk4_outer_lasco_inner'], (f"{r_ranges['mk4_outer_lasco_inner']:.1f} $R_\\odot$ (Mk4/LASCO)", 'green')),
+        (r_ranges['kcor_inner'], (f"{r_ranges['kcor_inner']:.1f} $R_\\odot$ (K-Cor inner)", 'magenta')),
+        (r_ranges['kcor_outer_lasco_inner'], (f"{r_ranges['kcor_outer_lasco_inner']:.1f} $R_\\odot$ (K-Cor/LASCO)", 'green')),
         (r_ranges['lasco_outer'], (f"{r_ranges['lasco_outer']:.1f} $R_\\odot$ (LASCO outer)", 'blue'))
     ]:
         if level_val <= np.nanmax(r_map_plot) and level_val >= np.nanmin(r_map_plot):
@@ -331,3 +335,18 @@ def add_radial_guides_on_ax(ax,
         boundary_lines_for_legend.append(line_theta)
 
     return boundary_lines_for_legend
+
+# utils_save_fits.py（新規に作ってもよい）
+
+
+def save_density_map_to_fits(ne_cm3: np.ndarray, ref_fits_header, out_fits: str,
+                             bunit: str = "cm-3", overwrite: bool = True) -> None:
+    """
+    Save 2D electron density map (cm^-3) to FITS, inheriting WCS/metadata from a reference header.
+    ref_fits_header: astropy.io.fits.Header (e.g., sunpy_map.fits_header)
+    """
+    hdr = fits.Header(ref_fits_header)  # copy
+    hdr["BUNIT"] = bunit
+    hdr["EXTNAME"] = "NE"
+    hdu = fits.PrimaryHDU(data=np.asarray(ne_cm3, dtype=np.float32), header=hdr)
+    hdu.writeto(out_fits, overwrite=overwrite)

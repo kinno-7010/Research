@@ -20,19 +20,19 @@ RS_KM = 6.957e5  # solar radius in km
 R_SCALE = 2.0
 
 
-def _freq_to_r(f_mhz: np.ndarray | float, branch: str = "F") -> np.ndarray | float:
+def _freq_to_r(f_mhz: np.ndarray | float, branch: str = "F", factor: float = 1.0) -> np.ndarray | float:
     f_arr = np.asarray(f_mhz, dtype=float)
-    vec = np.vectorize(lambda v: invert_r_from_f(float(v), branch=branch))
+    vec = np.vectorize(lambda v: invert_r_from_f(float(v), branch=branch, factor=factor))
     return vec(f_arr)
 
-def _r_to_freq(r_rs: np.ndarray | float, branch: str = "F") -> np.ndarray | float:
+def _r_to_freq(r_rs: np.ndarray | float, branch: str = "F", factor: float = 1.0) -> np.ndarray | float:
     r_arr = np.asarray(r_rs, dtype=float)
-    vec = np.vectorize(lambda v: f_model_from_r(float(v), branch=branch))
+    vec = np.vectorize(lambda v: f_model_from_r(float(v), branch=branch, factor=factor))
     return vec(r_arr)
 
 file_path, time, frequency_mhz, data = _initialize_data_parameters()
 
-def plot_removed_dynamic_spectrum_with_distance_axis(fig, ax, time_array: np.ndarray, freq_mhz: np.ndarray, data: np.ndarray, start_time: str, end_time: str, freq_min: float, freq_max: float, time_tick_sec: int, freq_tick_mhz: float, med_filter_size: tuple[int, int], vmin: float, vmax: float, title: str):
+def plot_removed_dynamic_spectrum_with_distance_axis(fig, ax, time_array: np.ndarray, freq_mhz: np.ndarray, data: np.ndarray, start_time: str, end_time: str, freq_min: float, freq_max: float, time_tick_sec: int, freq_tick_mhz: float, med_filter_size: tuple[int, int], vmin: float, vmax: float, title: str, model_factor: float = 1.0):
     """
     Remove 3σ outliers in 35–40 MHz band and plot dynamic spectrum.
     Left y-axis: Frequency [MHz] (log)
@@ -84,18 +84,20 @@ def plot_removed_dynamic_spectrum_with_distance_axis(fig, ax, time_array: np.nda
     secax = ax.secondary_yaxis(
         "right",
         functions=(
-            lambda f_mhz: _freq_to_r(f_mhz, branch="H"),
-            lambda r_rs: _r_to_freq(r_rs, branch="H"),
+            lambda f_mhz: _freq_to_r(f_mhz, branch="H", factor=model_factor),
+            lambda r_rs: _r_to_freq(r_rs, branch="H", factor=model_factor),
         ),
     )
-    # secax.set_ylabel(f"Radial distance [R$_\\odot$] ({factor}× Saito 1977)", fontsize=14)
-    secax.set_ylabel(f"Radial distance (Harmonic) [R$_\\odot$] (Density Fitting Line)", fontsize=14)
+    secax.set_ylabel(
+        f"Radial distance (Harmonic) [R$_\\odot$] ({model_factor}× $160^\\circ$ line)",
+        fontsize=14,
+    )
     secax.tick_params(axis="y", labelsize=12)
     secax.yaxis.set_major_locator(MultipleLocator(0.1))
     secax.yaxis.set_major_formatter(FuncFormatter(lambda val, _: f"{val:.1f}"))
 
 
-def plot_peak_dynamic_spectrum(start_time: str, end_time: str, freq_min: float, freq_max: float, time_tick_sec: int, freq_tick_mhz: float, med_filter_size: tuple[int, int], vmin: float, vmax: float, title: str):
+def plot_peak_dynamic_spectrum(start_time: str, end_time: str, freq_min: float, freq_max: float, time_tick_sec: int, freq_tick_mhz: float, med_filter_size: tuple[int, int], vmin: float, vmax: float, title: str, model_factor: float = 1.0):
     
     outlier_z = 3.0
     fig, ax = plt.subplots(figsize=(12, 6))
@@ -114,7 +116,8 @@ def plot_peak_dynamic_spectrum(start_time: str, end_time: str, freq_min: float, 
                 time_tick_sec=time_tick_sec, freq_tick_mhz=freq_tick_mhz,
                 med_filter_size=med_filter_size,
                 vmin=vmin, vmax=vmax,
-                title=title
+                title=title,
+                model_factor=model_factor
             )
             continue
 
@@ -238,12 +241,9 @@ def plot_peak_dynamic_spectrum(start_time: str, end_time: str, freq_min: float, 
             label=f"Red FDR (2nd harmonic): {slope_red/2:.3e}±{stderr_red/2:.3e} MHz/s"
         )
 # ax.vlines(xnum_blue[-1], freq_min[0], freq_max[0], color='black', linestyle='--', linewidth=3)
-        ax.scatter(xnum_red[0], freq_dens_red_start, color='#ff00ff', marker='x', s=100, zorder=12, label=f'{freq_dens_red_start:.2f}[MHz] @ {_freq_to_r(freq_dens_red_start, branch="H"):.3f}[$R_\\odot$] $\\rightarrow$ {freq_red_mid:.3f}[MHz] @ {_freq_to_r(freq_red_mid, branch="H"):.3f}[$R_\\odot$]') # $\\rightarrow$ {freq_dens_red_end:.3f}[MHz] @ {_freq_to_r(freq_dens_red_end, branch="H"):.3f}[$R_\\odot$]')
+        ax.scatter(xnum_red[0], freq_dens_red_start, color='#ff00ff', marker='x', s=100, zorder=12, label=f'{freq_dens_red_start:.2f}[MHz] @ {_freq_to_r(freq_dens_red_start, branch="H", factor=model_factor):.3f}[$R_\\odot$] $\\rightarrow$ {freq_red_mid:.3f}[MHz] @ {_freq_to_r(freq_red_mid, branch="H", factor=model_factor):.3f}[$R_\\odot$]') # $\\rightarrow$ {freq_dens_red_end:.3f}[MHz] @ {_freq_to_r(freq_dens_red_end, branch="H"):.3f}[$R_\\odot$]')
         ax.scatter(xnum_red[np.argmin(np.abs(t_sec_total - t_sec_red[-1]))], freq_red_mid, color='#ff00ff', marker='x', s=100, zorder=12)
         # ax.scatter(xnum_blue[-1], freq_dens_red_end, color='#ff00ff', marker='x', s=100, zorder=12)
-
-
-
         
     if len(times_blue) >= 2:
 
@@ -258,7 +258,7 @@ def plot_peak_dynamic_spectrum(start_time: str, end_time: str, freq_min: float, 
         )
         
         ax.scatter(xnum_blue[-1], freq_dens_blue_end, color='#00ffff', marker='x', s=100, zorder=12)
-        ax.scatter(xnum_blue[0], freq_dens_blue_start, color='#00ffff', marker='x', s=100, zorder=12, label=f'{freq_dens_blue_start:.2f}[MHz] @ {_freq_to_r(freq_dens_blue_start, branch="H"):.3f}[$R_\\odot$] $\\rightarrow$ {freq_dens_blue_end:.2f}[MHz] @ {_freq_to_r(freq_dens_blue_end, branch="H"):.3f}[$R_\\odot$]')
+        ax.scatter(xnum_blue[0], freq_dens_blue_start, color='#00ffff', marker='x', s=100, zorder=12, label=f'{freq_dens_blue_start:.2f}[MHz] @ {_freq_to_r(freq_dens_blue_start, branch="H", factor=model_factor):.3f}[$R_\\odot$] $\\rightarrow$ {freq_dens_blue_end:.2f}[MHz] @ {_freq_to_r(freq_dens_blue_end, branch="H", factor=model_factor):.3f}[$R_\\odot$]')
 
 
     # 4) 縦線
@@ -328,14 +328,33 @@ def plot_peak_dynamic_spectrum(start_time: str, end_time: str, freq_min: float, 
     upper_x, upper_y = _to_mdates_xy(upper_lane)
     lower_x, lower_y = _to_mdates_xy(lower_lane)
 
+    # ドリフトレート（MHz/s）の平均・標準偏差を算出
+    def _drift_rate_stats(x_mdates, y_mhz):
+        if len(x_mdates) < 2:
+            return None, None
+        dt_sec = np.diff(x_mdates) * 86400.0
+        df_mhz = np.diff(y_mhz)
+        rates = df_mhz / dt_sec
+        return float(np.mean(rates)), float(np.std(rates))
+
+    upper_mean, upper_std = _drift_rate_stats(upper_x, upper_y)
+    lower_mean, lower_std = _drift_rate_stats(lower_x, lower_y)
+
     # プロットは線のみ（scatterはコメントアウトのまま）
     ax.scatter(upper_x, upper_y, color='orange', marker='+', s=50, zorder=12)
     ax.scatter(lower_x, lower_y, color='purple', marker='+', s=50, zorder=12)
-    ax.plot(upper_x, upper_y, color='orange', linestyle='--', linewidth=2, label='Upper Lane')
-    ax.plot(lower_x, lower_y, color='purple', linestyle='--', linewidth=2, label='Lower Lane')
+    upper_label = 'Upper Lane'
+    lower_label = 'Lower Lane'
+    # この周波数は 2nd harmonic のため、Fundamental 換算として 1/2 を用いる
+    if upper_mean is not None:
+        upper_label += f" (FDR={upper_mean/2:.3e}±{upper_std/2:.3e} MHz/s)"
+    if lower_mean is not None:
+        lower_label += f" (FDR={lower_mean/2:.3e}±{lower_std/2:.3e} MHz/s)"
+    ax.plot(upper_x, upper_y, color='orange', linestyle='--', linewidth=2, label=upper_label)
+    ax.plot(lower_x, lower_y, color='purple', linestyle='--', linewidth=2, label=lower_label)
 
     ax.legend(fontsize=12)
-    output_path = '/mnt/d/wsl/home/kinno-7010/Research/RadioData/HF_plot/output/peak_dynamic_spectrum_upper_lower.png'
+    output_path = '/mnt/d/wsl/home/kinno-7010/Research/RadioData/HF_plot/output/peak_dynamic_spectrum_upper_lower_160degree.png'
     plt.savefig(output_path)
     print(f'Saved: {output_path}')
     plt.show()
@@ -368,5 +387,6 @@ if __name__ == "__main__":
         med_filter_size=(1, 1),
         vmin=80,
         vmax=95,
-        title="Second Harmonic Lane Analysis"
+        title="Second Harmonic Lane Analysis",
+        model_factor=1
     )

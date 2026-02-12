@@ -459,7 +459,7 @@ def main(
     else:
         params, tilt_meta = _apply_catalogue_tilt(params, ts)
 
-    fig, ax = plt.subplots(figsize=(8, 8), dpi=120)
+    fig, ax = plt.subplots(figsize=(8, 8), dpi=300)
     overlay_style = dict(
         n_parallels=8,
         n_meridians=32,
@@ -716,7 +716,7 @@ def main(
             title_time = mk4_map.date.strftime('%Y-%m-%dT%H:%M:%S')
         except Exception:
             title_time = str(mk4_map.date)
-    ax.set_title(title_time)
+    ax.set_title(title_time, fontsize=14)
 
     output_dir = Path(__file__).resolve().with_name("output")
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -905,10 +905,10 @@ if __name__ == "__main__":
     - (lon, lat)：nose の向き → 投影を通じて apex の“見かけの幅”と脚の“見かけの間隔”を同時に変える。
         → apex を広く見せたいなら POS（面内）に寄せる、脚は 視線方向に寄せると投影で狭く見える。
     """
-    h_apex=3.92; kappa=0.10; alpha_deg=23; tilt_deg=87; lon_deg=-44; lat_deg=10
+    # h_apex=3.81; kappa=0.12; alpha_deg=23; tilt_deg=-85; lon_deg=-44; lat_deg=10
+    h_apex=3.39; kappa=0.10; alpha_deg=22; tilt_deg=87; lon_deg=-44; lat_deg=10
 
-
-    ts = "2022-06-13T03:33:04"
+    ts = "2022-06-13T03:25:29"
     # Tilt mode for direct execution (CLI 未指定時に適用)
     # "auto" にすると自動推定を行う
     # "manual" にすると自動推定を行わない

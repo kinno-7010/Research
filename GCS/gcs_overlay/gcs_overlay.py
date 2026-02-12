@@ -18,7 +18,8 @@ from astropy.coordinates import SkyCoord
 from astropy.time import Time
 
 # We import only our minimal geometry helper
-from .gcs_geometry import GCSParams, sample_gcs_wireframe_points
+sys.path.append("F:/wsl/home/kinno-7010/Research/GCS")
+from gcs_geometry import GCSParams, sample_gcs_wireframe_points
 
 # SunPy frames imports are inside functions to avoid import-time issues if SunPy is not present.
 def _to_hpc_arcsec_for_lasco(lasco_map, pts_hgs: np.ndarray, obstime: Time):

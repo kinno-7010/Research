@@ -219,8 +219,8 @@ def _conical_legs(alpha_rad: float, r_min: float, r_max: float, n_r: int, n_phi:
 def sample_gcs_wireframe_points(
     params: GCSParams,
     obstime,
-    n_parallels: int = 8,
-    n_meridians: int = 12,
+    n_parallels: int = 32,
+    n_meridians: int = 48,
     include_legs: bool = True,
     leg_r_min: float = 1.02,
     clip_front_by_alpha: bool = True  # kept for backwards compatibility, unused in PyThea workflow

@@ -1053,9 +1053,10 @@ def plot_density_map(
             x_vals = r_line * scale * np.cos(angle_rad)
             y_vals = r_line * scale * np.sin(angle_rad)
             color = cmap(norm(th))
-            ax.plot(x_vals, y_vals, color=color, linewidth=1.8, alpha=0.9)
+            ax.plot(x_vals, y_vals, color="#B3DB7D", linewidth=1.8, alpha=0.9)
         # 簡易凡例（範囲のみ表示）
-        proxy = plt.Line2D([0], [0], color=cmap(norm(angles_deg.mean())), linewidth=2, label="θ=140–200° (10° step)")
+        # proxy = plt.Line2D([0], [0], color=cmap(norm(angles_deg.mean())), linewidth=2, label="θ=140–200° (10° step)")
+        proxy = plt.Line2D([0], [0], color='#B3DB7D', linewidth=2, label="θ=190°")
         ax.legend(handles=[proxy], loc='upper right', fontsize=10)
     except Exception as e:
         print(f"Multi-angle guideline draw error: {e}")
@@ -1166,7 +1167,7 @@ def plot_density_maps_combined(
             proxy_line = plt.Line2D([0], [0], linestyle='-.', color=color, linewidth=1.2, label=label_text)
             boundary_lines_for_legend.append(proxy_line)
             
-    theta_deg_overlay = 150.0
+    theta_deg_overlay = 190.0
     angle_rad = np.deg2rad(theta_deg_overlay)
 
     # 軸は「太陽中心を原点とした pixel 座標」なので、Rsun→pixel変換が必要
@@ -1177,11 +1178,11 @@ def plot_density_maps_combined(
     x_vals = r_line * px_per_rsun_k * np.cos(angle_rad)
     y_vals = r_line * px_per_rsun_k * np.sin(angle_rad)
 
-    line_artist_theta, = ax_k.plot(
-        x_vals, y_vals,
-        color='cyan', linestyle='-', linewidth=2,
-        label=f'θ={theta_deg_overlay:.0f}°'
-    )
+    # line_artist_theta, = ax_k.plot(
+    #     x_vals, y_vals,
+    #     color='cyan', linestyle='-', linewidth=2,
+    #     label=f'θ={theta_deg_overlay:.0f}°'
+    # )
 
     
     ax_k.plot(0, 0, '+', color='black', markersize=10, markeredgewidth=1.5)
@@ -1582,6 +1583,10 @@ if __name__ == "__main__":
         f"K-COR (1.0-2.2 $R_\\odot$) + SOHO/LASCO-C2 (2.2-6.0 $R_\\odot$)\n"
         f"Electron Density ({SYMMETRY} inversion) 2022-06-13 03:01:00 UT"
     )
+    
+    min_angle_deg = 190
+    max_angle_deg = 191
+    
     fig, ax = plot_density_map(
         density_map=combined_density,
         r_map_plot=r_map_lasco,
@@ -1590,77 +1595,77 @@ if __name__ == "__main__":
         title=title_combined,
         xlim_pix=(-200, 0),
         ylim_pix=(-100, 150),
-        min_angle_deg=140.0,
-        max_angle_deg=161.0,
+        min_angle_deg=min_angle_deg,
+        max_angle_deg=max_angle_deg,
         angle_step_deg=10.0
     )
-    png_path = f"{out_base}_Mk4_LASCO_{suffix}_20220613_0300.png"
-    csv_path = f"{out_base}_Mk4_LASCO_{suffix}_20220613_0300.csv"
+    png_path = f"{out_base}_Mk4_LASCO_{suffix}_20220613_0300_{min_angle_deg}degree_{max_angle_deg}degree.png"
+    csv_path = f"{out_base}_Mk4_LASCO_{suffix}_20220613_0300_{min_angle_deg}degree_{max_angle_deg}degree.csv"
     fig.savefig(png_path, dpi=200)
     print(f"Saved combined 2D density map to {png_path}")
     #     # === FITS保存（トモグラフィ入力の pB と、QA用の ne / fpe） ===
-    if SAVE_FITS:
-        # LASCOの元ヘッダ（観測者座標・WCSをできるだけ保持したいのでLASCOを基準にする）
-        hdr_lasco = fits.getheader(filename_lasco)
+    # if SAVE_FITS:
+    #     # LASCOの元ヘッダ（観測者座標・WCSをできるだけ保持したいのでLASCOを基準にする）
+    #     hdr_lasco = fits.getheader(filename_lasco)
         
-        try:
-            hdr_kcor = fits.getheader(filename_mk4)
-        except Exception as e:
-            hdr_kcor = None
-            print(f"[WARN] Could not read K-COR header for observer keywords: {e}")
+    #     try:
+    #         hdr_kcor = fits.getheader(filename_mk4)
+    #     except Exception as e:
+    #         hdr_kcor = None
+    #         print(f"[WARN] Could not read K-COR header for observer keywords: {e}")
 
-        # (2) WCS 最低限（LASCO pb の元ヘッダに CTYPE が無いケースへの対処）
-        if "CTYPE1" not in hdr_lasco:
-            hdr_lasco["CTYPE1"] = "HPLN-TAN"
-        if "CTYPE2" not in hdr_lasco:
-            hdr_lasco["CTYPE2"] = "HPLT-TAN"
-        if "CUNIT1" not in hdr_lasco:
-            hdr_lasco["CUNIT1"] = "arcsec"
-        if "CUNIT2" not in hdr_lasco:
-            hdr_lasco["CUNIT2"] = "arcsec"
-        hdr_lasco.add_history("Added/verified minimal HPC WCS keywords (CTYPE1/2, CUNIT1/2)")
+    #     # (2) WCS 最低限（LASCO pb の元ヘッダに CTYPE が無いケースへの対処）
+    #     if "CTYPE1" not in hdr_lasco:
+    #         hdr_lasco["CTYPE1"] = "HPLN-TAN"
+    #     if "CTYPE2" not in hdr_lasco:
+    #         hdr_lasco["CTYPE2"] = "HPLT-TAN"
+    #     if "CUNIT1" not in hdr_lasco:
+    #         hdr_lasco["CUNIT1"] = "arcsec"
+    #     if "CUNIT2" not in hdr_lasco:
+    #         hdr_lasco["CUNIT2"] = "arcsec"
+    #     hdr_lasco.add_history("Added/verified minimal HPC WCS keywords (CTYPE1/2, CUNIT1/2)")
         
-        out_dir = "/mnt/d/wsl/home/kinno-7010/Research/SDO_Mk4_SOHO/pB/Rawdata"
-        # 1) 合成pB（SSCトモグラフィで本質的に必要になるのはこれの“時系列”）
-        pb_fits_path = os.path.join(out_dir, f"pB_Kcor_LASCO_{suffix}_20220613_0300.fits")
-        # === Save Earth-view combined pB FITS for regularized tomography ===
-        SAVE_COMBINED_PB_FITS = True
-        pb_fits_path = f"{out_base}_Mk4_LASCO_pB_{suffix}_20220613_0300.fits"
+    #     out_dir = "/mnt/d/wsl/home/kinno-7010/Research/SDO_Mk4_SOHO/pB/Rawdata"
+    #     # 1) 合成pB（SSCトモグラフィで本質的に必要になるのはこれの“時系列”）
+    #     pb_fits_path = os.path.join(out_dir, f"pB_Kcor_LASCO_{suffix}_20220613_0300.fits")
+    #     # === Save Earth-view combined pB FITS for regularized tomography ===
+    #     SAVE_COMBINED_PB_FITS = True
+    #     pb_fits_path = f"{out_base}_Mk4_LASCO_pB_{suffix}_20220613_0300.fits"
 
-        if SAVE_COMBINED_PB_FITS:
-            # (A) トモグラフィ入力用：必須ヘッダ(RSUN_OBS等)を整形して保存
-            pb_tomo_path = pb_fits_path  # 既存の変数名をそのまま使うならこれでOK
-            save_combined_pb_fits_for_tomography(
-                pb_image=final_pb,
-                lasco_fits_path=filename_lasco,
-                kcor_fits_path=filename_mk4,   # ここはあなたのK-COR(or Mk4)ヘッダのFITS
-                out_fits_path=pb_tomo_path,
-            )
-            print(f"Saved combined pB FITS (tomography input) to {pb_tomo_path}")
+    #     if SAVE_COMBINED_PB_FITS:
+    #         # (A) トモグラフィ入力用：必須ヘッダ(RSUN_OBS等)を整形して保存
+    #         pb_tomo_path = pb_fits_path  # 既存の変数名をそのまま使うならこれでOK
+    #         save_combined_pb_fits_for_tomography(
+    #             pb_image=final_pb,
+    #             lasco_fits_path=filename_lasco,
+    #             kcor_fits_path=filename_mk4,   # ここはあなたのK-COR(or Mk4)ヘッダのFITS
+    #             out_fits_path=pb_tomo_path,
+    #         )
+    #         print(f"Saved combined pB FITS (tomography input) to {pb_tomo_path}")
 
-            # (B) 任意：QA/比較用に「素の合成pB」を別名で保存（上書きしない）
-            pb_plain_path = pb_tomo_path.replace(".fits", "_plain.fits")
-            write_2d_fits_like(
-                hdr_lasco, final_pb, pb_plain_path,
-                bunit="Bsun",
-                comment="Combined pB map (MK4 inner + LASCO outer) on LASCO grid (plain header)"
-            )
-            print(f"Saved combined pB FITS (plain) to {pb_plain_path}")
+    #         # (B) 任意：QA/比較用に「素の合成pB」を別名で保存（上書きしない）
+    #         pb_plain_path = pb_tomo_path.replace(".fits", "_plain.fits")
+    #         write_2d_fits_like(
+    #             hdr_lasco, final_pb, pb_plain_path,
+    #             bunit="Bsun",
+    #             comment="Combined pB map (MK4 inner + LASCO outer) on LASCO grid (plain header)"
+    #         )
+    #         print(f"Saved combined pB FITS (plain) to {pb_plain_path}")
 
-        # 2) 2D密度（QA用。SSCトモグラフィの入力は基本pBだが、比較用に残す）
-        if OUTPUT_QUANTITY.lower() == "ne":
-            out_map = combined_density
-            out_unit = "cm^-3"
-            tag = "ne"
-        else:
-            out_map = ne_to_fpe(combined_density, harmonic=FPE_HARMONIC, out_unit=FPE_UNIT)
-            out_unit = FPE_UNIT
-            tag = f"fpe_{FPE_UNIT.lower()}_h{FPE_HARMONIC}"
+    #     # 2) 2D密度（QA用。SSCトモグラフィの入力は基本pBだが、比較用に残す）
+    #     if OUTPUT_QUANTITY.lower() == "ne":
+    #         out_map = combined_density
+    #         out_unit = "cm^-3"
+    #         tag = "ne"
+    #     else:
+    #         out_map = ne_to_fpe(combined_density, harmonic=FPE_HARMONIC, out_unit=FPE_UNIT)
+    #         out_unit = FPE_UNIT
+    #         tag = f"fpe_{FPE_UNIT.lower()}_h{FPE_HARMONIC}"
 
-        ne_fits_path = os.path.join(out_dir, f"ne_Kcor_LASCO_{suffix}_20220613_0300.fits")
+    #     ne_fits_path = os.path.join(out_dir, f"ne_Kcor_LASCO_{suffix}_20220613_0300.fits")
 
-    export_density_csv(combined_density, r_map_lasco, params_lasco, csv_path, include_all=False)
-    print(f"Saved combined CSV to {csv_path}")
+    # export_density_csv(combined_density, r_map_lasco, params_lasco, csv_path, include_all=False)
+    # print(f"Saved combined CSV to {csv_path}")
 
     plt.show()
 

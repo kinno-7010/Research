@@ -167,6 +167,7 @@ LOWER_SEGMENTS: List[Tuple[str, str, float, float]] = [
     ("2022-06-13T03:31:20", "2022-06-13T03:32:40", 26, 25.3)
 ]
 
+
 # GCS プロットと同様に描画する参照ライン（時間範囲）
 GCS_REFERENCE_LINE_START = "2022-06-13T01:10:09"
 GCS_REFERENCE_LINE_END = "2022-06-13T03:00:00"

@@ -98,7 +98,7 @@ def invert_r_from_f(model_function: callable, f_mhz: float, branch: str = "F",
     return 0.5 * (lo + hi)
 
 def plot_density_model(rho: np.ndarray, branch: str = "F", factor: float = 1.0):
-    fig, ax = plt.subplots(figsize=(10, 8), tight_layout=True)
+    fig, ax = plt.subplots(figsize=(10, 10), tight_layout=True)
     
     Baumbach_Allen_model = Baumbach_Allen(rho)
     Saito1977_background_model, Saito1977_eq_hole_model, Saito1977_pole_hole_model = Saito1977(rho)
@@ -106,36 +106,63 @@ def plot_density_model(rho: np.ndarray, branch: str = "F", factor: float = 1.0):
 
     # Plot each model individually to keep (x, y) dimensions aligned
     model_series = [
-        ("Baumbach-Allen", f_plasma(Baumbach_Allen_model)),
-        ("Saito 1977 background", f_plasma(Saito1977_background_model)),
-        ("Saito 1977 equatorial hole", f_plasma(Saito1977_eq_hole_model)),
-        ("Saito 1977 polar hole", f_plasma(Saito1977_pole_hole_model)),
-        ("Newkirk 1961", f_plasma(Newkirk1961_model)),
+        # ("Baumbach-Allen", f_plasma(Baumbach_Allen_model)),
+        ("1-fold Saito1977", f_plasma(Saito1977_background_model)),
+        ("4-fold Saito1977", f_plasma(Saito1977_background_model * 4)),
+     # ("Saito 1977 equatorial hole", f_plasma(Saito1977_eq_hole_model)),
+        # ("Saito 1977 polar hole", f_plasma(Saito1977_pole_hole_model)),
+        # ("Newkirk 1961", f_plasma(Newkirk1961_model)),
     ]
     for label, series in model_series:
-        ax.plot(rho, series, label=label)
+        ax.plot(rho, series, label=label, linewidth=3)
     
     # r=1.5, 6.0の間を薄いグレーで塗りつぶす
-    ylim_min, ylim_max = (0.1, 500)
+    ylim_min, ylim_max = (1, 500)
     xlim_min, xlim_max = (1.0, 7.0)
-    ax.axvspan(1.5, 6.0, color="gray", alpha=0.5, zorder=0)
-    ax.text(1.5, ylim_min, ' Middle corona\n (1.5-6.0 $R_\\odot$)', fontsize=16, color='red', ha='left', va='bottom')
+    ax.axvspan(1.5, 6.0, color="gray", alpha=0.3, zorder=0)
+    ax.text(1.5, ylim_max, '1.5 $R_\\odot$', va='top', ha='left', fontsize=18, color='dimgray')
+    ax.text(3.5, ylim_max, 'Middle corona', va='top', ha='center', fontsize=24, color='black')
+    ax.text(6.0, ylim_max, '6.0 $R_\\odot$', va='top', ha='right', fontsize=18, color='dimgray')
+    ax.axvline(1.5, color="black", linestyle="--", linewidth=1.2)
+    ax.axvline(6.0, color="black", linestyle="--", linewidth=1.2)
 
     def plasma_frequency_at(target_rho: float, density_profile: np.ndarray) -> float:
         """Interpolate density at target_rho and convert to plasma frequency."""
         density_value = float(np.interp(target_rho, rho, density_profile))
         return float(f_plasma(density_value))
 
-    for target_rho, profile, dy, color, align in [
-        (1.5, Newkirk1961_model, 5, "purple", ("left", "bottom")),
-        (6.0, Newkirk1961_model, 0.1, "purple", ("left", "bottom")),
-        (1.5, Saito1977_background_model, -10, "orange", ("right", "bottom")),
-        (6.0, Saito1977_background_model, 0.1, "orange", ("left", "bottom")),
-        (6.0, Baumbach_Allen_model, -0.01, "blue", ("left", "top")),
+    # --- Fix: tie texts to the actual scatter points using annotate (robust on log scale) ---
+    for target_rho, profile, text_offset, color, align in [
+        (1.5, Saito1977_background_model, (0, 0), "blue", ("right", "center")),
+        (6.0, Saito1977_background_model, (0, 0), "blue", ("right", "center")),
+        (1.5, Saito1977_background_model * 4, (0, 0), "orange", ("right", "center")),
+        (6.0, Saito1977_background_model * 4, (0, 0), "orange", ("right", "center")),
     ]:
         freq_val = plasma_frequency_at(target_rho, profile)
-        ax.text(target_rho, freq_val + dy, f"{freq_val:.2f} MHz  \n(at {target_rho:.1f} $R_\\odot$)  ",
-                fontsize=16, color=color, ha=align[0], va=align[1])
+        ax.scatter(target_rho, freq_val, color=color, zorder=5)
+        ax.text(xlim_min, freq_val, f"{freq_val:.2f}", va='center', ha='right', fontsize=16, color=color)
+        ax.hlines(freq_val, xlim_min, target_rho, color=color, linestyle="--", linewidth=1.2)
+
+    
+    ######### HF antenna band #########
+    ax.scatter(invert_r_from_f(lambda r: Saito1977(r)[0], 15), 15, color="red")
+    ax.scatter(invert_r_from_f(lambda r: Saito1977(r)[0], 40), 40, color="red")
+    ax.scatter(invert_r_from_f(lambda r: 4 * Saito1977(r)[0], 15), 15, color="red")
+    ax.scatter(invert_r_from_f(lambda r: 4 * Saito1977(r)[0], 40), 40, color="red")
+    
+    # --- Fix: dashed lines/labels consistent with (14, 42) MHz ---
+    # ax.axhline(15, color="red", linestyle="--", linewidth=
+    # 1.2)
+    ax.vlines(invert_r_from_f(lambda r: 4*Saito1977(r)[0], 15), ylim_min, 15, color="red", linestyle="--", linewidth=0.7)
+    # ax.axhline(40, color="red", linestyle="--", linewidth=1.2)
+    ax.axhspan(15, 40, color="red", alpha=0.08, zorder=0)
+    ax.vlines(invert_r_from_f(lambda r: 4*Saito1977(r)[0], 40), ylim_min, 40, color="red", linestyle="--", linewidth=0.7)
+    # ax.text(xlim_min, 15, '15', va='center', ha='right', fontsize=14, color='red')
+    # ax.text(xlim_min, 40, '40', va='center', ha='right', fontsize=14, color='red')
+    ax.text(4.5, 15, 'HF antenna band\n(15-40 MHz)', va='bottom', ha='center', fontsize=24, color='red')
+    ax.text(invert_r_from_f(lambda r: 4*Saito1977(r)[0], 15), ylim_min, f"{invert_r_from_f(lambda r: 4*Saito1977(r)[0], 15):.2f}", va='top', ha='center', fontsize=14, color='red')
+    ax.text(invert_r_from_f(lambda r: 4*Saito1977(r)[0], 40), ylim_min, f"{invert_r_from_f(lambda r: 4*Saito1977(r)[0], 40):.2f}", va='top', ha='center', fontsize=14, color='red')
+    
 
     # ----- Cosmetics --------------------------------------------------------------
     ax.set_yscale('log')
@@ -145,21 +172,26 @@ def plot_density_model(rho: np.ndarray, branch: str = "F", factor: float = 1.0):
     ax.set_xlim(xlim_min, xlim_max)
     ax.set_ylim(ylim_min, ylim_max)
     ax.grid(True, which='both', ls=':')
+    from matplotlib.ticker import FuncFormatter
+
+    def MHz_formatter(y, pos):
+        return f"{y:.0f}"
+
+    ax.yaxis.set_major_formatter(FuncFormatter(MHz_formatter))
     ax.tick_params(labelsize=16)
-    ax.legend(fontsize=16)
+    ax.legend(loc="upper left", bbox_to_anchor=(0.5, 0.8), fontsize=16)
+
     
-    output_path = '/mnt/d/wsl/home/kinno-7010/Research/DensityModel/output/density_model_BA_Sa1977_Ne1961.png'
-    plt.savefig(output_path)
+    output_path = '/mnt/d/wsl/home/kinno-7010/Research/DensityModel/output/density_model_HF_antenna.png'
+    plt.savefig(output_path, bbox_inches='tight')
     print(f"Saved {output_path}")
 
     plt.show()
     
-    print(f'Baumbach-Allen (1.05 Rs): {f_plasma(Baumbach_Allen(1.05)):.2f} MHz')
-    print(f'Baumbach-Allen (3.0 Rs): {f_plasma(Baumbach_Allen(3.0)):.2f} MHz')
-    print(f'Newkirk1961 (1.0 Rs): {f_plasma(Newkirk1961(1.0)):.2f} MHz')
-    print(f'Newkirk1961 (3.0 Rs): {f_plasma(Newkirk1961(3.0)):.2f} MHz')
-    print(f'Saito1977 background (2.5 Rs): {f_plasma(Saito1977(2.5)[0]):.2f} MHz')
-    print(f'Saito1977 background (5.5 Rs): {f_plasma(Saito1977(5.5)[0]):.2f} MHz')
+    print(f'Saito1977 background (1-fold) (2.5 Rs): {f_plasma(Saito1977(2.5)[0] * 1):.2f} MHz')
+    print(f'Saito1977 background (1-fold) (5.5 Rs): {f_plasma(Saito1977(5.5)[0] * 1):.2f} MHz')
+    print(f'Saito1977 background (4-fold) (2.5 Rs): {f_plasma(Saito1977(2.5)[0] * 4):.2f} MHz')
+    print(f'Saito1977 background (4-fold) (5.5 Rs): {f_plasma(Saito1977(5.5)[0] * 4):.2f} MHz')
 
 
 if __name__ == "__main__":

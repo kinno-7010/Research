@@ -46,20 +46,38 @@ import warnings
 from astropy.io.fits import file as fits_file
 import gc
 
-# データディレクトリの設定（WSLパス）
-BASE_DATA_DIR = Path("/mnt/d/wsl/home/kinno-7010/Research/SDO/AIA/Rawdata")
+# データ探索ルート（WSL / Windows 共有ドライブの両方）
+DATA_SEARCH_ROOTS = [
+    Path("/mnt/d/wsl/home/kinno-7010/Research"),
+    Path("F:/wsl/home/kinno-7010/Research")
+]
+
+def build_data_paths(relative_path: str) -> list:
+    return [str(base / relative_path) for base in DATA_SEARCH_ROOTS]
+
+# データディレクトリの設定（複数ルート対応）
+BASE_DATA_DIRS = build_data_paths("SDO/AIA/Rawdata")
+BASE_DATA_DIR = Path(BASE_DATA_DIRS[0])
 OUTPUT_DIR = Path("/mnt/d/wsl/home/kinno-7010/Research/SDO/AIA/output")
 
 # データフォルダ辞書（WSLパス）
+# data_folder_dict = {
+#     'mk4': '/mnt/d/wsl/home/kinno-7010/Research/MK4_coronagraph/MK4_coronagraph_KCOR/Subtraction_data/Rawdata/kcor_nrgf',
+#     'lasco': '/mnt/d/wsl/home/kinno-7010/Research/SOHO/LASCO-C2_rawdata',
+#     'aia193': '/mnt/d/wsl/home/kinno-7010/Research/SDO/AIA/Rawdata/193'
+#     # RGB画像用（現在はコメントアウト）
+#     # 'aia211': '/mnt/d/wsl/home/kinno-7010/Research/SDO/AIA/Rawdata/211',
+#     # 'aia304': '/mnt/d/wsl/home/kinno-7010/Research/SDO/AIA/Rawdata/304',
+#     # 'aia171': '/mnt/d/wsl/home/kinno-7010/Research/SDO/AIA/Rawdata/171'
+# }
 data_folder_dict = {
-    'mk4': '/mnt/d/wsl/home/kinno-7010/Research/MK4_coronagraph/MK4_coronagraph_KCOR/Subtraction_data/Rawdata/kcor_nrgf',
-    'lasco': '/mnt/d/wsl/home/kinno-7010/Research/SOHO/LASCO-C2_rawdata',
-    'aia193': '/mnt/d/wsl/home/kinno-7010/Research/SDO/AIA/Rawdata/193'
-    # RGB画像用（現在はコメントアウト）
-    # 'aia211': '/mnt/d/wsl/home/kinno-7010/Research/SDO/AIA/Rawdata/211',
-    # 'aia304': '/mnt/d/wsl/home/kinno-7010/Research/SDO/AIA/Rawdata/304',
-    # 'aia171': '/mnt/d/wsl/home/kinno-7010/Research/SDO/AIA/Rawdata/171'
+    'mk4': build_data_paths("MK4_coronagraph/MK4_coronagraph_KCOR/Subtraction_data/Rawdata/kcor_nrgf"),
+    'lasco': build_data_paths("SOHO/LASCO-C2_rawdata"),
+    'aia193': build_data_paths("SDO/AIA/Rawdata/193")
 }
+
+# AIA データ探索ディレクトリ（複数ルート対応）
+AIA_DATA_DIRS = build_data_paths("SDO/AIA/Rawdata")
 
 # MK4データ設定（WSLパス）
 mk4_data_folder = '/mnt/d/wsl/home/kinno-7010/Research/MK4_coronagraph/MK4_coronagraph_KCOR/Subtraction_data/Rawdata'

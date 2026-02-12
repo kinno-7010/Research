@@ -337,7 +337,8 @@ def plot_dynamic_spectrum(
     freq_axis = spectrum.columns.to_numpy()
     values = spectrum.to_numpy().T  # shape -> (freq, time)
 
-    fig, ax = plt.subplots(figsize=(18, 8))
+    # fig, ax = plt.subplots(figsize=(18, 8))
+    fig, ax = plt.subplots(figsize=(12, 6))
     mesh = ax.pcolormesh(
         mdates.date2num(time_axis),
         freq_axis,
@@ -358,19 +359,24 @@ def plot_dynamic_spectrum(
     SRB_start_time = mdates.date2num(pd.Timestamp("2022-06-13 03:25:40"))
     SRB_end_time = mdates.date2num(pd.Timestamp("2022-06-13 03:31:20"))
     SRB_end_time_harmonic = mdates.date2num(pd.Timestamp("2022-06-13 03:50:00"))
-    ax.axvline(CME_time, color="white", linestyle="--", linewidth=1)
-    ax.text(CME_time, 5.7, " Main CME\n erupted\n 03:12 UT", color="white", fontsize=14, ha="left", va="bottom", fontweight="bold")
-    ax.axvline(flare_time, color="white", linestyle="--", linewidth=1)
-    # ax.text(flare_time, 85, " M3.4 flare peaked\n 04:07 UT", color="white", fontsize=14, ha="left", va="top", fontweight="bold")
-    ax.axvline(SRB_start_time, color="red", linestyle="--", linewidth=1)
-    # ax.text(SRB_start_time, 85, " SRB II start\n 03:25:40 UT", color="red", fontsize=14, ha="left", va="top", fontweight="bold")
-    ax.axvline(SRB_end_time, color="red", linestyle="--", linewidth=1)
-    # ax.text(SRB_end_time, 85, " SRB II end\n 03:31:20 UT", color="red", fontsize=14, ha="left", va="top", fontweight="bold")
-    ax.axvline(SRB_end_time_harmonic, color="red", linestyle="--", linewidth=1)
+    # ax.axvline(CME_time, color="white", linestyle="--", linewidth=1)
+    # ax.text(CME_time, 5.7, " Main CME\n erupted\n 03:12 UT", color="white", fontsize=14, ha="left", va="bottom", fontweight="bold")
+    # ax.axvline(flare_time, color="white", linestyle="--", linewidth=1)
+    # # ax.text(flare_time, 85, " M3.4 flare peaked\n 04:07 UT", color="white", fontsize=14, ha="left", va="top", fontweight="bold")
+    # ax.axvline(SRB_start_time, color="red", linestyle="--", linewidth=1)
+    # # ax.text(SRB_start_time, 85, " SRB II start\n 03:25:40 UT", color="red", fontsize=14, ha="left", va="top", fontweight="bold")
+    # ax.axvline(SRB_end_time, color="red", linestyle="--", linewidth=1)
+    # # ax.text(SRB_end_time, 85, " SRB II end\n 03:31:20 UT", color="red", fontsize=14, ha="left", va="top", fontweight="bold")
+    # ax.axvline(SRB_end_time_harmonic, color="red", linestyle="--", linewidth=1)
     # ax.text(SRB_end_time_harmonic, 85, " SRB II (Harmonic) end\n 03:50:00 UT", color="red", fontsize=14, ha="left", va="top", fontweight="bold")
     
     # ax.text(mdates.date2num(pd.Timestamp("2022-06-13T05:00:00")), 8, "Second Harmonic ", fontsize=14, ha="right", va="bottom", fontweight="bold", color="pink")
     # ax.text(mdates.date2num(pd.Timestamp("2022-06-13T05:00:00")), 4, "Fundamental ", fontsize=14, ha="right", va="top", fontweight="bold", color="#A0E4FF")
+    
+    ax.scatter(mdates.date2num(pd.Timestamp("2022-06-13T03:25:40")), 34.8, color="magenta", marker="o", s=100, label="03:25:40 UT (34.8 MHz)")
+    ax.scatter(mdates.date2num(pd.Timestamp("2022-06-13T03:28:45")), 31.5, color="#00FF00", marker="o", s=100, label="03:28:45 UT (31.5 MHz)")
+    ax.scatter(mdates.date2num(pd.Timestamp("2022-06-13T03:31:20")), 28.0, color="cyan", marker="o", s=100, label="03:31:20 UT (28.0 MHz)")
+
     
     ax.set_ylabel("Frequency [MHz]", fontsize=16)
     if log_scale is not False:
@@ -378,13 +384,16 @@ def plot_dynamic_spectrum(
     else:
         ax.set_yscale("linear")
     ax.set_xlabel("Time [UT]", fontsize=16)
-    ax.set_title(title, fontsize=18)
+    ax.set_title(title, fontsize=14)
+    ax.set_xlim(mdates.date2num(start_time), mdates.date2num(end_time))
+    ax.set_ylim(min_frequency, max_frequency)
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M:%S"))
-    ax.xaxis.set_major_locator(SecondLocator(interval=10*60))
+    ax.xaxis.set_major_locator(SecondLocator(interval=60))
     ax.yaxis.set_major_locator(MultipleLocator(5.0))
     ax.yaxis.set_major_formatter(FuncFormatter(lambda val, _: f"{val:.0f}"))
     ax.tick_params(axis="x", rotation=0, labelrotation=0, labelsize=14)
     ax.tick_params(axis="y", labelsize=12)
+    ax.legend(loc="lower right", fontsize=14)
 
     if draw_lines:
         line1, slope1 = draw_line_between_points(
@@ -437,12 +446,12 @@ def plot_dynamic_spectrum(
 
 
 
-    cbar = fig.colorbar(mesh, ax=ax, pad=0.01, shrink=0.5)
-    cbar.set_label(
-        "Intensity normalized to per-frequency median"
-        + (" (log10)" if log_scale else ""),
-        fontsize=14,
-    )
+    # cbar = fig.colorbar(mesh, ax=ax, pad=0.01, shrink=0.5)
+    # cbar.set_label(
+    #     "Intensity normalized to per-frequency median"
+    #     + (" (log10)" if log_scale else ""),
+    #     fontsize=14,
+    # )
 
     if output_path is not None:
         fig.savefig(output_path, dpi=300, bbox_inches="tight")
@@ -466,10 +475,13 @@ def Saito1977(rho):  # 2.5-5.5Rs
     C2 = [1.68e8, 3.54e6, 1.60e6]
     d1 = [2.14, 3.30, 4.71]
     d2 = [6.13, 5.80, 3.01]
-    
-    background = C1[0]*rho**(-d1[0])+C2[0]*rho**(-d2[0])
-    eq_hole = C1[1]*rho**(-d1[1])+C2[1]*rho**(-d2[1])
-    pole_hole = C1[2]*rho**(-d1[2])+C2[2]*rho**(-d2[2])
+
+    # Guard against rho <= 0 to avoid zero being raised to negative powers
+    rho_safe = np.clip(np.asarray(rho, dtype=float), 1e-6, None)
+
+    background = C1[0]*rho_safe**(-d1[0])+C2[0]*rho_safe**(-d2[0])
+    eq_hole = C1[1]*rho_safe**(-d1[1])+C2[1]*rho_safe**(-d2[1])
+    pole_hole = C1[2]*rho_safe**(-d1[2])+C2[2]*rho_safe**(-d2[2])
     return background #, eq_hole, pole_hole    
     
 
@@ -580,10 +592,16 @@ def main(
 
 
 if __name__ == "__main__":
-    start_time = pd.Timestamp("2022-06-13 03:00:00")
-    end_time = pd.Timestamp("2022-06-13 05:00:00")
-    min_frequency = 1.0
-    max_frequency = 90.0
+    # start_time = pd.Timestamp("2022-06-13 03:00:00")
+    # end_time = pd.Timestamp("2022-06-13 05:00:00")
+    # min_frequency = 1.0
+    # max_frequency = 90.0
+    # draw_lines = False
+    
+    start_time = pd.Timestamp("2022-06-13 03:25:00")
+    end_time = pd.Timestamp("2022-06-13 03:34:00")
+    min_frequency = 25.0
+    max_frequency = 38.0
     draw_lines = False
     
     # harmonic

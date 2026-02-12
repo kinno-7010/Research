@@ -39,7 +39,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict, Union
 import sunpy.map
 import numpy as np
 
@@ -48,6 +48,7 @@ try:
 except Exception as e:
     raise SystemExit("pyvista is required: pip install pyvista") from e
 sys.path.append("/mnt/d/wsl/home/kinno-7010/Research/GCS/gcs_overlay")
+# sys.path.append("F:\wsl\home\kinno-7010\Research\GCS\gcs_overlay")  # 共用PC 用
 from main_regularized_tomography import (  # type: ignore
     SphericalGrid,
     RegularizedTomography,
@@ -65,6 +66,107 @@ from sunpy.coordinates import frames
 # Import user's tomography + GCS helpers
 # -----------------------------------------------------------------------------
 
+# -----------------------------------------------------------------------------
+# Observer-geometry helpers (Carrington consistency)
+# -----------------------------------------------------------------------------
+
+def _wrap180(deg: float) -> float:
+    """Wrap angle to [-180, 180) degrees."""
+    return (deg + 180.0) % 360.0 - 180.0
+
+
+def _read_fits_header_minimal(fp: Path):
+    """
+    Read FITS primary header with minimal overhead.
+    Uses astropy.io.fits (preferred). Raises on I/O errors.
+    """
+    from astropy.io import fits  # local import to keep module import light
+    return fits.getheader(str(fp), 0)
+
+
+def _wrap360(deg: float) -> float:
+    """Wrap angle to [0, 360) degrees."""
+    return deg % 360.0
+
+
+def _build_lonlat_override_map_carrington(pb_fits_list: List[Union[str, Dict]]) -> Dict[str, Tuple[float, float]]:
+    """
+    Build {basename: (CRLN_OBS, CRLT_OBS)} override map to force
+    Carrington observer long/lat in the tomography geometry.
+
+    Background
+    ----------
+    In this pipeline, the tomography forward model and the reconstructed volume are
+    defined in a Carrington-rotating Cartesian basis (see camera_basis_from_lonlat
+    and SphericalGrid in main_regularized_tomography.py).
+
+    Many solar FITS headers include both:
+      - CRLN_OBS / CRLT_OBS : Carrington lon/lat of the observer
+      - HGLN_OBS / HGLT_OBS : Stonyhurst lon/lat of the observer
+
+    If a file lacks CRLN_OBS/CRLT_OBS, falling back to HGLN_OBS/HGLT_OBS *as if they
+    were Carrington* introduces a longitude offset of ~L0 (Earth Carrington longitude),
+    which can place reconstructed density on the wrong hemisphere and also misalign
+    GCS/PFSS overlays.
+
+    Strategy
+    --------
+    1) Prefer CRLN_OBS/CRLT_OBS when present.
+    2) Otherwise, convert Stonyhurst → Carrington using an offset L0 derived from any
+       file that has BOTH CRLN_OBS and HGLN_OBS:
+           L0 ≈ wrap360(CRLN_OBS - HGLN_OBS)
+       because (to good approximation)  HGLN_OBS ≈ CRLN_OBS - L0 (wrapped to [-180,180)).
+    """
+    # Collect unique filepaths
+    paths: List[Path] = []
+    for item in pb_fits_list:
+        if isinstance(item, dict):
+            paths.append(Path(str(item["path"])))
+        else:
+            paths.append(Path(str(item)))
+
+    # Derive L0 (Earth Carrington longitude) from any header that has both CRLN and HGLN.
+    L0: Optional[float] = None
+    for fp in paths:
+        try:
+            hdr = _read_fits_header_minimal(fp)
+        except Exception:
+            continue
+        crln = hdr.get("CRLN_OBS")
+        hgln = hdr.get("HGLN_OBS")
+        if (crln is None) or (hgln is None):
+            continue
+        try:
+            L0 = _wrap360(float(crln) - float(hgln))
+            break
+        except Exception:
+            continue
+
+    override: Dict[str, Tuple[float, float]] = {}
+    for fp in paths:
+        hdr = _read_fits_header_minimal(fp)
+        bn = fp.name
+
+        crln = hdr.get("CRLN_OBS")
+        crlt = hdr.get("CRLT_OBS")
+        if (crln is not None) and (crlt is not None):
+            override[bn] = (_wrap360(float(crln)), float(crlt))
+            continue
+
+        # Fallback: use Stonyhurst lon/lat and convert to Carrington using L0.
+        hgln = hdr.get("HGLN_OBS")
+        hglt = hdr.get("HGLT_OBS")
+        if (hgln is None) or (hglt is None) or (L0 is None):
+            raise KeyError(
+                f"Cannot determine Carrington observer lon/lat for: {fp}. "
+                f"Need CRLN_OBS/CRLT_OBS, or HGLN_OBS/HGLT_OBS plus at least one file "
+                f"that provides both CRLN_OBS and HGLN_OBS to derive L0."
+            )
+
+        crln_est = _wrap360(float(hgln) + float(L0))
+        override[bn] = (crln_est, float(hglt))
+
+    return override
 def _safe_import_pfsspy():
     """
     Import pfsspy in a way that is more stable on WSL / OpenMP / numba environments.
@@ -632,7 +734,9 @@ def add_isosurfaces(
       - "none":    表示しない
     """
     if colors is None:
-        colors = ["red", "cyan", "gold", "magenta", "orange"]
+        colors = "red"
+        colors = "cyan"
+        colors = "gold"
 
     def ne_cm3_from_fp_mhz_local(f_mhz, H):
         return (float(f_mhz) * 1e6 / (8980.0 * float(H))) ** 2
@@ -752,7 +856,7 @@ def add_physical_axes_triad(
     Draw a labeled triad:
       X: Sun->Earth line
       Z: Solar north (+Z of the tomography Cartesian)
-      Y: 'East/right' direction defined as Z x X (right direction when up=North)
+      Y: 'West/right' direction defined as Z x X (right direction when up=North)
     """
     x_hat = sun_to_observer_unit_vector(obs0)
     z_hat = np.array([0.0, 0.0, 1.0], dtype=float)
@@ -782,7 +886,7 @@ def add_physical_axes_triad(
     _arrow(z_hat, color_z)
 
     tips = np.vstack([o + x_hat * axis_len, o + y_hat * axis_len, o + z_hat * axis_len])
-    labels = ["X (Sun–Earth)", "Y (East / right)", "Z (North)"]
+    labels = ["X (Sun–Earth)", "Y (West / right)", "Z (North)"]
     plotter.add_point_labels(
         tips,
         labels,
@@ -946,6 +1050,10 @@ def set_camera_from_observation(
       - using sun_to_observer_unit_vector(obs0) (less fragile than lon/lat metadata)
       - auto-increasing camera distance if scene bounds are larger than expected
       - forcing a sane clipping range + resetting clipping based on actors
+
+    Also:
+      - reset VTK interactor style to TrackballCamera
+      - remove VTK's "Press R to toggle selection tool" overlay if it exists
     """
     cam_dir = sun_to_observer_unit_vector(obs0)
 
@@ -962,8 +1070,33 @@ def set_camera_from_observation(
 
     cam_pos = cam_dir * dist
 
-    # Set camera explicitly
-    plotter.camera_position = [cam_pos.tolist(), (0.0, 0.0, 0.0), (0.0, 0.0, 1.0)]
+    # Debug: log computed camera info (harmless in headless/offscreen runs)
+    try:
+        print(f"[DEBUG] set_camera_from_observation: cam_dir={cam_dir}, dist={dist}, cam_pos={cam_pos}, bounds={b}")
+    except Exception:
+        pass
+
+    # Set camera explicitly (PyVista high-level API)
+    try:
+        plotter.camera_position = [cam_pos.tolist(), (0.0, 0.0, 0.0), (0.0, 0.0, 1.0)]
+    except Exception:
+        pass
+
+    # Robust fallback: directly set VTK camera properties in case the high-level API
+    # does not take effect due to backend/version differences.
+    try:
+        cam = getattr(plotter, "camera", None)
+        if cam is not None:
+            cam.SetPosition(float(cam_pos[0]), float(cam_pos[1]), float(cam_pos[2]))
+            cam.SetFocalPoint(0.0, 0.0, 0.0)
+            cam.SetViewUp(0.0, 0.0, 1.0)
+            # Ensure the plotter reflects the change immediately
+            try:
+                plotter.render()
+            except Exception:
+                pass
+    except Exception:
+        pass
 
     # Force clipping range (then refine based on scene actors)
     try:
@@ -976,6 +1109,60 @@ def set_camera_from_observation(
         plotter.reset_camera_clipping_range()
     except Exception:
         pass
+
+    # ---- Fix: disable RubberBandPick-style interaction and remove its on-screen hint ----
+    # 1) Prefer PyVista API if available
+    try:
+        plotter.enable_trackball_style()
+    except Exception:
+        pass
+
+    # 2) Fallback: force VTK interactor style directly (if an interactor exists)
+    try:
+        import vtk  # noqa
+        if getattr(plotter, "iren", None) is not None and getattr(plotter.iren, "interactor", None) is not None:
+            plotter.iren.interactor.SetInteractorStyle(vtk.vtkInteractorStyleTrackballCamera())
+    except Exception:
+        pass
+
+    # 3) Remove the specific overlay actor if it was already added to the renderer
+    try:
+        import vtk  # noqa
+
+        ren = getattr(plotter, "renderer", None)
+        if ren is not None:
+            props = ren.GetViewProps()
+            props.InitTraversal()
+
+            to_remove = []
+            n = props.GetNumberOfItems()
+            for _ in range(n):
+                prop = props.GetNextProp()
+                txt = None
+
+                if isinstance(prop, vtk.vtkCornerAnnotation):
+                    # 0..3 corners; check all to be safe
+                    try:
+                        txt = "\n".join([(prop.GetText(i) or "") for i in range(4)])
+                    except Exception:
+                        txt = None
+                elif isinstance(prop, vtk.vtkTextActor):
+                    try:
+                        txt = prop.GetInput()
+                    except Exception:
+                        txt = None
+
+                if txt and ("toggle selection tool" in txt):
+                    to_remove.append(prop)
+
+            for prop in to_remove:
+                try:
+                    ren.RemoveViewProp(prop)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
 
 def apply_brightness_scale_like_main(tomo, ne_raw, y_obs):
     """
@@ -1853,19 +2040,21 @@ def main(Frequency_MHz: List[float], time_iso: str, h_apex: float, kappa: float,
     # ---- Import modules ----
     TOMO_DIR = Path("/mnt/d/wsl/home/kinno-7010/Research/Tomography/py_folder")
     GCS_PKG_DIR = Path("/mnt/d/wsl/home/kinno-7010/Research/GCS/gcs_overlay")
+    # TOMO_DIR = Path("F:\wsl\home\kinno-7010\Research\Tomography\py_folder")
+    # GCS_PKG_DIR = Path("F:\wsl\home\kinno-7010\Research\GCS\gcs_overlay")
 
     OBSTIME_ISO = time_iso
 
-    R_MIN, R_MAX = 1.5, 5.0
-    NR, NTH, NPH = 100, 180, 180
+    R_MIN, R_MAX = 1.5, 4
+    NR, NTH, NPH = 250, 180, 360
     DS = 0.01
     LAM = 1e-2
-    MAXITER, TOL = 60, 1e-4
+    MAXITER, TOL = 100, 1e-6
     WT_R = None
 
-    OUT_N = 128
-    R_USE_MIN, R_USE_MAX = 1.5, 5.5
+    OUT_N = 512
 
+    R_USE_MIN, R_USE_MAX = 1.5, 4.0
     U_KCOR  = 0.4530
     U_LASCO = 0.6135
     U_COR1A = 0.56
@@ -1875,6 +2064,7 @@ def main(Frequency_MHz: List[float], time_iso: str, h_apex: float, kappa: float,
     PB_FITS_LIST = [
         {
             "path": "/mnt/d/wsl/home/kinno-7010/Research/Tomography/Rawdata/pB_Kcor_LASCO_axi_20220613_0300.fits",
+            # "path": "F:\wsl\home\kinno-7010\Research\Tomography\Rawdata\pB_Kcor_LASCO_axi_20220613_0300.fits",
             "limb_u": U_KCOR,
             "r_use_min": R_USE_MIN,
             "r_use_max": R_SWITCH_U,
@@ -1882,13 +2072,15 @@ def main(Frequency_MHz: List[float], time_iso: str, h_apex: float, kappa: float,
         },
         {
             "path": "/mnt/d/wsl/home/kinno-7010/Research/Tomography/Rawdata/pB_Kcor_LASCO_axi_20220613_0300.fits",
+            # "path": "F:\wsl\home\kinno-7010\Research\Tomography\Rawdata\pB_Kcor_LASCO_axi_20220613_0300.fits",
             "limb_u": U_LASCO,
             "r_use_min": R_SWITCH_U,
             "r_use_max": R_USE_MAX,
             "tag": "LASCO-part",
         },
         {
-            "path": "/mnt/d/wsl/home/kinno-7010/Research/Tomography/Rawdata/COR1A_pb_pre_20220613_030100.fits",
+            "path": "/mnt/d/wsl/home/kinno-7010/Research/Tomography/Rawdata/pB_Kcor_LASCO_axi_20220613_0300.fits",
+            # "path": "F:\wsl\home\kinno-7010\Research\Tomography\Rawdata\COR1A_pb_pre_20220613_030100.fits",
             "limb_u": U_COR1A,
             "r_use_min": R_USE_MIN,
             "r_use_max": R_USE_MAX,
@@ -1914,19 +2106,26 @@ def main(Frequency_MHz: List[float], time_iso: str, h_apex: float, kappa: float,
     GCS_TILT_DEG = tilt_deg
     GCS_LON_DEG = lon_deg
     GCS_LAT_DEG = lat_deg
-    LONLAT_OVERRIDE_MAP = None
+    # Force Carrington observer long/lat for tomography geometry (avoid accidental Stonyhurst fallback)
+
+    LONLAT_OVERRIDE_MAP = _build_lonlat_override_map_carrington(PB_FITS_LIST)
+    if LONLAT_OVERRIDE_MAP:
+        print("[INFO] lonlat_override map (Carrington: CRLN_OBS/CRLT_OBS in deg):")
+        for _k, (_lon, _lat) in LONLAT_OVERRIDE_MAP.items():
+            print(f"  - {_k}: lon={_lon:.6f} deg, lat={_lat:.6f} deg")
     LONLAT_DEFAULT = None
     GCS_OBSERVER = "earth"
 
     DO_PFSS = True
     HMI_FITS = "/mnt/d/wsl/home/kinno-7010/Research/SDO/HMI/Rawdata/hmi.M_720s.20220613_030000_TAI.fits"
+    # HMI_FITS = "F:\wsl\home\kinno-7010\Research\SDO\HMI\Rawdata\hmi.M_720s.20220613_030000_TAI.fits"
     PFSS_RSS = rss
-    PFSS_NRHO = 50
+    PFSS_NRHO = 40
 
     # ★PFSS本数を増やす（seed密度＆描画上限）
-    PFSS_SEED_N_LON = 20
-    PFSS_SEED_N_LAT = 20
-    PFSS_MAX_LINES = 200
+    PFSS_SEED_N_LON = 15
+    PFSS_SEED_N_LAT = 15
+    PFSS_MAX_LINES = 150
     PFSS_FIELD_THRESHOLD = 150.0
 
     PFSS_TRACER_STEP = 0.01
@@ -1935,7 +2134,8 @@ def main(Frequency_MHz: List[float], time_iso: str, h_apex: float, kappa: float,
     SHOW_SUN = True
     SHOW_GUI = True
     SAVE_PNG = True
-    PNG_PATH = Path(f"/mnt/d/wsl/home/kinno-7010/Research/Tomography/output/overlay_tomo_gcs_{''.join(str(f) for f in ISO_FREQ_MHZ)}MHz.png")
+    PNG_PATH = Path(f"/mnt/d/wsl/home/kinno-7010/Research/Tomography/output/overlay_tomo_gcs_{''.join(str(f) for f in ISO_FREQ_MHZ)}MHz_highres.png")
+    # PNG_PATH = Path(f"F:\wsl\home\kinno-7010\Research\Tomography\output\overlay_tomo_gcs_{''.join(str(f) for f in ISO_FREQ_MHZ)}MHz_highres.png")
 
 
     # ---- Build grid ----
@@ -2053,8 +2253,15 @@ def main(Frequency_MHz: List[float], time_iso: str, h_apex: float, kappa: float,
             opacity=0.2,
             color="grey",
         )
+    
+    if ISO_FREQ_MHZ == [33.8]:
+        colors = ["red"]
+    elif ISO_FREQ_MHZ == [31.5]:
+        colors = ["gold"]
+    elif ISO_FREQ_MHZ == [28.0]:
+        colors = ["cyan"]
 
-    tomo_surfs = add_isosurfaces(p, sg, ISO_FREQ_MHZ, harmonic=HARMONIC, opacity=0.2,
+    tomo_surfs = add_isosurfaces(p, sg, ISO_FREQ_MHZ, harmonic=HARMONIC, opacity=0.2, colors=colors,
                              return_surfaces=True, range_text_mode="runinfo")
 
 
@@ -2129,7 +2336,7 @@ def main(Frequency_MHz: List[float], time_iso: str, h_apex: float, kappa: float,
         curves,
         obstime_iso=OBSTIME_ISO,
         observer=GCS_OBSERVER,
-        n_resample=300,
+        n_resample=200,
         cross_tol_rsun=0.05,
         merge_tol_rsun=0.03,
     )
@@ -2159,7 +2366,7 @@ def main(Frequency_MHz: List[float], time_iso: str, h_apex: float, kappa: float,
         observer=GCS_OBSERVER,
         color="lime",
         opacity=0.3,
-        n_u=140,
+        n_u=120,
         closed_u=True,
         show_wireframe=True,
         wire_color="lime",
@@ -2185,7 +2392,7 @@ def main(Frequency_MHz: List[float], time_iso: str, h_apex: float, kappa: float,
 
 
     # ---- Camera (robust) ----
-    set_camera_from_observation(p, obs0, distance_rsun=5.0)
+    set_camera_from_observation(p, obs0, distance_rsun=4.0)
 
     try:
         p.reset_camera_clipping_range()
@@ -2196,13 +2403,20 @@ def main(Frequency_MHz: List[float], time_iso: str, h_apex: float, kappa: float,
     # ---- Output ----
     if SAVE_PNG:
         PNG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        p.show(screenshot=str(PNG_PATH), auto_close=True)
+        # レンダリングせずscreenshotのみ保存（plt.showせずにpngを保存）
+        p.off_screen = True
+        p.show(screenshot=str(PNG_PATH), auto_close=False)
         print(f"[OK] Saved: {PNG_PATH}")
+        # 画面表示も行う
+        p.off_screen = False
+        p.show()
     else:
         p.show()
 
 
 if __name__ == "__main__":
+    import gc
+    
     time_iso = "2022-06-13T03:25:29"
     Frequency_MHz = [33.8]
     h_apex = 3.39
@@ -2214,3 +2428,33 @@ if __name__ == "__main__":
     rss = 2.5
     r_scatter = 2.95
     main(Frequency_MHz=Frequency_MHz, time_iso=time_iso, h_apex=h_apex, kappa=kappa, alpha_deg=alpha_deg, tilt_deg=tilt_deg, lon_deg=lon_deg, lat_deg=lat_deg, rss=rss, r_scatter=r_scatter)
+    
+    # メモリ解放
+    # gc.collect()
+        
+    # time_iso = "2022-06-13T03:28:46"
+    # Frequency_MHz = [31.5]
+    # h_apex = 3.63
+    # kappa = 0.10
+    # alpha_deg = 22.0
+    # tilt_deg = 87.0
+    # lon_deg = -44.0
+    # lat_deg = 10.0
+    # rss = 2.5
+    # r_scatter = 3.08
+    # main(Frequency_MHz=Frequency_MHz, time_iso=time_iso, h_apex=h_apex, kappa=kappa, alpha_deg=alpha_deg, tilt_deg=tilt_deg, lon_deg=lon_deg, lat_deg=lat_deg, rss=rss, r_scatter=r_scatter)
+    # # メモリ解放
+    # gc.collect()
+    
+    
+    # time_iso = "2022-06-13T03:31:17"
+    # Frequency_MHz = [28.0]
+    # h_apex = 3.81
+    # kappa = 0.10
+    # alpha_deg = 23.0
+    # tilt_deg = 87.0
+    # lon_deg = -44.0
+    # lat_deg = 10.0
+    # rss = 2.5
+    # r_scatter = 3.30
+    # main(Frequency_MHz=Frequency_MHz, time_iso=time_iso, h_apex=h_apex, kappa=kappa, alpha_deg=alpha_deg, tilt_deg=tilt_deg, lon_deg=lon_deg, lat_deg=lat_deg, rss=rss, r_scatter=r_scatter)

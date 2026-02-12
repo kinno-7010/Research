@@ -317,12 +317,12 @@ def add_isosurfaces(plotter, sg, iso_freqs_mhz, harmonic=2, opacity=0.35, colors
     fmax = float(fp_mhz_from_ne_cm3_local(ne_pos.max(), harmonic))
 
     harm_label = "Second Harmonic" if harmonic == 2 else "Fundamental"
-    plotter.add_text(
-        f"Reconstructed f-range: {fmin:.2f} .. {fmax:.2f} MHz ({harm_label})",
-        position="lower_left",
-        font_size=12,
-        color="black",
-    )
+    # plotter.add_text(
+    #     f"Reconstructed f-range: {fmin:.2f} .. {fmax:.2f} MHz ({harm_label})",
+    #     position="lower_left",
+    #     font_size=12,
+    #     color="black",
+    # )
 
     rendered = 0
     for i, f_req in enumerate(iso_freqs_mhz):
@@ -634,7 +634,7 @@ def main():
     ]
 
     # 2) Time used for GCS orientation and frame transform
-    OBSTIME_ISO = "2022-06-13T03:24:58"  # example; set to your fitted time
+    OBSTIME_ISO = "2022-06-13T03:25:29"  # example; set to your fitted time
 
     # 3) Tomography grid + inversion parameters
     R_MIN, R_MAX = 1.5, 5.0
@@ -659,12 +659,12 @@ def main():
     
 
     # 5) Iso-frequency settings (MHz) and harmonic (1=fundamental, 2=harmonic)
-    ISO_FREQ_MHZ = [37.0]
+    ISO_FREQ_MHZ = [34.0]
     HARMONIC = 2
 
     # 6) GCS parameters (6 parameters)
     #    (Units follow your gcs_geometry: h_apex [Rsun], kappa [0-1), alpha/tilt/lon/lat [deg])
-    GCS_H_APEX = 3.38
+    GCS_H_APEX = 3.39
     GCS_KAPPA = 0.12
     GCS_ALPHA_DEG = 20.0
     GCS_TILT_DEG = -85.0

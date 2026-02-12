@@ -12,6 +12,25 @@ from constants_vdh import (
     invert_ablation, triple_power, density_from_frequency, set_u_from_instrument, set_u
 )
 
+
+def _fill_nan_1d(arr):
+    """1次元配列の NaN を端の最近傍 + 内部線形補間で埋める（pB_multi_line_main.py と同様）。"""
+    filled = np.array(arr, copy=True)
+    idx = np.arange(filled.size)
+    finite_mask = np.isfinite(filled)
+    if not np.any(finite_mask):
+        return filled
+    finite_idx = idx[finite_mask]
+    finite_val = filled[finite_mask]
+    if finite_idx[0] > 0:
+        filled[:finite_idx[0]] = finite_val[0]
+    if finite_idx[-1] < filled.size - 1:
+        filled[finite_idx[-1] + 1:] = finite_val[-1]
+    nan_mask = ~finite_mask
+    if np.any(nan_mask):
+        filled[nan_mask] = np.interp(idx[nan_mask], finite_idx, finite_val)
+    return filled
+
 # --- File paths (unchanged) ---
 filename_kcor = r'/mnt/d/wsl/home/kinno-7010/Research/MK4_coronagraph/MK4_coronagraph_KCOR/pB/Rawdata/20220613_025810_kcor_l2_pb.fts'
 filename_lasco = r'/mnt/d/wsl/home/kinno-7010/Research/SOHO/pB/C2-PB-20220613_0258.fts'
@@ -32,7 +51,7 @@ def main(fit_r_min, fit_r_max):
     set_u_from_instrument(instrument_for_u)
     print("[INFO] Density inversion assumes axisymmetry (line-of-sight symmetric shell).")
 
-    final_image, r_map_lasco, theta_to_plot = None, None, 150.0
+    final_image, r_map_lasco, theta_to_plot = None, None, 190.0
     r_ranges = {'kcor_inner': 1.1, 'kcor_outer_lasco_inner': 2.2, 'lasco_outer': 7.0}
 
     # 2) Build grid & merge
@@ -67,7 +86,8 @@ def main(fit_r_min, fit_r_max):
     if final_image is not None and r_map_lasco is not None and params_lasco and n_bins > 0 :
         pB_line = extract_pB_profile(final_image, r_map_lasco, theta_to_plot, edges,
                                         params_lasco['cy'], params_lasco['cx'],
-                                        params_lasco['ny'], params_lasco['nx'])
+                                        params_lasco['ny'], params_lasco['nx'],
+                                        angle_halfwidth_deg=10.0)  # 扇幅を広げて外側の欠損を減らす
 
     # --- u を半径域で切替えて反転する（K-Cor: ～2.2Rs, LASCO: >2.2Rs） ---
     Ne_line = np.full_like(pB_line, np.nan)
@@ -79,8 +99,9 @@ def main(fit_r_min, fit_r_max):
             set_u_from_instrument(instrument_kcor)
             last_k = np.where(mask_kcor)[0][-1]
             try:
+                pb_seg = _fill_nan_1d(pB_line[:last_k+1])
                 Ne_k = invert_ablation(
-                    pB_line[:last_k+1],
+                    pb_seg,
                     r_mid[:last_k+1],
                     edges[:last_k+2],
                     last_k+1
@@ -94,8 +115,9 @@ def main(fit_r_min, fit_r_max):
             set_u_from_instrument(instrument_lasco)
             first_l = np.where(mask_lasco)[0][0]
             try:
+                pb_seg = _fill_nan_1d(pB_line[first_l:])
                 Ne_l = invert_ablation(
-                    pB_line[first_l:],
+                    pb_seg,
                     r_mid[first_l:],
                     edges[first_l:],
                     len(r_mid) - first_l
@@ -104,7 +126,7 @@ def main(fit_r_min, fit_r_max):
             except Exception as e:
                 print(f"[WARN] LASCO segment inversion failed: {e}")
 
-    valid_ne_indices = ~np.isnan(Ne_line) & (Ne_line > 1e-9)
+    valid_ne_indices = np.isfinite(Ne_line)
     r_all_valid_ne = r_mid[valid_ne_indices]
     Ne_all_valid = Ne_line[valid_ne_indices]
 
@@ -120,7 +142,7 @@ def main(fit_r_min, fit_r_max):
             r_all_valid_ne = r_all_valid_ne[keep]
             Ne_all_valid = Ne_all_valid[keep]
 
-    fitting_mask = (r_all_valid_ne >= fit_r_min) & (r_all_valid_ne <= fit_r_max)
+    fitting_mask = (r_all_valid_ne >= fit_r_min) & (r_all_valid_ne <= fit_r_max) & (Ne_all_valid > 0)
     r_for_fitting = r_all_valid_ne[fitting_mask]
     Ne_for_fitting = Ne_all_valid[fitting_mask]
     if len(r_for_fitting) == 0:
@@ -215,9 +237,9 @@ def main(fit_r_min, fit_r_max):
         theta_to_plot,                    # to theta_deg_val
         (density_plot_min_val, density_plot_max_val), # to density_plot_limits
         {
-            'BaumbachAllen_C': 8.0,
-            'Newkirk_C': 1.8,
-            'Saito1977_C': 6.0,
+            'BaumbachAllen_C': 3.5,
+            'Newkirk_C': 1,
+            'Saito1977_C': 2.8,
         }, # to model_multipliers_dict
         density_lower_highlight,          # to density_lower_highlight_bound
         density_upper_highlight           # to density_upper_highlight_bound
@@ -231,7 +253,7 @@ def main(fit_r_min, fit_r_max):
         A0, A1, p1, A2, p2, A3, p3, A4, p4, A5, p5 = fit_params
         lbl = (f"Fit: {A0:.2e} + {A1:.2e} r^{p1:.2f} + {A2:.2e} r^{p2:.2f} + "
                f"{A3:.2e} r^{p3:.2f} + {A4:.2e} r^{p4:.2f} + {A5:.2e} r^{p5:.2f}")
-        ax_ne.plot(r_plot_line, ne_fit_line, color='red', linestyle='-', label=lbl, linewidth=3, alpha=0.8)
+        ax_ne.plot(r_plot_line, ne_fit_line, color='#B3DB7D', linestyle='-', label=lbl, linewidth=3, alpha=0.8)
         print("Fit parameters: ", fit_params)
         ax_ne.legend()
 
@@ -240,7 +262,7 @@ def main(fit_r_min, fit_r_max):
     r_plot_points = r_all_valid_ne[mask_plot_points]
     Ne_plot_points = Ne_all_valid[mask_plot_points]
     if len(r_plot_points) > 0:
-        ax_ne.scatter(r_plot_points, Ne_plot_points, s=12, color='black', alpha=0.6, label=f'Data along the cyan line ({r_min_for_plot:.1f}--{r_max_for_plot:.1f} Rs)')
+        ax_ne.scatter(r_plot_points, Ne_plot_points, s=12, color='black', alpha=0.6, label=f'Data along the green line ({r_min_for_plot:.1f}--{r_max_for_plot:.1f} Rs)')
         ax_ne.legend()
     
     ax_ne.axvline(x=2.2, color='gray', linestyle='--', linewidth=1)

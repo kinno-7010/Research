@@ -551,4 +551,4 @@ def main(fit_r_min=2.2, fit_r_max=5.0, min_angle_deg=140.0, max_angle_deg=201.0,
 
 
 if __name__ == "__main__":
-    main(fit_r_min=2.2, fit_r_max=5.0, min_angle_deg=140.0, max_angle_deg=161.0, angle_step_deg=10.0)
+    main(fit_r_min=2.2, fit_r_max=5.0, min_angle_deg=190.0, max_angle_deg=191.0, angle_step_deg=10.0)

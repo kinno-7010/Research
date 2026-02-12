@@ -496,10 +496,19 @@ def _sample_pb_bilinear(img: np.ndarray, x: np.ndarray, y: np.ndarray) -> np.nda
     xv = x[m]
     yv = y[m]
 
-    x0 = np.floor(xv).astype(np.int64)
-    y0 = np.floor(yv).astype(np.int64)
+    # ...（前略）
+    m = np.isfinite(xpix) & np.isfinite(ypix)
+    if not np.all(m):
+        xpix = xpix[m]
+        ypix = ypix[m]
+        # ここで xpix/ypix に対応している配列（例: val, weight, ray_id など）も必ず同じ m で間引く
+
+    x0 = np.floor(xpix).astype(int)
+    y0 = np.floor(ypix).astype(int)
     x1 = x0 + 1
     y1 = y0 + 1
+    # ...（後略）
+
 
     x0c = np.clip(x0, 0, img.shape[1] - 1)
     x1c = np.clip(x1, 0, img.shape[1] - 1)
@@ -608,16 +617,34 @@ def polar_sample_pb(
         xpix = (dpx + crpix1) - 1.0
         ypix = (dpy + crpix2) - 1.0
 
-    x0 = np.floor(xpix).astype(int)
-    y0 = np.floor(ypix).astype(int)
+    # -----------------------------
+    # 行ごと除外（NaN/inf を含む投影点は無効化して cast 警告を防ぐ）
+    # -----------------------------
+    finite = np.isfinite(xpix) & np.isfinite(ypix)
+
+    # ダミーで初期化（finite でない点は inside にならない）
+    x0 = np.full_like(xpix, -1, dtype=np.int32)
+    y0 = np.full_like(ypix, -1, dtype=np.int32)
+
+    # finite な点だけ int 化（ここが RuntimeWarning 根絶のポイント）
+    if np.any(finite):
+        x0[finite] = np.floor(xpix[finite]).astype(np.int32)
+        y0[finite] = np.floor(ypix[finite]).astype(np.int32)
+
     x1 = x0 + 1
     y1 = y0 + 1
 
-    inside = (x0 >= 0) & (y0 >= 0) & (x1 < out_n) & (y1 < out_n)
+    # inside 判定にも finite を必ず含める
+    inside = finite & (x0 >= 0) & (y0 >= 0) & (x1 < out_n) & (y1 < out_n)
+
     y = np.full_like(xpix, np.nan, dtype=np.float64)
 
-    wx = xpix - x0
-    wy = ypix - y0
+    # wx/wy は inside の点のみ参照されるが、念のため finite 以外は NaN のままにする
+    wx = np.full_like(xpix, np.nan, dtype=np.float64)
+    wy = np.full_like(ypix, np.nan, dtype=np.float64)
+    if np.any(finite):
+        wx[finite] = xpix[finite] - x0[finite]
+        wy[finite] = ypix[finite] - y0[finite]
 
     v00 = pb[y0.clip(0, out_n - 1), x0.clip(0, out_n - 1)]
     v10 = pb[y0.clip(0, out_n - 1), x1.clip(0, out_n - 1)]
@@ -1326,7 +1353,11 @@ def build_observation(
 
         pb = np.where(pb > pb_floor_clip, pb, np.nan)
         pb = fill_nan_by_neighbor_mean(pb, max_passes=10)
-        mask = mask & np.isfinite(pb)
+        mask = (
+            (rho >= r_use_min) & (rho <= r_use_max)
+            & np.isfinite(pb)
+            & np.isfinite(x_map) & np.isfinite(y_map) & np.isfinite(rho)
+        )
 
         if not np.any(mask):
             raise ValueError(
@@ -1350,7 +1381,19 @@ def build_observation(
     w = 1.0 / np.maximum(ybk_pix, floor)
     w = np.where(np.isfinite(w) & (w > 0), w, 0.0)
 
+    # mask に対応するフラット添字
     idx_map = np.flatnonzero(mask.ravel())
+
+    # w==0 の点は “行ごと除外” して idx_map と w を必ず同じ長さに保つ
+    keep = (w > 0)
+    if np.any(~keep):
+        idx_map = idx_map[keep]
+        w = w[keep]
+
+        # mask も idx_map と一致するよう再構成（後段が mask を参照しても破綻しない）
+        mask2 = np.zeros(mask.size, dtype=bool)
+        mask2[idx_map] = True
+        mask = mask2.reshape(mask.shape)
 
     lonlat_deg = None
     if lonlat_override is not None:
@@ -1706,7 +1749,10 @@ if __name__ == "__main__":
     HARMONIC = 2
 
     FREQ_MHZ_LIST = [25.0] #, 31.0, 40.0]
-    ISO_COLORS = ["tomato"] #, "deepskyblue", "gold"]
+    # ISO_COLORS = ["tomato"]
+    #ISO_COLORS = ["deepskyblue"]
+    ISO_COLORS = ["gold"]
+    
 
     SAVE_PREPPED_DIR = "/mnt/d/wsl/home/kinno-7010/Research/Tomography/Rawdata/tomo_prepped"
     SAVE_NE_NPZ = f"/mnt/d/wsl/home/kinno-7010/Research/Tomography/Rawdata/ne3d_solution_"+\

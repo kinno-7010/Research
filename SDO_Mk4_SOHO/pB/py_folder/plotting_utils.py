@@ -49,7 +49,7 @@ def plot_ne_scatter_and_fit(ax,
                        s=60, c='red', marker='+', label=f'Fit Data (14-42 MHz, θ={theta_deg:.0f}°)')
         if np.any(~mask_in_highlight_range):
             ax.scatter(r_fit_points[~mask_in_highlight_range], Ne_fit_points[~mask_in_highlight_range],
-                       s=40, c='cyan', marker='x', label=f'Fit Data (Other, θ={theta_deg:.0f}°)')
+                       s=40, c='#B3DB7D', marker='x', label=f'Fit Data (Other, θ={theta_deg:.0f}°)')
     elif len(r_fit_points) > 0:
         ax.scatter(r_fit_points, np.full_like(r_fit_points, np.nan), s=40, c='gray', marker='o',
                    label="Fit Data (No Ne values)")
@@ -118,7 +118,7 @@ def plot_reference_density_models(ax, r_curve, model_multipliers):
     ax.plot(r_curve, nc * Newkirk1961(r_curve), 
             label=f'{nc} fold Newkirk 1961', linestyle='--', linewidth=2, alpha=0.8)
     ax.plot(r_curve, s77c * Saito1977(r_curve), 
-            label=f'{s77c} fold Saito+ 1977', linestyle='--', linewidth=2, alpha=0.8)
+            label=f'{s77c} fold Saito+ 1977', linestyle='-', linewidth=3.5, alpha=0.95)
     ax.plot(r_curve, ba_c * BaumbachAllen(r_curve),
             label=f'{ba_c} fold Baumbach-Allen', linestyle='--', linewidth=2, alpha=0.8)
 
@@ -249,7 +249,7 @@ def plot_combined_image(image_data, r_map_plot, params_lasco, r_ranges,
         y_overlay_pix = r_coords_rsun * params_lasco['px_per_rsun'] * np.sin(theta_rad_overlay)
 
         line_artist_theta, = ax.plot(x_overlay_pix, y_overlay_pix,
-                                     color='cyan', linestyle='-', linewidth=2,
+                                     color='#B3DB7D', linestyle='-', linewidth=2,
                                      label=f'θ={theta_deg_overlay:.0f}°')
         boundary_lines_for_legend.append(line_artist_theta)
 
@@ -330,7 +330,7 @@ def add_radial_guides_on_ax(ax,
         x_overlay_pix = r_coords_rsun * params_ref['px_per_rsun'] * np.cos(theta_rad)
         y_overlay_pix = r_coords_rsun * params_ref['px_per_rsun'] * np.sin(theta_rad)
         line_theta, = ax.plot(x_overlay_pix, y_overlay_pix,
-                              color='cyan', linestyle='-', linewidth=2,
+                              color='#B3DB7D', linestyle='-', linewidth=2,
                               label=f'θ={theta_deg_overlay:.0f}°')
         boundary_lines_for_legend.append(line_theta)
 

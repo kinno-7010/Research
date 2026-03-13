@@ -57,7 +57,7 @@ end_time   = "2022-06-13T05:01:00"
 
 # Windows path (as given). If you prefer WSL path, you can replace this with:
 #   r"/mnt/f/wsl/home/kinno-7010/Research/RadioData/combine/ds_cor"
-input_dir = Path(r"F:\wsl\home\kinno-7010\Research\RadioData\combine\ds_cor")
+input_dir = Path(r"F:/wsl/home/kinno-7010/Research/RadioData/combine/ds_cor")
 
 # Output settings
 fps = 10  # change if you want faster/slower video
@@ -97,7 +97,7 @@ for ts, p in items:
 
 # Write MP4
 # imageio will use ffmpeg backend; if it complains, install: pip install "imageio[ffmpeg]"
-writer = imageio.get_writer(output_mp4, fps=fps, codec="libx264", quality=5)
+writer = imageio.get_writer(output_mp4, fps=fps, codec="libx264", quality=2)
 
 try:
     for img in frames:

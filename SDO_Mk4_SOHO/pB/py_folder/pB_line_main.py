@@ -200,8 +200,8 @@ def main(fit_r_min, fit_r_max):
         print(f"Fitting error: {e}. Using initial guess.")
 
     # 6) Axes & plot limits
-    fig_ne, ax_ne = plt.subplots(figsize=(14, 6))
-    density_plot_min_val, density_plot_max_val = 1e5, 1e10
+    fig_ne, ax_ne = plt.subplots(figsize=(10, 5))
+    density_plot_min_val, density_plot_max_val = 5e5, 1e9
     r_curve_for_plot_limits = np.linspace(current_plot_r_min, current_plot_r_max, 200) if current_plot_r_min < current_plot_r_max else np.array([current_plot_r_min])
     ne_on_curve_for_plot_limits = np.full_like(r_curve_for_plot_limits, np.nan)
     if len(fit_params) == 11 and len(r_curve_for_plot_limits) > 0: 
@@ -224,7 +224,7 @@ def main(fit_r_min, fit_r_max):
     if density_plot_max_val <= density_plot_min_val: density_plot_max_val = density_plot_min_val * 1000
     
     # フィッティングに使うデータ範囲は 2.0–3.0 Rsun（fit_r_min/max）。散布表示は 1.2–4.0 Rsun。
-    r_min_for_plot, r_max_for_plot = 1.1, 6.0
+    r_min_for_plot, r_max_for_plot = 1.1, 4.0
 
     # 7) Required call + show (plot settings unchanged)
     generate_ne_profile_plot(
@@ -246,30 +246,30 @@ def main(fit_r_min, fit_r_max):
     )
 
 
-    # フィット曲線をFigure 2上に描画（プロット範囲全体に延ばす）
-    if len(fit_params) == 11:
-        r_plot_line = np.linspace(r_min_for_plot, r_max_for_plot, 400)
-        ne_fit_line = triple_power_const(r_plot_line / r_scale, *fit_params)
-        A0, A1, p1, A2, p2, A3, p3, A4, p4, A5, p5 = fit_params
-        lbl = (f"Fit: {A0:.2e} + {A1:.2e} r^{p1:.2f} + {A2:.2e} r^{p2:.2f} + "
-               f"{A3:.2e} r^{p3:.2f} + {A4:.2e} r^{p4:.2f} + {A5:.2e} r^{p5:.2f}")
-        ax_ne.plot(r_plot_line, ne_fit_line, color='#B3DB7D', linestyle='-', label=lbl, linewidth=3, alpha=0.8)
-        print("Fit parameters: ", fit_params)
-        ax_ne.legend()
+    # # フィット曲線をFigure 2上に描画（プロット範囲全体に延ばす）
+    # if len(fit_params) == 11:
+    #     r_plot_line = np.linspace(r_min_for_plot, r_max_for_plot, 400)
+    #     ne_fit_line = triple_power_const(r_plot_line / r_scale, *fit_params)
+    #     A0, A1, p1, A2, p2, A3, p3, A4, p4, A5, p5 = fit_params
+    #     lbl = (f"Fit: {A0:.2e} + {A1:.2e} r^{p1:.2f} + {A2:.2e} r^{p2:.2f} + "
+    #            f"{A3:.2e} r^{p3:.2f} + {A4:.2e} r^{p4:.2f} + {A5:.2e} r^{p5:.2f}")
+    #     # ax_ne.plot(r_plot_line, ne_fit_line, color='#B3DB7D', linestyle='-', label=lbl, linewidth=3, alpha=0.8)
+    #     print("Fit parameters: ", fit_params)
+    #     ax_ne.legend()
 
     # 散布プロットを 1.2–4.0 Rsun で表示（fit に使わない領域も見せる）
     mask_plot_points = (r_all_valid_ne >= r_min_for_plot) & (r_all_valid_ne <= r_max_for_plot)
     r_plot_points = r_all_valid_ne[mask_plot_points]
     Ne_plot_points = Ne_all_valid[mask_plot_points]
     if len(r_plot_points) > 0:
-        ax_ne.scatter(r_plot_points, Ne_plot_points, s=12, color='black', alpha=0.6, label=f'Data along the green line ({r_min_for_plot:.1f}--{r_max_for_plot:.1f} Rs)')
+        ax_ne.scatter(r_plot_points, Ne_plot_points, s=12, color='#B3DB7D', edgecolor='black', linewidth=1.0, alpha=0.8, label=f'Data')
         ax_ne.legend()
     
     ax_ne.axvline(x=2.2, color='gray', linestyle='--', linewidth=1)
-    ax_ne.text(2.2, 5e4, ' K-Cor/LASCO boundary\n (2.2 Rs)', color='black', fontsize=12, ha='left', va='bottom')
+    ax_ne.text(2.2, 5e5, 'K-Cor/LASCO boundary \n(2.2 Rs) ', color='black', fontsize=12, ha='right', va='bottom')
 
     ax_ne.set_xlim(r_min_for_plot, r_max_for_plot)
-    ax_ne.set_ylim(5e4, density_plot_max_val)
+    ax_ne.set_ylim(1e5, 1e9)
     pB_line_output_path = f"/mnt/d/wsl/home/kinno-7010/Research/SDO_Mk4_SOHO/pB/pB_line_main_{theta_to_plot:.0f}deg_fit{fit_r_min:.1f}-{fit_r_max:.1f}.png"
     plt.savefig(pB_line_output_path, dpi=300, bbox_inches="tight")
     print(f"✓ pB line plot saved: {pB_line_output_path}")

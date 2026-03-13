@@ -665,74 +665,74 @@ def plot_faint_cme_speed(
     # plot
     fig, ax = plt.subplots(figsize=(10,5))
     
-    # EUV wave height（指定時間帯に点がある場合のみプロット・フィット）
-    if not filtered.empty:
-        ax.plot(
-            filtered["datetime"],
-            filtered["apex_height"],
-            marker="o",
-            linestyle="-",
-            linewidth=1.5,
-            color="dimgray",
-            label=EUV_wave_label,
-        )
+    # # EUV wave height（指定時間帯に点がある場合のみプロット・フィット）
+    # if not filtered.empty:
+    #     ax.plot(
+    #         filtered["datetime"],
+    #         filtered["apex_height"],
+    #         marker="o",
+    #         linestyle="-",
+    #         linewidth=1.5,
+    #         color="dimgray",
+    #         label=EUV_wave_label,
+    #     )
 
-        EUV_wave_fit_curve = _generate_linear_fit_curve(
-            filtered["datetime"],
-            filtered["apex_height"],
-            start_dt,
-            end_dt,
-        )
-        if EUV_wave_fit_curve is not None:
-            (
-                EUV_wave_fit_times,
-                EUV_wave_fit_values,
-                EUV_wave_fit_velocity,
-                EUV_wave_fit_std,
-            ) = EUV_wave_fit_curve
-            ax.plot(
-                EUV_wave_fit_times,
-                EUV_wave_fit_values,
-                linestyle="--",
-                linewidth=1.2,
-                color="dimgray",
-                label=_build_velocity_label(
-                    filtered["datetime"], filtered["apex_height"]
-                ),
-            )
+    #     EUV_wave_fit_curve = _generate_linear_fit_curve(
+    #         filtered["datetime"],
+    #         filtered["apex_height"],
+    #         start_dt,
+    #         end_dt,
+    #     )
+    #     if EUV_wave_fit_curve is not None:
+    #         (
+    #             EUV_wave_fit_times,
+    #             EUV_wave_fit_values,
+    #             EUV_wave_fit_velocity,
+    #             EUV_wave_fit_std,
+    #         ) = EUV_wave_fit_curve
+    #         ax.plot(
+    #             EUV_wave_fit_times,
+    #             EUV_wave_fit_values,
+    #             linestyle="--",
+    #             linewidth=1.2,
+    #             color="dimgray",
+    #             label=_build_velocity_label(
+    #                 filtered["datetime"], filtered["apex_height"]
+    #             ),
+    #         )
 
-    # Tomography (3点を線で結び、±0.05 Rsun のエラーバー付き)
-    tomo_fit = _generate_linear_fit_curve(
-        tomo_filtered["datetime"],
-        tomo_filtered["apex_height"],
-        start_dt,
-        end_dt,
-        )
-    if tomo_fit is not None:
-        (
-            tomo_fit_times,
-            tomo_fit_values,
-            tomo_fit_velocity,
-            tomo_fit_std,
-        ) = tomo_fit
-        tomo_fit_label = (
-            f"Tomography: v={tomo_fit_velocity:.1f}±{tomo_fit_std:.1f} km/s"
-        )
-        if not tomo_filtered.empty:
-            ax.errorbar(
-                tomo_filtered["datetime"],
-                tomo_filtered["apex_height"],
-                yerr=0.05,
-                fmt="d",
-                mfc="white",
-                mec="tab:purple",
-                ecolor="tab:purple",
-                elinewidth=1.0,
-                capsize=3,
-                linestyle="-",
-                color="tab:purple",
-                label=tomo_fit_label,
-            )
+    # # Tomography (3点を線で結び、±0.05 Rsun のエラーバー付き)
+    # tomo_fit = _generate_linear_fit_curve(
+    #     tomo_filtered["datetime"],
+    #     tomo_filtered["apex_height"],
+    #     start_dt,
+    #     end_dt,
+    #     )
+    # if tomo_fit is not None:
+    #     (
+    #         tomo_fit_times,
+    #         tomo_fit_values,
+    #         tomo_fit_velocity,
+    #         tomo_fit_std,
+    #     ) = tomo_fit
+    #     tomo_fit_label = (
+    #         f"Tomography: v={tomo_fit_velocity:.1f}±{tomo_fit_std:.1f} km/s"
+    #     )
+    #     if not tomo_filtered.empty:
+    #         ax.errorbar(
+    #             tomo_filtered["datetime"],
+    #             tomo_filtered["apex_height"],
+    #             yerr=0.05,
+    #             fmt="d",
+    #             mfc="white",
+    #             mec="tab:purple",
+    #             ecolor="tab:purple",
+    #             elinewidth=1.0,
+    #             capsize=3,
+    #             linestyle="-",
+    #             color="tab:purple",
+    #             label=tomo_fit_label,
+    #         )
         # 線形フィットで速度推定
         # tomo_fit = _generate_linear_fit_curve(
         #     tomo_filtered["datetime"],

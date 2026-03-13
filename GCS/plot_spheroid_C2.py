@@ -3,10 +3,10 @@
 K-COR + LASCO-C2 (and AIA193 background) composite difference image produced by
 `integrated_analysis.create_single_diff_image()` with a 3D spheroid dome overlay.
 
-Design notes (aligned with `aia_gcs_plot.py`):
-- Spheroid is a center-of-symmetry prolate spheroid (a,b,b) whose symmetry axis is radial.
-- The axis direction is fixed by (center_lon_deg, center_lat_deg) in HGS.
-- The apex is at r = center_r_rsun + a_rsun.
+Design notes (aligned with `aia_spheroid_plot.py`):
+- Spheroid is a center-of-symmetry prolate spheroid (a,b,b).
+- Axis geometry can be specified by center-based radial mode or
+  two-point mode (anchor + apex lon/lat + apex height/radius).
 - Optional clipping:
     * only_above_surface: keep r >= 1
     * only_visible: keep points on the visible hemisphere (approx. by observer vector dot-product)
@@ -48,23 +48,31 @@ except Exception as exc:
 
 @dataclass
 class SpheroidDome3DParams:
-    """Center-of-symmetry prolate spheroid (a,b,b) in HGS.
+    """Prolate spheroid dome (a,b,b) in HGS.
 
-    center_lon_deg / center_lat_deg / center_r_rsun:
-        Center position in HGS: radius `center_r_rsun` along the direction (lon,lat).
-
-    a_rsun:
-        Semi-major axis along the radial direction (center -> apex).
-
-    b_rsun:
-        Semi-minor axis (transverse), rotationally symmetric.
+    Axis geometry can be specified in two ways:
+    (A) center-based radial mode:
+        center_lon_deg, center_lat_deg, center_r_rsun
+    (B) two-point axis mode:
+        anchor_lon_deg, anchor_lat_deg, apex_lon_deg, apex_lat_deg,
+        and apex_r_rsun or apex_height_rsun
     """
 
-    center_lon_deg: float
-    center_lat_deg: float
-    center_r_rsun: float
     a_rsun: float
     b_rsun: float
+
+    # (B) Two-point axis specification
+    anchor_lon_deg: float | None = None
+    anchor_lat_deg: float | None = None
+    apex_lon_deg: float | None = None
+    apex_lat_deg: float | None = None
+    apex_r_rsun: float | None = None
+    apex_height_rsun: float | None = None
+
+    # (A) Center-based specification (legacy radial axis)
+    center_lon_deg: float | None = None
+    center_lat_deg: float | None = None
+    center_r_rsun: float | None = None
 
     n_meridians: int = 12
     n_parallels: int = 7
@@ -73,15 +81,68 @@ class SpheroidDome3DParams:
     only_above_surface: bool = True
     only_visible: bool = True
 
-    @property
-    def apex_r_rsun(self) -> float:
-        return float(self.center_r_rsun + self.a_rsun)
+    def _has_two_point_axis(self) -> bool:
+        return (
+            (self.anchor_lon_deg is not None)
+            and (self.anchor_lat_deg is not None)
+            and (self.apex_lon_deg is not None)
+            and (self.apex_lat_deg is not None)
+            and ((self.apex_r_rsun is not None) or (self.apex_height_rsun is not None))
+        )
 
-    @property
-    def apex_height_rsun(self) -> float:
-        return float(self.apex_r_rsun - 1.0)
+    def _has_center_axis(self) -> bool:
+        return (
+            (self.center_lon_deg is not None)
+            and (self.center_lat_deg is not None)
+            and (self.center_r_rsun is not None)
+        )
+
+    def __post_init__(self) -> None:
+        if self.apex_r_rsun is None and self.apex_height_rsun is not None:
+            self.apex_r_rsun = float(1.0 + self.apex_height_rsun)
+        elif self.apex_r_rsun is not None and self.apex_height_rsun is None:
+            self.apex_height_rsun = float(self.apex_r_rsun - 1.0)
+
+        if self._has_two_point_axis():
+            if self.center_lon_deg is None:
+                self.center_lon_deg = float(self.anchor_lon_deg)  # type: ignore[arg-type]
+            if self.center_lat_deg is None:
+                self.center_lat_deg = float(self.anchor_lat_deg)  # type: ignore[arg-type]
+            if self.center_r_rsun is None:
+                anchor = _cart_rsun_from_lonlat(float(self.anchor_lon_deg), float(self.anchor_lat_deg), 1.0)
+                apex = _cart_rsun_from_lonlat(float(self.apex_lon_deg), float(self.apex_lat_deg), float(self.apex_r_rsun))
+                axis_u = _unit_vec(apex - anchor)
+                center = apex - float(self.a_rsun) * axis_u
+                self.center_r_rsun = float(np.linalg.norm(center))
+            return
+
+        if not self._has_center_axis():
+            raise ValueError(
+                "SpheroidDome3DParams: provide either center_* or "
+                "anchor_* + apex_* + apex_r/height."
+            )
+
+        if self.anchor_lon_deg is None:
+            self.anchor_lon_deg = float(self.center_lon_deg)  # type: ignore[arg-type]
+        if self.anchor_lat_deg is None:
+            self.anchor_lat_deg = float(self.center_lat_deg)  # type: ignore[arg-type]
+        if self.apex_lon_deg is None:
+            self.apex_lon_deg = float(self.center_lon_deg)  # type: ignore[arg-type]
+        if self.apex_lat_deg is None:
+            self.apex_lat_deg = float(self.center_lat_deg)  # type: ignore[arg-type]
+        if self.apex_r_rsun is None:
+            self.apex_r_rsun = float(self.center_r_rsun + self.a_rsun)  # type: ignore[operator]
+        if self.apex_height_rsun is None:
+            self.apex_height_rsun = float(self.apex_r_rsun - 1.0)  # type: ignore[operator]
 
     def legend_label(self) -> str:
+        if self._has_two_point_axis():
+            return (
+                f"Spheroid: a={self.a_rsun:.2f} R$_\\odot$, "
+                f"b={self.b_rsun:.2f} R$_\\odot$, "
+                f"apex(lon,lat)=({float(self.apex_lon_deg):.1f},{float(self.apex_lat_deg):.1f})$^\\circ$, "
+                f"r_apex={float(self.apex_r_rsun):.2f} R$_\\odot$"
+            )
         return (
             f"Spheroid: a={self.a_rsun:.2f} R$_\\odot$, "
             f"b={self.b_rsun:.2f} R$_\\odot$, "
@@ -138,33 +199,160 @@ def _split_skycoord_by_mask(coords: SkyCoord, mask: np.ndarray) -> list[SkyCoord
     return segs
 
 
+def _cart_rsun_from_lonlat(lon_deg: float, lat_deg: float, r_rsun: float) -> np.ndarray:
+    lon = np.deg2rad(lon_deg)
+    lat = np.deg2rad(lat_deg)
+    cosl, sinl = np.cos(lon), np.sin(lon)
+    cosb, sinb = np.cos(lat), np.sin(lat)
+    return np.array([r_rsun * cosb * cosl, r_rsun * cosb * sinl, r_rsun * sinb], dtype=float)
+
+
+def _unit_vec(v: np.ndarray) -> np.ndarray:
+    arr = np.asarray(v, dtype=float)
+    if arr.ndim == 1:
+        n = float(np.linalg.norm(arr))
+        if n == 0.0:
+            raise ValueError("zero norm vector")
+        return arr / n
+    if arr.ndim == 2:
+        n = np.linalg.norm(arr, axis=0, keepdims=True)
+        n = np.where(n == 0.0, 1.0, n)
+        return arr / n
+    raise ValueError("unsupported ndarray ndim")
+
+
+def _orthonormal_basis_from_axis(axis_u: np.ndarray, ref_vec: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
+    axis_u = _unit_vec(axis_u)
+    if ref_vec is None:
+        ref_vec = np.array([0.0, 0.0, 1.0], dtype=float)
+    ref = np.asarray(ref_vec, dtype=float)
+    ref = ref - np.dot(ref, axis_u) * axis_u
+    if np.linalg.norm(ref) < 1e-10:
+        alt = np.array([1.0, 0.0, 0.0], dtype=float) if abs(axis_u[0]) < 0.9 else np.array([0.0, 1.0, 0.0], dtype=float)
+        ref = alt - np.dot(alt, axis_u) * axis_u
+    e1 = _unit_vec(ref)
+    e2 = _unit_vec(np.cross(axis_u, e1))
+    return e1, e2
+
+
+def _spheroid_axis_geometry_rsun(params: SpheroidDome3DParams) -> dict[str, np.ndarray]:
+    if params._has_two_point_axis():
+        anchor = _cart_rsun_from_lonlat(float(params.anchor_lon_deg), float(params.anchor_lat_deg), 1.0)
+        apex = _cart_rsun_from_lonlat(float(params.apex_lon_deg), float(params.apex_lat_deg), float(params.apex_r_rsun))
+        axis_u = _unit_vec(apex - anchor)
+        center = apex - float(params.a_rsun) * axis_u
+        e1, e2 = _orthonormal_basis_from_axis(axis_u, ref_vec=anchor)
+        return {"center": center, "axis_u": axis_u, "e1": e1, "e2": e2, "anchor": anchor, "apex": apex}
+
+    r_hat, e_lon, e_lat = _hgs_unit_vectors(float(params.center_lon_deg), float(params.center_lat_deg))
+    center = float(params.center_r_rsun) * r_hat
+    anchor = 1.0 * r_hat
+    apex = center + float(params.a_rsun) * r_hat
+    return {"center": center, "axis_u": r_hat, "e1": e_lon, "e2": e_lat, "anchor": anchor, "apex": apex}
+
+
+def _sample_footprint_cart_rsun(params: SpheroidDome3DParams, n_beta: int | None = None) -> np.ndarray:
+    geom = _spheroid_axis_geometry_rsun(params)
+    center = geom["center"]
+    axis_u = geom["axis_u"]
+    e1 = geom["e1"]
+    e2 = geom["e2"]
+
+    if n_beta is None:
+        n_beta = int(params.n_line_pts)
+
+    betas = np.linspace(0.0, 2.0 * np.pi, n_beta, endpoint=False)
+    alpha_grid = np.linspace(0.0, np.pi, 1201)
+    pts: list[np.ndarray] = []
+
+    for beta in betas:
+        dir_perp = np.cos(beta) * e1 + np.sin(beta) * e2
+        ca = np.cos(alpha_grid)
+        sa = np.sin(alpha_grid)
+        cart = (
+            center[:, None]
+            + float(params.a_rsun) * ca[None, :] * axis_u[:, None]
+            + float(params.b_rsun) * sa[None, :] * dir_perp[:, None]
+        )
+        rr = np.linalg.norm(cart, axis=0)
+        f = rr - 1.0
+
+        roots: list[float] = []
+        hit = np.where(np.isclose(f, 0.0, atol=1e-5))[0]
+        for idx in hit:
+            roots.append(float(alpha_grid[idx]))
+
+        s = np.sign(f)
+        for i in range(len(alpha_grid) - 1):
+            if s[i] == 0 or s[i + 1] == 0:
+                continue
+            if f[i] * f[i + 1] < 0:
+                a0 = float(alpha_grid[i] + (0.0 - f[i]) * (alpha_grid[i + 1] - alpha_grid[i]) / (f[i + 1] - f[i]))
+                roots.append(a0)
+
+        if not roots:
+            continue
+
+        alpha0 = max(roots, key=lambda a: np.sin(a))
+        p = center + float(params.a_rsun) * np.cos(alpha0) * axis_u + float(params.b_rsun) * np.sin(alpha0) * dir_perp
+        if abs(np.linalg.norm(p) - 1.0) < 5e-3:
+            pts.append(p)
+
+    if not pts:
+        return np.zeros((3, 0), dtype=float)
+    return np.stack(pts, axis=1)
+
+
 # ==========================================================
-# Spheroid -> HPC sampling (same logic as aia_gcs_plot.py)
+# Spheroid -> HPC sampling (same logic as aia_spheroid_plot.py)
 # ==========================================================
+
+def _visible_mask(
+    coords_hgs: SkyCoord,
+    reference_map: sunpy.map.Map | None = None,
+    *,
+    only_visible: bool = True,
+) -> np.ndarray:
+    if not only_visible or reference_map is None:
+        return np.ones(coords_hgs.shape, dtype=bool)
+    try:
+        obs_vec = reference_map.observer_coordinate.cartesian.xyz.to_value(u.R_sun)
+        pt_vec = coords_hgs.cartesian.xyz.to_value(u.R_sun)
+        s = np.sign(obs_vec[0]) if obs_vec[0] != 0 else 1.0
+        dot_sum = np.sum(obs_vec[:, None] * pt_vec, axis=0)
+        return (dot_sum * s > 0)
+    except Exception as exc:
+        print(f"[WARN] visibility mask disabled (visible check failed): {exc}")
+        return np.ones(coords_hgs.shape, dtype=bool)
+
 
 def spheroid_dome_apex_hpc(params: SpheroidDome3DParams, reference_map: sunpy.map.Map) -> SkyCoord:
-    """Apex = center + a * r_hat."""
-    r_hat, _, _ = _hgs_unit_vectors(params.center_lon_deg, params.center_lat_deg)
-    center = params.center_r_rsun * r_hat
-    apex = center + params.a_rsun * r_hat
-
-    rep = CartesianRepresentation(apex[0] * u.R_sun, apex[1] * u.R_sun, apex[2] * u.R_sun)
+    geom = _spheroid_axis_geometry_rsun(params)
+    cart_rsun = geom["apex"]
+    rep = CartesianRepresentation(cart_rsun[0] * u.R_sun, cart_rsun[1] * u.R_sun, cart_rsun[2] * u.R_sun)
     apex_hgs = SkyCoord(rep, frame=sunpy_frames.HeliographicStonyhurst, obstime=reference_map.date)
     return apex_hgs.transform_to(reference_map.coordinate_frame)
 
 
 def spheroid_axis_footpoint_hpc(params: SpheroidDome3DParams, reference_map: sunpy.map.Map) -> SkyCoord:
-    """Intersection of the spheroid symmetry axis with r=1 (diagnostic marker)."""
-    r_hat, _, _ = _hgs_unit_vectors(params.center_lon_deg, params.center_lat_deg)
-    fp = 1.0 * r_hat
-
-    rep = CartesianRepresentation(fp[0] * u.R_sun, fp[1] * u.R_sun, fp[2] * u.R_sun)
+    geom = _spheroid_axis_geometry_rsun(params)
+    cart_rsun = geom["anchor"]
+    rep = CartesianRepresentation(cart_rsun[0] * u.R_sun, cart_rsun[1] * u.R_sun, cart_rsun[2] * u.R_sun)
     fp_hgs = SkyCoord(rep, frame=sunpy_frames.HeliographicStonyhurst, obstime=reference_map.date)
     return fp_hgs.transform_to(reference_map.coordinate_frame)
 
 
 def spheroid_footprint_angular_radius_deg(params: SpheroidDome3DParams) -> float | None:
-    """Angular radius ψ [deg] of the photospheric footprint (intersection with r=1)."""
+    if params._has_two_point_axis():
+        pts = _sample_footprint_cart_rsun(params)
+        if pts.shape[1] < 8:
+            return None
+        anchor_u = _unit_vec(_spheroid_axis_geometry_rsun(params)["anchor"])
+        vv = _unit_vec(pts)
+        cosang = np.clip(anchor_u @ vv, -1.0, 1.0)
+        ang = np.arccos(cosang)
+        return float(np.rad2deg(np.median(ang)))
+
     a = float(params.a_rsun)
     b = float(params.b_rsun)
     cr = float(params.center_r_rsun)
@@ -190,7 +378,6 @@ def spheroid_footprint_angular_radius_deg(params: SpheroidDome3DParams) -> float
         return None
 
     best_c = max(valid, key=lambda cc: np.sqrt(max(0.0, 1.0 - cc * cc)))
-
     cos_psi = cr + a * best_c
     cos_psi = float(np.clip(cos_psi, -1.0, 1.0))
     psi = float(np.arccos(cos_psi))
@@ -198,16 +385,23 @@ def spheroid_footprint_angular_radius_deg(params: SpheroidDome3DParams) -> float
 
 
 def sample_spheroid_footprint_hpc(params: SpheroidDome3DParams, reference_map: sunpy.map.Map) -> list[SkyCoord]:
-    r_hat, e_lon, e_lat = _hgs_unit_vectors(params.center_lon_deg, params.center_lat_deg)
+    if params._has_two_point_axis():
+        pts = _sample_footprint_cart_rsun(params)
+        if pts.shape[1] == 0:
+            return []
+        rep = CartesianRepresentation(pts[0] * u.R_sun, pts[1] * u.R_sun, pts[2] * u.R_sun)
+        coords_hgs = SkyCoord(rep, frame=sunpy_frames.HeliographicStonyhurst, obstime=reference_map.date)
+        coords_hpc = coords_hgs.transform_to(reference_map.coordinate_frame)
+        mask = _visible_mask(coords_hgs, reference_map, only_visible=params.only_visible)
+        return _split_skycoord_by_mask(coords_hpc, mask)
 
+    r_hat, e_lon, e_lat = _hgs_unit_vectors(float(params.center_lon_deg), float(params.center_lat_deg))
     center_r = float(params.center_r_rsun)
     center = center_r * r_hat
-
     a = float(params.a_rsun)
     b = float(params.b_rsun)
     cr = center_r
 
-    # Solve (cr + a c)^2 + b^2 (1-c^2) = 1 for c=cos(alpha)
     A = (a * a - b * b)
     B = 2.0 * cr * a
     C = (cr * cr + b * b - 1.0)
@@ -241,29 +435,17 @@ def sample_spheroid_footprint_hpc(params: SpheroidDome3DParams, reference_map: s
     cart = center[:, None] + a * cos_a0 * r_hat[:, None] + b * sin_a0 * dir_latlon
     rep = CartesianRepresentation(cart[0] * u.R_sun, cart[1] * u.R_sun, cart[2] * u.R_sun)
     coords_hgs = SkyCoord(rep, frame=sunpy_frames.HeliographicStonyhurst, obstime=reference_map.date)
-
-    def _visible_mask(coords: SkyCoord) -> np.ndarray:
-        if not params.only_visible:
-            return np.ones(coords.shape, dtype=bool)
-        try:
-            obs_vec = reference_map.observer_coordinate.cartesian.xyz.to_value(u.R_sun)
-            pt_vec = coords.cartesian.xyz.to_value(u.R_sun)
-            s = np.sign(obs_vec[0]) if obs_vec[0] != 0 else 1.0
-            dot_sum = np.sum(obs_vec[:, None] * pt_vec, axis=0)
-            return (dot_sum * s > 0)
-        except Exception:
-            return np.ones(coords.shape, dtype=bool)
-
-    mask = _visible_mask(coords_hgs)
+    mask = _visible_mask(coords_hgs, reference_map, only_visible=params.only_visible)
     coords_hpc = coords_hgs.transform_to(reference_map.coordinate_frame)
     return _split_skycoord_by_mask(coords_hpc, mask)
 
 
 def sample_spheroid_dome_wireframe_hpc(params: SpheroidDome3DParams, reference_map: sunpy.map.Map) -> list[SkyCoord]:
-    r_hat, e_lon, e_lat = _hgs_unit_vectors(params.center_lon_deg, params.center_lat_deg)
-
-    center_r = float(params.center_r_rsun)
-    center = center_r * r_hat
+    geom = _spheroid_axis_geometry_rsun(params)
+    center = geom["center"][:, None]
+    axis_u = geom["axis_u"][:, None]
+    e1 = geom["e1"][:, None]
+    e2 = geom["e2"][:, None]
 
     lines_hpc: list[SkyCoord] = []
 
@@ -273,61 +455,35 @@ def sample_spheroid_dome_wireframe_hpc(params: SpheroidDome3DParams, reference_m
         rr = np.sqrt(np.sum(cart_rsun ** 2, axis=0))
         return rr >= 1.0
 
-    def _visible_mask(coords: SkyCoord) -> np.ndarray:
-        if not params.only_visible:
-            return np.ones(coords.shape, dtype=bool)
-        try:
-            obs_vec = reference_map.observer_coordinate.cartesian.xyz.to_value(u.R_sun)
-            pt_vec = coords.cartesian.xyz.to_value(u.R_sun)
-            s = np.sign(obs_vec[0]) if obs_vec[0] != 0 else 1.0
-            dot_sum = np.sum(obs_vec[:, None] * pt_vec, axis=0)
-            return (dot_sum * s > 0)
-        except Exception as e:
-            print(f"[WARN] visibility mask disabled (visible check failed): {e}")
-            return np.ones(coords.shape, dtype=bool)
-
-    # meridians (beta fixed)
-    alpha = np.linspace(0.0, np.pi, params.n_line_pts)
-    sin_a = np.sin(alpha)
-    cos_a = np.cos(alpha)
+    alphas = np.linspace(0.0, np.pi, params.n_line_pts, endpoint=True)
+    ca = np.cos(alphas)[None, :]
+    sa = np.sin(alphas)[None, :]
 
     betas = np.linspace(0.0, 2.0 * np.pi, params.n_meridians, endpoint=False)
     for beta in betas:
-        dir_latlon = (np.cos(beta) * e_lon + np.sin(beta) * e_lat)
-        cart = (
-            center[:, None]
-            + params.a_rsun * cos_a[None, :] * r_hat[:, None]
-            + params.b_rsun * sin_a[None, :] * dir_latlon[:, None]
-        )
+        dir_perp = (np.cos(beta) * e1 + np.sin(beta) * e2)
+        cart = center + float(params.a_rsun) * ca * axis_u + float(params.b_rsun) * sa * dir_perp
 
-        rep = CartesianRepresentation(cart[0] * u.R_sun, cart[1] * u.R_sun, cart[2] * u.R_sun)
+        rep = CartesianRepresentation(cart[0, :] * u.R_sun, cart[1, :] * u.R_sun, cart[2, :] * u.R_sun)
         coords_hgs = SkyCoord(rep, frame=sunpy_frames.HeliographicStonyhurst, obstime=reference_map.date)
-
-        mask = _above_surface_mask_cart(cart) & _visible_mask(coords_hgs)
+        mask = _above_surface_mask_cart(cart) & _visible_mask(coords_hgs, reference_map, only_visible=params.only_visible)
         coords_hpc = coords_hgs.transform_to(reference_map.coordinate_frame)
         lines_hpc.extend(_split_skycoord_by_mask(coords_hpc, mask))
 
-    # parallels (alpha fixed)
-    bet = np.linspace(0.0, 2.0 * np.pi, params.n_line_pts)
-    sin_b = np.sin(bet)
-    cos_b = np.cos(bet)
+    alpha_list = np.linspace(0.0, np.pi, params.n_parallels + 2)[1:-1]
+    betas_line = np.linspace(0.0, 2.0 * np.pi, params.n_line_pts, endpoint=True)
+    cb = np.cos(betas_line)[None, :]
+    sb = np.sin(betas_line)[None, :]
 
-    alphas = np.linspace(0.15 * np.pi, 0.95 * np.pi, params.n_parallels)
-    for a0 in alphas:
-        sin_a0 = np.sin(a0)
-        cos_a0 = np.cos(a0)
+    for alpha0 in alpha_list:
+        ca0 = float(np.cos(alpha0))
+        sa0 = float(np.sin(alpha0))
+        dir_perp = cb * e1 + sb * e2
+        cart = center + float(params.a_rsun) * ca0 * axis_u + float(params.b_rsun) * sa0 * dir_perp
 
-        dir_latlon = (cos_b[None, :] * e_lon[:, None] + sin_b[None, :] * e_lat[:, None])
-        cart = (
-            center[:, None]
-            + params.a_rsun * cos_a0 * r_hat[:, None]
-            + params.b_rsun * sin_a0 * dir_latlon
-        )
-
-        rep = CartesianRepresentation(cart[0] * u.R_sun, cart[1] * u.R_sun, cart[2] * u.R_sun)
+        rep = CartesianRepresentation(cart[0, :] * u.R_sun, cart[1, :] * u.R_sun, cart[2, :] * u.R_sun)
         coords_hgs = SkyCoord(rep, frame=sunpy_frames.HeliographicStonyhurst, obstime=reference_map.date)
-
-        mask = _above_surface_mask_cart(cart) & _visible_mask(coords_hgs)
+        mask = _above_surface_mask_cart(cart) & _visible_mask(coords_hgs, reference_map, only_visible=params.only_visible)
         coords_hpc = coords_hgs.transform_to(reference_map.coordinate_frame)
         lines_hpc.extend(_split_skycoord_by_mask(coords_hpc, mask))
 
@@ -394,14 +550,15 @@ def overlay_spheroid_on_coronagraph_axes(
     try:
         anchor_hpc = spheroid_axis_footpoint_hpc(spheroid_params, reference_map)
         x0, y0 = _hpc_to_rel_pix(anchor_hpc, rsun_arcsec, px_per_rsun)
-        ax.scatter(
+        ax.plot(
             [float(np.atleast_1d(x0)[0])],
             [float(np.atleast_1d(y0)[0])],
             marker="*",
-            s=90,
-            facecolor="yellow",
-            edgecolors="black",
-            linewidths=0.7,
+            linestyle="None",
+            markerfacecolor="yellow",
+            markeredgecolor="black",
+            markeredgewidth=0.7,
+            markersize=20.0,
             zorder=zorder_markers,
             label=(
                 f"axis surface intersection (lon,lat)=({spheroid_params.center_lon_deg:.1f},{spheroid_params.center_lat_deg:.1f})°"
@@ -416,17 +573,19 @@ def overlay_spheroid_on_coronagraph_axes(
         apex_hpc = spheroid_dome_apex_hpc(spheroid_params, reference_map)
         x1, y1 = _hpc_to_rel_pix(apex_hpc, rsun_arcsec, px_per_rsun)
         apex_label = (
-            f"3D spheroid apex (a={spheroid_params.a_rsun:.3f} R$_\\odot$, "
-            f"b={spheroid_params.b_rsun:.3f} R$_\\odot$, "
-            f"r={spheroid_params.apex_r_rsun:.3f} R$_\\odot$)"
+            f"3D spheroid apex (a={spheroid_params.a_rsun:.3f} $R_\\odot$, "
+            f"b={spheroid_params.b_rsun:.3f} $R_\\odot$, "
+            f"r={spheroid_params.apex_r_rsun:.3f} $R_\\odot$)"
         )
-        ax.scatter(
+        ax.plot(
             [float(np.atleast_1d(x1)[0])],
             [float(np.atleast_1d(y1)[0])],
-            s=70,
-            facecolor="orange",
-            edgecolors="black",
-            linewidths=0.7,
+            marker="o",
+            linestyle="None",
+            markerfacecolor="orange",
+            markeredgecolor="black",
+            markeredgewidth=0.7,
+            markersize=10.0,
             zorder=zorder_markers,
             label=apex_label,
         )
@@ -436,6 +595,7 @@ def overlay_spheroid_on_coronagraph_axes(
 
     # dummy handle for legend
     ax.plot([], [], color=color, lw=3, alpha=0.7, label=spheroid_params.legend_label())
+    ax.plot([], [], color=color, lw=3, alpha=0.7)
 
     return spheroid_params
 
@@ -452,6 +612,14 @@ def main(
     spheroid_color: str = "#00FF00",
     delta_time_min: int = 10,
 ):
+    backend_initial = plt.get_backend().lower()
+    if "agg" in backend_initial:
+        try:
+            plt.switch_backend("TkAgg")
+            print("[INFO] Switched matplotlib backend to TkAgg.")
+        except Exception as exc:
+            print(f"[INFO] TkAgg backend unavailable ({exc}); continue with {backend_initial}.")
+
     fig, ax = plt.subplots(figsize=(10, 10), dpi=300)
 
     print(f"[INFO] Building K-COR+LASCO composite for {target_time_str}")
@@ -480,37 +648,42 @@ def main(
         fig.savefig(out_png, dpi=300, bbox_inches="tight")
         print(f"Saved: {out_png}")
 
-    # Avoid warnings/errors in non-interactive backends (e.g., FigureCanvasAgg).
-    import matplotlib
-    from matplotlib.backends import BackendFilter, backend_registry
-
-    backend = matplotlib.get_backend().lower()
-    interactive_backends = {b.lower() for b in backend_registry.list_builtin(BackendFilter.INTERACTIVE)}
-    if backend in interactive_backends:
-        plt.show()
-    else:
+    backend = plt.get_backend().lower()
+    if backend == "agg":
+        print(f"[INFO] Non-interactive backend ({backend}); skip plt.show().")
         plt.close(fig)
+    else:
+        plt.show()
 
 
 if __name__ == "__main__":
-    # Example: parameterization consistent with aia_gcs_plot.py
-    # Set apex radius, then center_r = apex_r - a.
+    # Example: parameterization consistent with aia_spheroid_plot.py
     target_time = "2022-06-13T03:20:00"
 
-    apex_rsun = 2.9
-    a_rsun = (apex_rsun-1)/2
+    # Axis surface intersection (anchor)
+    anchor_lon_deg = -30.0
+    anchor_lat_deg = +19.0
+
+    # Apex direction (can differ from anchor direction)
+    apex_lon_deg = -50.0
+    apex_lat_deg = +9.0
+
+    # Apex radius and spheroid shape
+    apex_rsun = 2.8
+    a_rsun = (apex_rsun - 1) / 2
     # a_rsun = 2.5
-    b_rsun = 0.75
-    center_r_rsun = apex_rsun - a_rsun
+    b_rsun = 0.7
 
     spheroid = SpheroidDome3DParams(
-        center_lon_deg=-44.0,
-        center_lat_deg=+10.0,
-        center_r_rsun=float(center_r_rsun),
         a_rsun=float(a_rsun),
         b_rsun=float(b_rsun),
-        n_meridians=24,
-        n_parallels=12,
+        anchor_lon_deg=float(anchor_lon_deg),
+        anchor_lat_deg=float(anchor_lat_deg),
+        apex_lon_deg=float(apex_lon_deg),
+        apex_lat_deg=float(apex_lat_deg),
+        apex_r_rsun=float(apex_rsun),
+        n_meridians=12,
+        n_parallels=7,
         n_line_pts=240,
         only_above_surface=True,
         only_visible=True,

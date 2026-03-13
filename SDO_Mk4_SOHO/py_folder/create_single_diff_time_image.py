@@ -18,7 +18,7 @@ from astropy.time import Time
 
 if __name__ == "__main__":
     fig, ax = plt.subplots(figsize=(10,10))
-    target_time_str = "2022-06-13T03:25:45"
+    target_time_str = "2022-06-13T01:25:45"
     create_single_diff_from_time_image(ax, target_time_str, delta_time=10, mk4_inner=1.4, mk4_outer_lasco_inner=3.0, lasco_outer=6.0, xlim_min=-250, xlim_max=0, ylim_min=-100, ylim_max=200)
     output_path = Path(f"/mnt/d/wsl/home/kinno-7010/Research/SDO_Mk4_SOHO/CME_measurement/diff_from_time_image/diff_from_time_image_{target_time_str.replace(':', '')}.png")
     plt.savefig(output_path)

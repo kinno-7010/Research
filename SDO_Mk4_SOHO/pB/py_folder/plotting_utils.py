@@ -44,15 +44,15 @@ def plot_ne_scatter_and_fit(ax,
         else:
             mask_in_highlight_range = np.zeros_like(Ne_fit_points, dtype=bool)
 
-        if np.any(mask_in_highlight_range):
-            ax.scatter(r_fit_points[mask_in_highlight_range], Ne_fit_points[mask_in_highlight_range],
-                       s=60, c='red', marker='+', label=f'Fit Data (14-42 MHz, θ={theta_deg:.0f}°)')
-        if np.any(~mask_in_highlight_range):
-            ax.scatter(r_fit_points[~mask_in_highlight_range], Ne_fit_points[~mask_in_highlight_range],
-                       s=40, c='#B3DB7D', marker='x', label=f'Fit Data (Other, θ={theta_deg:.0f}°)')
-    elif len(r_fit_points) > 0:
-        ax.scatter(r_fit_points, np.full_like(r_fit_points, np.nan), s=40, c='gray', marker='o',
-                   label="Fit Data (No Ne values)")
+        # if np.any(mask_in_highlight_range):
+        #     ax.scatter(r_fit_points[mask_in_highlight_range], Ne_fit_points[mask_in_highlight_range],
+        #                s=60, c='red', marker='+', label=f'Fit Data (14-42 MHz, θ={theta_deg:.0f}°)')
+        # if np.any(~mask_in_highlight_range):
+        #     ax.scatter(r_fit_points[~mask_in_highlight_range], Ne_fit_points[~mask_in_highlight_range],
+        #                s=40, c='#B3DB7D', marker='x', label=f'Fit Data (Other, θ={theta_deg:.0f}°)')
+    # elif len(r_fit_points) > 0:
+        # ax.scatter(r_fit_points, np.full_like(r_fit_points, np.nan), s=40, c='gray', marker='o',
+        #            label="Fit Data (No Ne values)")
 
 def _fallback_r_from_model(target_density, r_search_range, model_callable):
     if model_callable is None:
@@ -125,10 +125,10 @@ def plot_reference_density_models(ax, r_curve, model_multipliers):
 def plot_hf_antenna_band(ax, r_plot_max):
     ne_14MHz = density_from_frequency(14)
     ne_42MHz = density_from_frequency(42)
-    ax.axhspan(ne_14MHz, ne_42MHz, color='gray', alpha=0.15,
-               label='HF antenna (14–42 MHz)')
-    ax.text(r_plot_max, ne_14MHz, '14 MHz', va='bottom', ha='right', fontsize=12, color='dimgray')
-    ax.text(r_plot_max, ne_42MHz, '42 MHz', va='top', ha='right', fontsize=12, color='dimgray')
+    ax.axhspan(ne_14MHz, ne_42MHz, color='gray', alpha=0.3)
+    ax.text(r_plot_max, ne_14MHz, '14 MHz', va='bottom', ha='right', fontsize=12, color='black')
+    ax.text(r_plot_max, density_from_frequency(30), 'HF antenna (14–42 MHz)', va='top', ha='right', fontsize=12, color='black')
+    ax.text(r_plot_max, ne_42MHz, '42 MHz', va='top', ha='right', fontsize=12, color='black')
 
 def setup_ne_plot_axes_and_legend(ax, x_limits, y_limits, title):
     ax.set_yscale('log')
@@ -177,7 +177,7 @@ def generate_ne_profile_plot(ax,
         plot_frequency_radii(ax, plot_r_max, fit_params_tuple, density_min_for_plot)
 
     plot_hf_antenna_band(ax, r_plot_max=plot_r_max)
-    title = f'Electron Density Profile (θ={theta_deg_val:.0f}°, fit: {fit_r_min:.1f}--{fit_r_max:.1f} $R_\\odot$)'
+    title = f'Electron Density Profile'# (θ={theta_deg_val:.0f}°'
     setup_ne_plot_axes_and_legend(ax, (plot_r_min, plot_r_max), density_plot_limits, title)
     add_frequency_secondary_axis(ax)
 

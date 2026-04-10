@@ -97,11 +97,11 @@ if __name__ == "__main__":
     #  入力ファイルパス（必要に応じて環境に合わせて書き換えてください）
     # ============================================================
     filename_mk4 = (
-        r"/mnt/d/wsl/home/kinno-7010/Research/MK4_coronagraph/"
+        r"/mnt/d/wsl/home/kinno-7010/Research_data/MK4_coronagraph/"
         r"MK4_coronagraph_KCOR/pB/Rawdata/20110920.021602.mk4.rpb.fts"
     )
     filename_lasco = (
-        r"/mnt/d/wsl/home/kinno-7010/Research/SOHO/pB/C2-PB-20110920_0257.fts"
+        r"/mnt/d/wsl/home/kinno-7010/Research_data/SOHO/pB/C2-PB-20110920_0257.fts"
     )
 
     # 反転モード:
@@ -225,7 +225,7 @@ if __name__ == "__main__":
     )
 
     out_base = (
-        r"/mnt/d/wsl/home/kinno-7010/Research/SDO_Mk4_SOHO/pB/2D_density_map_mk4"
+        r"/mnt/d/wsl/home/kinno-7010/Research_data/SDO_Mk4_SOHO/pB/2D_density_map_mk4"
     )
     png_path = f"{out_base}_{suffix}_20110920_0257.png"
     csv_path = f"{out_base}_{suffix}_20110920_0257.csv"

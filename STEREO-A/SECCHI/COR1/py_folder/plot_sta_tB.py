@@ -226,9 +226,9 @@ def plot_tB(f0: str, f120: str, f240: str,
 if __name__ == "__main__":
     # ========================= Editable parameters ==========================
     # Paths to the three polarized frames (~0°, ~120°, ~240°).
-    f0   = "/mnt/d/wsl/home/kinno-7010/Research/STEREO-A/SECCHI/COR1/Rawdata/20220613_030100_n4c1A.fts"
-    f120 = "/mnt/d/wsl/home/kinno-7010/Research/STEREO-A/SECCHI/COR1/Rawdata/20220613_030118_n4c1A.fts"
-    f240 = "/mnt/d/wsl/home/kinno-7010/Research/STEREO-A/SECCHI/COR1/Rawdata/20220613_030136_n4c1A.fts"
+    f0   = "/mnt/d/wsl/home/kinno-7010/Research_data/STEREO-A/SECCHI/COR1/Rawdata/20220613_030100_n4c1A.fts"
+    f120 = "/mnt/d/wsl/home/kinno-7010/Research_data/STEREO-A/SECCHI/COR1/Rawdata/20220613_030118_n4c1A.fts"
+    f240 = "/mnt/d/wsl/home/kinno-7010/Research_data/STEREO-A/SECCHI/COR1/Rawdata/20220613_030136_n4c1A.fts"
 
     # First-stage options
     auto_bkg = True                 # True → try to auto-find background

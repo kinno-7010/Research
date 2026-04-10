@@ -17,11 +17,11 @@ import datetime as dt
 from predict_type2_const_speed import f_model_from_r, invert_r_from_f, ne_saito_factor
 
 # Fixed data locations
-WIND_CDF_PATH = Path("/mnt/d/wsl/home/kinno-7010/Research/RadioData/Wind/Rawdata/wi_l2_wav_rad2_20220613_v01.cdf")
-HF_CDF_PATH = Path("/mnt/d/wsl/home/kinno-7010/Research/RadioData/HF_plot/Rawdata/it_h1_hf_20220613_v01.cdf")
+WIND_CDF_PATH = Path("/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/Wind/Rawdata/wi_l2_wav_rad2_20220613_v01.cdf")
+HF_CDF_PATH = Path("/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/HF_plot/Rawdata/it_h1_hf_20220613_v01.cdf")
 ASSA_FITS_PATHS = [
-    Path("/mnt/d/wsl/home/kinno-7010/Research/RadioData/e-Callisto/Rawdata/Australia-ASSA_20220613_031500_62.fit"),
-    Path("/mnt/d/wsl/home/kinno-7010/Research/RadioData/e-Callisto/Rawdata/Australia-ASSA_20220613_033000_62.fit"),
+    Path("/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/e-Callisto/Rawdata/Australia-ASSA_20220613_031500_62.fit"),
+    Path("/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/e-Callisto/Rawdata/Australia-ASSA_20220613_033000_62.fit"),
 ]
 
 from wind_hf_assa_dynamic_spectrum import *
@@ -900,8 +900,8 @@ def main(
     if combined.empty:
         raise ValueError("No data remains after applying the frequency bounds.")
 
-    data_output_path = Path(f"/mnt/d/wsl/home/kinno-7010/Research/RadioData/combine/wind_hf_assa_dynamic_spectrum_{start_time.strftime('%Y-%m-%d_%H%M%S')}_{end_time.strftime('%H%M%S')}.csv")
-    figure_path = Path(f"/mnt/d/wsl/home/kinno-7010/Research/RadioData/combine/bandsplit_analysis_{start_time.strftime('%Y-%m-%d_%H%M%S')}_{end_time.strftime('%H%M%S')}.png")
+    data_output_path = Path(f"/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/combine/wind_hf_assa_dynamic_spectrum_{start_time.strftime('%Y-%m-%d_%H%M%S')}_{end_time.strftime('%H%M%S')}.csv")
+    figure_path = Path(f"/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/combine/bandsplit_analysis_{start_time.strftime('%Y-%m-%d_%H%M%S')}_{end_time.strftime('%H%M%S')}.png")
     data_output_path.parent.mkdir(parents=True, exist_ok=True)
     figure_path.parent.mkdir(parents=True, exist_ok=True)
     # export_dataframe(combined, data_output_path)

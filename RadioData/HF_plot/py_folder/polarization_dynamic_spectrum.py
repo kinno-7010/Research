@@ -165,7 +165,7 @@ def _compute_polarization_ratio(lh_db: np.ndarray, rh_db: np.ndarray) -> np.ndar
 def main(start_time: str, end_time: str, min_frequency: float, max_frequency: float) -> None:
     config = {
         "cdf_path": Path(
-            "/mnt/d/wsl/home/kinno-7010/Research/RadioData/HF_plot/Rawdata/it_h1_hf_20220613_v01.cdf"
+            "/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/HF_plot/Rawdata/it_h1_hf_20220613_v01.cdf"
         ),
         "median_size": (1, 1),
         "background": "none",

@@ -14,7 +14,7 @@ Design goals
   (cf. https://cor1.gsfc.nasa.gov/guide/ — "Subtracting backgrounds" and
    "Calculating Polarized Brightness" sections)
 - Reuse the inversion machinery already used for K-Cor + LASCO in
-  `/mnt/d/wsl/home/kinno-7010/Research/SDO_Mk4_SOHO/pB/py_folder/2D_density_map.py`:
+  `/mnt/d/wsl/home/kinno-7010/Research_data/SDO_Mk4_SOHO/pB/py_folder/2D_density_map.py`:
   specifically, `invert_per_theta_profiles` and
   `build_density_map_from_profiles`.
 - Apply the *same* COR1-specific background treatment used in `plot_sta_pB.py`
@@ -55,7 +55,7 @@ if _THIS not in sys.path:
     sys.path.append(_THIS)
 
 # Path to the Mk4+LASCO utilities (for inversion/plot helpers)
-SDO_MK4_SOHO_DIR = "/mnt/d/wsl/home/kinno-7010/Research/SDO_Mk4_SOHO/pB/py_folder"
+SDO_MK4_SOHO_DIR = "/mnt/d/wsl/home/kinno-7010/Research_data/SDO_Mk4_SOHO/pB/py_folder"
 if os.path.isdir(SDO_MK4_SOHO_DIR) and (SDO_MK4_SOHO_DIR not in sys.path):
     sys.path.append(SDO_MK4_SOHO_DIR)
 
@@ -1062,7 +1062,7 @@ def plot_density_map_sta(ne_map: np.ndarray,
     plt.tight_layout()
 
     if not savepath or not isinstance(savepath, str):
-        savepath = "/mnt/d/wsl/home/kinno-7010/Research/STEREO-A/SECCHI/COR1/2D_density_map_sta.png"
+        savepath = "/mnt/d/wsl/home/kinno-7010/Research_data/STEREO-A/SECCHI/COR1/2D_density_map_sta.png"
     fig.savefig(savepath, dpi=300)
     print(f"[save] Wrote {savepath}")
     plt.show()
@@ -1090,8 +1090,8 @@ def write_2d_fits(data2d: np.ndarray, hdr_like: dict, out_fits: str, *, bunit: s
 # Script entry point
 # --------------------
 if __name__ == "__main__":
-    RAW_DIR = "/mnt/d/wsl/home/kinno-7010/Research/STEREO-A/SECCHI/COR1/Rawdata"
-    BKG_DIR = "/mnt/d/wsl/home/kinno-7010/Research/STEREO-A/SECCHI/COR1/Rawdata"
+    RAW_DIR = "/mnt/d/wsl/home/kinno-7010/Research_data/STEREO-A/SECCHI/COR1/Rawdata"
+    BKG_DIR = "/mnt/d/wsl/home/kinno-7010/Research_data/STEREO-A/SECCHI/COR1/Rawdata"
 
     # === ここで反転モードを選ぶ ===
     # "spherical"（= 局所球対称, 扇形ごと反転） or "axisym"（= 軸対称, 全周平均1D→2D）
@@ -1156,13 +1156,13 @@ if __name__ == "__main__":
     ne_map = inpaint_small_nans(ne_map, valid_mask=valid, max_passes=3, min_neighbors=3)
 
     # 出力
-    output_csv_path  = "/mnt/d/wsl/home/kinno-7010/Research/STEREO-A/SECCHI/COR1/2D_density_map_sta.csv"
-    output_fits_path = "/mnt/d/wsl/home/kinno-7010/Research/STEREO-A/SECCHI/COR1/2D_density_map_sta_result.fits"
+    output_csv_path  = "/mnt/d/wsl/home/kinno-7010/Research_data/STEREO-A/SECCHI/COR1/2D_density_map_sta.csv"
+    output_fits_path = "/mnt/d/wsl/home/kinno-7010/Research_data/STEREO-A/SECCHI/COR1/2D_density_map_sta_result.fits"
     # export_density_csv_sta(ne_map, r_map, params, output_csv_path)
     # save_density_fits_sta(ne_map, params, output_fits_path)
 
     if SAVE_FITS:
-        out_dir = "/mnt/d/wsl/home/kinno-7010/Research/STEREO-A/SECCHI/COR1/Rawdata"
+        out_dir = "/mnt/d/wsl/home/kinno-7010/Research_data/STEREO-A/SECCHI/COR1/Rawdata"
         pb_fits_path = os.path.join(out_dir, "COR1A_pb_pre_20220613_030100.fits")
 
         # 1) トモグラフィ入力に必要になる pB（前処理後を推奨：pB_pre）
@@ -1195,5 +1195,5 @@ if __name__ == "__main__":
     plot_density_map_sta(
         ne_map, params,
         title=title,
-        savepath="/mnt/d/wsl/home/kinno-7010/Research/STEREO-A/SECCHI/COR1/2D_density_map_sta.png"
+        savepath="/mnt/d/wsl/home/kinno-7010/Research_data/STEREO-A/SECCHI/COR1/2D_density_map_sta.png"
     )

@@ -47,7 +47,7 @@ try:
     import pyvista as pv
 except Exception as e:
     raise SystemExit("pyvista is required: pip install pyvista") from e
-sys.path.append("/mnt/d/wsl/home/kinno-7010/Research/GCS/gcs_overlay")
+sys.path.append("/home/kinno-7010/Research_code/GCS/gcs_overlay")
 from main_regularized_tomography import (  # type: ignore
     SphericalGrid,
     RegularizedTomography,
@@ -1851,8 +1851,8 @@ def add_pfss_from_hmi_3d(
 
 def main(Frequency_MHz: List[float], time_iso: str, h_apex: float, kappa: float, alpha_deg: float, tilt_deg: float, lon_deg: float, lat_deg: float, rss: float, r_scatter: float):
     # ---- Import modules ----
-    TOMO_DIR = Path("/mnt/d/wsl/home/kinno-7010/Research/Tomography/py_folder")
-    GCS_PKG_DIR = Path("/mnt/d/wsl/home/kinno-7010/Research/GCS/gcs_overlay")
+    TOMO_DIR = Path("/mnt/d/wsl/home/kinno-7010/Research_data/Tomography/py_folder")
+    GCS_PKG_DIR = Path("/mnt/d/wsl/home/kinno-7010/Research_data/GCS/gcs_overlay")
 
     OBSTIME_ISO = time_iso
 
@@ -1874,21 +1874,21 @@ def main(Frequency_MHz: List[float], time_iso: str, h_apex: float, kappa: float,
 
     PB_FITS_LIST = [
         {
-            "path": "/mnt/d/wsl/home/kinno-7010/Research/Tomography/Rawdata/pB_Kcor_LASCO_axi_20220613_0300.fits",
+            "path": "/mnt/d/wsl/home/kinno-7010/Research_data/Tomography/Rawdata/pB_Kcor_LASCO_axi_20220613_0300.fits",
             "limb_u": U_KCOR,
             "r_use_min": R_USE_MIN,
             "r_use_max": R_SWITCH_U,
             "tag": "KCOR-part",
         },
         {
-            "path": "/mnt/d/wsl/home/kinno-7010/Research/Tomography/Rawdata/pB_Kcor_LASCO_axi_20220613_0300.fits",
+            "path": "/mnt/d/wsl/home/kinno-7010/Research_data/Tomography/Rawdata/pB_Kcor_LASCO_axi_20220613_0300.fits",
             "limb_u": U_LASCO,
             "r_use_min": R_SWITCH_U,
             "r_use_max": R_USE_MAX,
             "tag": "LASCO-part",
         },
         {
-            "path": "/mnt/d/wsl/home/kinno-7010/Research/Tomography/Rawdata/COR1A_pb_pre_20220613_030100.fits",
+            "path": "/mnt/d/wsl/home/kinno-7010/Research_data/Tomography/Rawdata/COR1A_pb_pre_20220613_030100.fits",
             "limb_u": U_COR1A,
             "r_use_min": R_USE_MIN,
             "r_use_max": R_USE_MAX,
@@ -1919,7 +1919,7 @@ def main(Frequency_MHz: List[float], time_iso: str, h_apex: float, kappa: float,
     GCS_OBSERVER = "earth"
 
     DO_PFSS = True
-    HMI_FITS = "/mnt/d/wsl/home/kinno-7010/Research/SDO/HMI/Rawdata/hmi.M_720s.20220613_030000_TAI.fits"
+    HMI_FITS = "/mnt/d/wsl/home/kinno-7010/Research_data/SDO/HMI/Rawdata/hmi.M_720s.20220613_030000_TAI.fits"
     PFSS_RSS = rss
     PFSS_NRHO = 50
 
@@ -1935,7 +1935,7 @@ def main(Frequency_MHz: List[float], time_iso: str, h_apex: float, kappa: float,
     SHOW_SUN = True
     SHOW_GUI = True
     SAVE_PNG = True
-    PNG_PATH = Path(f"/mnt/d/wsl/home/kinno-7010/Research/Tomography/output/overlay_tomo_gcs_{''.join(str(f) for f in ISO_FREQ_MHZ)}MHz.png")
+    PNG_PATH = Path(f"/mnt/d/wsl/home/kinno-7010/Research_data/Tomography/output/overlay_tomo_gcs_{''.join(str(f) for f in ISO_FREQ_MHZ)}MHz.png")
 
 
     # ---- Build grid ----

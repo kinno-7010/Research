@@ -32,7 +32,7 @@ import sunpy.map
 from sunpy.coordinates import frames as sunpy_frames
 
 # --- integrated_analysis import (prefer local) ---
-sys.path.append("/mnt/d/wsl/home/kinno-7010/Research/SDO_Mk4_SOHO/py_folder")
+sys.path.append("/home/kinno-7010/Research_code/SDO_Mk4_SOHO/py_folder")
 try:
     from integrated_analysis import create_single_diff_image, create_single_diff_from_time_image
 except Exception as exc:
@@ -40,7 +40,7 @@ except Exception as exc:
         "Failed to import create_single_diff_image from integrated_analysis.py. "
         "Place integrated_analysis.py next to this script or make it importable via PYTHONPATH."
     ) from exc
-
+from plot_cor_csv import create_single_diff_from_csv_image
 
 # ==========================================================
 # Spheroid parameters (same model as in aia_gcs_plot.py)
@@ -48,18 +48,23 @@ except Exception as exc:
 
 @dataclass
 class SpheroidDome3DParams:
-    """Prolate spheroid dome (a,b,b) in HGS.
+    """Prolate spheroid dome in HGS parameterized by (kappa, epsilon).
+
+    The semi-axes are derived from the apex height h = r_apex - 1 as
+        b = kappa * h
+        a = b / sqrt(1 - epsilon^2)
+    where ``a`` is the radial semi-axis and ``b`` is the transverse semi-axis.
 
     Axis geometry can be specified in two ways:
     (A) center-based radial mode:
-        center_lon_deg, center_lat_deg, center_r_rsun
+        center_lon_deg, center_lat_deg, and apex_r_rsun or apex_height_rsun
     (B) two-point axis mode:
         anchor_lon_deg, anchor_lat_deg, apex_lon_deg, apex_lat_deg,
         and apex_r_rsun or apex_height_rsun
     """
 
-    a_rsun: float
-    b_rsun: float
+    kappa: float
+    epsilon: float
 
     # (B) Two-point axis specification
     anchor_lon_deg: float | None = None
@@ -94,8 +99,16 @@ class SpheroidDome3DParams:
         return (
             (self.center_lon_deg is not None)
             and (self.center_lat_deg is not None)
-            and (self.center_r_rsun is not None)
+            and ((self.apex_r_rsun is not None) or (self.apex_height_rsun is not None) or (self.center_r_rsun is not None))
         )
+
+    @property
+    def b_rsun(self) -> float:
+        return float(self._b_rsun)
+
+    @property
+    def a_rsun(self) -> float:
+        return float(self._a_rsun)
 
     def __post_init__(self) -> None:
         if self.apex_r_rsun is None and self.apex_height_rsun is not None:
@@ -103,22 +116,51 @@ class SpheroidDome3DParams:
         elif self.apex_r_rsun is not None and self.apex_height_rsun is None:
             self.apex_height_rsun = float(self.apex_r_rsun - 1.0)
 
+        if self.apex_height_rsun is None:
+            raise ValueError(
+                "SpheroidDome3DParams: apex_r_rsun or apex_height_rsun is required when using kappa and epsilon."
+            )
+
+        self.kappa = float(self.kappa)
+        self.epsilon = float(self.epsilon)
+        if self.kappa < 0.0:
+            raise ValueError("kappa must be non-negative.")
+        if not (-1.0 < self.epsilon < 1.0):
+            raise ValueError("signed epsilon must satisfy -1 < epsilon < 1.")
+
+        h = float(self.apex_height_rsun)
+        b0 = float(self.kappa * h)
+        eps_abs = abs(float(self.epsilon))
+        denom = np.sqrt(max(1.0e-12, 1.0 - eps_abs**2))
+
+        # Signed-epsilon convention:
+        #   epsilon < 0 : prolate along the symmetry axis (a > b)
+        #   epsilon > 0 : oblate  along the symmetry axis (a < b)
+        self._b_rsun = float(b0)
+        if self.epsilon < 0.0:
+            self._a_rsun = float(b0 / denom)
+        else:
+            self._a_rsun = float(b0 * denom)
+
         if self._has_two_point_axis():
+            anchor = _cart_rsun_from_lonlat(float(self.anchor_lon_deg), float(self.anchor_lat_deg), 1.0)
+            apex = _cart_rsun_from_lonlat(float(self.apex_lon_deg), float(self.apex_lat_deg), float(self.apex_r_rsun))
+            axis_u = _unit_vec(apex - anchor)
+            center = apex - self.a_rsun * axis_u
+
+            center_lon_deg, center_lat_deg, center_r_rsun = _lonlat_from_cart_rsun(center)
+
             if self.center_lon_deg is None:
-                self.center_lon_deg = float(self.anchor_lon_deg)  # type: ignore[arg-type]
+                self.center_lon_deg = float(center_lon_deg)
             if self.center_lat_deg is None:
-                self.center_lat_deg = float(self.anchor_lat_deg)  # type: ignore[arg-type]
+                self.center_lat_deg = float(center_lat_deg)
             if self.center_r_rsun is None:
-                anchor = _cart_rsun_from_lonlat(float(self.anchor_lon_deg), float(self.anchor_lat_deg), 1.0)
-                apex = _cart_rsun_from_lonlat(float(self.apex_lon_deg), float(self.apex_lat_deg), float(self.apex_r_rsun))
-                axis_u = _unit_vec(apex - anchor)
-                center = apex - float(self.a_rsun) * axis_u
-                self.center_r_rsun = float(np.linalg.norm(center))
+                self.center_r_rsun = float(center_r_rsun)
             return
 
         if not self._has_center_axis():
             raise ValueError(
-                "SpheroidDome3DParams: provide either center_* or "
+                "SpheroidDome3DParams: provide either center_* + apex_r/height or "
                 "anchor_* + apex_* + apex_r/height."
             )
 
@@ -130,26 +172,23 @@ class SpheroidDome3DParams:
             self.apex_lon_deg = float(self.center_lon_deg)  # type: ignore[arg-type]
         if self.apex_lat_deg is None:
             self.apex_lat_deg = float(self.center_lat_deg)  # type: ignore[arg-type]
-        if self.apex_r_rsun is None:
-            self.apex_r_rsun = float(self.center_r_rsun + self.a_rsun)  # type: ignore[operator]
-        if self.apex_height_rsun is None:
-            self.apex_height_rsun = float(self.apex_r_rsun - 1.0)  # type: ignore[operator]
+        if self.center_r_rsun is None and self.apex_r_rsun is not None:
+            self.center_r_rsun = float(self.apex_r_rsun - self.a_rsun)
 
     def legend_label(self) -> str:
         if self._has_two_point_axis():
             return (
-                f"Spheroid: a={self.a_rsun:.2f} R$_\\odot$, "
-                f"b={self.b_rsun:.2f} R$_\\odot$, "
+                f"Spheroid: $\\kappa$={self.kappa:.3f}, "
+                f"$\\epsilon$={self.epsilon:.3f}, "
                 f"apex(lon,lat)=({float(self.apex_lon_deg):.1f},{float(self.apex_lat_deg):.1f})$^\\circ$, "
                 f"r_apex={float(self.apex_r_rsun):.2f} R$_\\odot$"
             )
         return (
-            f"Spheroid: a={self.a_rsun:.2f} R$_\\odot$, "
-            f"b={self.b_rsun:.2f} R$_\\odot$, "
+            f"Spheroid: $\\kappa$={self.kappa:.3f}, "
+            f"$\\epsilon$={self.epsilon:.3f}, "
             f"center r={self.center_r_rsun:.2f} R$_\\odot$, "
             f"(lon,lat)=({self.center_lon_deg:.1f},{self.center_lat_deg:.1f})$^\\circ$"
         )
-
 
 # ==========================================================
 # Geometry helpers
@@ -206,6 +245,15 @@ def _cart_rsun_from_lonlat(lon_deg: float, lat_deg: float, r_rsun: float) -> np.
     cosb, sinb = np.cos(lat), np.sin(lat)
     return np.array([r_rsun * cosb * cosl, r_rsun * cosb * sinl, r_rsun * sinb], dtype=float)
 
+def _lonlat_from_cart_rsun(cart_rsun: np.ndarray) -> tuple[float, float, float]:
+    arr = np.asarray(cart_rsun, dtype=float).reshape(3)
+    x, y, z = float(arr[0]), float(arr[1]), float(arr[2])
+    r = float(np.sqrt(x * x + y * y + z * z))
+    if r <= 0.0:
+        raise ValueError("zero-radius cartesian point cannot be converted to Stonyhurst lon/lat.")
+    lon_deg = float(np.rad2deg(np.arctan2(y, x)))
+    lat_deg = float(np.rad2deg(np.arcsin(np.clip(z / r, -1.0, 1.0))))
+    return lon_deg, lat_deg, r
 
 def _unit_vec(v: np.ndarray) -> np.ndarray:
     arr = np.asarray(v, dtype=float)
@@ -546,7 +594,7 @@ def overlay_spheroid_on_coronagraph_axes(
         x_px, y_px = _hpc_to_rel_pix(fp, rsun_arcsec, px_per_rsun)
         ax.plot(x_px, y_px, color=color, linewidth=lw_footprint, alpha=alpha_footprint, zorder=zorder_wire + 1)
 
-    # axis-footpoint marker
+    # axis-footpoint marker (Anchor in HGS / Stonyhurst)
     try:
         anchor_hpc = spheroid_axis_footpoint_hpc(spheroid_params, reference_map)
         x0, y0 = _hpc_to_rel_pix(anchor_hpc, rsun_arcsec, px_per_rsun)
@@ -561,7 +609,8 @@ def overlay_spheroid_on_coronagraph_axes(
             markersize=20.0,
             zorder=zorder_markers,
             label=(
-                f"axis surface intersection (lon,lat)=({spheroid_params.center_lon_deg:.1f},{spheroid_params.center_lat_deg:.1f})°"
+                f"axis surface intersection (HGS lon,lat)=({float(spheroid_params.anchor_lon_deg):.1f},"
+                f"{float(spheroid_params.anchor_lat_deg):.1f})°"
             ),
         )
     except Exception as exc:
@@ -573,8 +622,8 @@ def overlay_spheroid_on_coronagraph_axes(
         apex_hpc = spheroid_dome_apex_hpc(spheroid_params, reference_map)
         x1, y1 = _hpc_to_rel_pix(apex_hpc, rsun_arcsec, px_per_rsun)
         apex_label = (
-            f"3D spheroid apex (a={spheroid_params.a_rsun:.3f} $R_\\odot$, "
-            f"b={spheroid_params.b_rsun:.3f} $R_\\odot$, "
+            f"3D spheroid apex ($\\kappa$={spheroid_params.kappa:.3f}, "
+            f"$\\epsilon$={spheroid_params.epsilon:.3f}, "
             f"r={spheroid_params.apex_r_rsun:.3f} $R_\\odot$)"
         )
         ax.plot(
@@ -598,8 +647,6 @@ def overlay_spheroid_on_coronagraph_axes(
     ax.plot([], [], color=color, lw=3, alpha=0.7)
 
     return spheroid_params
-
-
 # ==========================================================
 # Main
 # ==========================================================
@@ -611,6 +658,12 @@ def main(
     out_png: str | Path | None = None,
     spheroid_color: str = "#00FF00",
     delta_time_min: int = 10,
+    mk4_vmin: float = -4.0,
+    mk4_vmax: float = 4.0,
+    lasco_vmin: float = -10.0,
+    lasco_vmax: float = 10.0,
+    aia_vmin: float | None = None,
+    aia_vmax: float | None = None,
 ):
     backend_initial = plt.get_backend().lower()
     if "agg" in backend_initial:
@@ -623,7 +676,37 @@ def main(
     fig, ax = plt.subplots(figsize=(10, 10), dpi=300)
 
     print(f"[INFO] Building K-COR+LASCO composite for {target_time_str}")
-    res = create_single_diff_from_time_image(ax, target_time_str, delta_time_min, mk4_inner=1.4, mk4_outer_lasco_inner=3.0, lasco_outer=6.0, xlim_min=-250, xlim_max=0, ylim_min=-100, ylim_max=200)
+    # res = create_single_diff_from_csv_image(
+    #     ax,
+    #     target_time_str,
+    #     delta_time_min,
+    #     mk4_inner=1.4,
+    #     mk4_outer_lasco_inner=3.0,
+    #     lasco_outer=6.0,
+    #     xlim_min=-250,
+    #     xlim_max=0,
+    #     ylim_min=-100,
+    #     ylim_max=200,
+    #     mk4_vmin=mk4_vmin,
+    #     mk4_vmax=mk4_vmax,
+    #     lasco_vmin=lasco_vmin,
+    #     lasco_vmax=lasco_vmax,
+    #     aia_vmin=aia_vmin,
+    #     aia_vmax=aia_vmax,
+    # )
+    
+    res = create_single_diff_from_time_image(
+        ax,
+        target_time_str,
+        delta_time_min,
+        mk4_inner=1.4,
+        mk4_outer_lasco_inner=3.0,
+        lasco_outer=6.0,
+        xlim_min=-250,
+        xlim_max=0,
+        ylim_min=-100,
+        ylim_max=200
+    )
 
     params_lasco = res["params_lasco"]
     lasco_map = res["lasco_map"]
@@ -655,28 +738,26 @@ def main(
     else:
         plt.show()
 
-
 if __name__ == "__main__":
     # Example: parameterization consistent with aia_spheroid_plot.py
-    target_time = "2022-06-13T03:20:00"
+    target_time = "2022-06-13T03:36:18"
 
     # Axis surface intersection (anchor)
     anchor_lon_deg = -30.0
     anchor_lat_deg = +19.0
 
     # Apex direction (can differ from anchor direction)
-    apex_lon_deg = -50.0
-    apex_lat_deg = +9.0
+    apex_lon_deg = -45.0
+    apex_lat_deg = +17.0
 
     # Apex radius and spheroid shape
-    apex_rsun = 2.8
-    a_rsun = (apex_rsun - 1) / 2
-    # a_rsun = 2.5
-    b_rsun = 0.7
+    apex_rsun = 5.13
+    kappa = 0.40
+    epsilon = 0.62
 
     spheroid = SpheroidDome3DParams(
-        a_rsun=float(a_rsun),
-        b_rsun=float(b_rsun),
+        kappa=float(kappa),
+        epsilon=float(epsilon),
         anchor_lon_deg=float(anchor_lon_deg),
         anchor_lat_deg=float(anchor_lat_deg),
         apex_lon_deg=float(apex_lon_deg),
@@ -689,5 +770,15 @@ if __name__ == "__main__":
         only_visible=True,
     )
 
-    output_path = f"/mnt/d/wsl/home/kinno-7010/Research/GCS/output/C2_spheroid_{target_time.replace(":","")}.png"
-    main(target_time_str=target_time, spheroid_params=spheroid, out_png=output_path)
+    output_path = f"/mnt/d/wsl/home/kinno-7010/Research/GCS/output/C2_spheroid_{target_time.replace(':','')}.png"
+    main(
+        target_time_str=target_time,
+        spheroid_params=spheroid,
+        out_png=output_path,
+        mk4_vmin=-4.0,
+        mk4_vmax=4.0,
+        lasco_vmin=-10.0,
+        lasco_vmax=10.0,
+        aia_vmin=None,
+        aia_vmax=None,
+    )

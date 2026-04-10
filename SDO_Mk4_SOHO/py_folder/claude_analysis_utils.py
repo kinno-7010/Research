@@ -118,7 +118,7 @@ def analyze_single_time_cme_with_diff_image(target_time_str: str,
     # クリック後の画像を保存
     if len(heights) > 0:
         # 保存ディレクトリを作成
-        save_dir = Path('/mnt/d/wsl/home/kinno-7010/Research/SDO_Mk4_SOHO/CME_measurement/integrated_coronagraph')
+        save_dir = Path('/mnt/d/wsl/home/kinno-7010/Research_data/SDO_Mk4_SOHO/CME_measurement/integrated_coronagraph')
         save_dir.mkdir(parents=True, exist_ok=True)
         
         # ファイル名を生成
@@ -311,7 +311,7 @@ def analyze_single_time_cme_with_diff_from_min_image(target_time_str: str,
     # クリック後の画像を保存
     if len(heights) > 0:
         # 保存ディレクトリを作成
-        save_dir = Path('/mnt/d/wsl/home/kinno-7010/Research/SDO_Mk4_SOHO/CME_measurement/nose_integrated_coronagraph_2min')
+        save_dir = Path('/mnt/d/wsl/home/kinno-7010/Research_data/SDO_Mk4_SOHO/CME_measurement/nose_integrated_coronagraph_2min')
         save_dir.mkdir(parents=True, exist_ok=True)
         
         # ファイル名を生成（2分前差分+30°直線であることを明示）
@@ -499,7 +499,7 @@ def analyze_single_time_cme_with_raw_image(target_time_str: str,
     # クリック後の画像を保存
     if len(heights) > 0:
         # 保存ディレクトリを作成
-        save_dir = Path('/mnt/d/wsl/home/kinno-7010/Research/SDO_Mk4_SOHO/CME_measurement/raw_integrated_coronagraph')
+        save_dir = Path('/mnt/d/wsl/home/kinno-7010/Research_data/SDO_Mk4_SOHO/CME_measurement/raw_integrated_coronagraph')
         save_dir.mkdir(parents=True, exist_ok=True)
         
         # ファイル名を生成（生データであることを明示）

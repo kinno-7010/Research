@@ -369,7 +369,7 @@ Example usage:
     parser.add_argument('--no-logo', action='store_true',
                        help='Disable SECCHI logo')
     parser.add_argument('--output-dir', type=str,
-                       default='/mnt/d/wsl/home/kinno-7010/Research/STEREO-A/SECCHI/COR1',
+                       default='/mnt/d/wsl/home/kinno-7010/Research_data/STEREO-A/SECCHI/COR1',
                        help='Output directory for plots')
     
     args = parser.parse_args()
@@ -397,7 +397,7 @@ Example usage:
         data_dir = os.path.dirname(args.file) if os.path.dirname(args.file) else "."
     else:
         # Process default files
-        data_dir = "/mnt/d/wsl/home/kinno-7010/Research/STEREO-A/SECCHI/COR1/Rawdata/calibration"
+        data_dir = "/mnt/d/wsl/home/kinno-7010/Research_data/STEREO-A/SECCHI/COR1/Rawdata/calibration"
         target_files = ['20220613_032136_n4c1A_processed.fits']
     
     print(f"=== STEREO-A/SECCHI/COR1 Professional Plotter ===")

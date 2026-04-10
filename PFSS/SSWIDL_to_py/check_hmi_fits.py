@@ -88,7 +88,7 @@ def main():
     """
     メイン実行
     """
-    hmi_file = "/mnt/d/wsl/home/kinno-7010/Research/SDO/HMI/Rawdata/hmi.M_720s.20220613_030000_TAI.fits"
+    hmi_file = "/mnt/d/wsl/home/kinno-7010/Research_data/SDO/HMI/Rawdata/hmi.M_720s.20220613_030000_TAI.fits"
     check_fits_structure(hmi_file)
 
 if __name__ == "__main__":

@@ -17,8 +17,8 @@ import sunpy.map
 
 
 # ===== ユーザー環境に合わせて調整 =====
-BASE_DATA_DIR = Path(r"/mnt/d/wsl/home/kinno-7010/Research/STEREO-A/SECCHI/EUVI/Rawdata")
-OUT_DIR = Path(r"/mnt/d/wsl/home/kinno-7010/Research/STEREO-A/SECCHI/EUVI/diff_output")
+BASE_DATA_DIR = Path(r"/mnt/d/wsl/home/kinno-7010/Research_data/STEREO-A/SECCHI/EUVI/Rawdata")
+OUT_DIR = Path(r"/mnt/d/wsl/home/kinno-7010/Research_data/STEREO-A/SECCHI/EUVI/diff_output")
 
 
 # ===== データ構造 =====
@@ -33,6 +33,57 @@ class EUVIFile:
 def ensure_dir(p: Path) -> Path:
     p.mkdir(parents=True, exist_ok=True)
     return p
+
+def _euvi_product_rank(fp: Path, wavelength_angstrom: Optional[int] = None) -> int:
+    """
+    同一時刻に複数のEUVIファイルがある場合の優先順位。
+    小さいほど優先。
+
+    優先順位:
+      0: *_195eu_R.fts のような processed / rectified product
+      1: *_###eu_R.fts の processed product（波長が指定と違ってもこちらは通常除外される）
+      10: *_n4euA.fts のような raw 寄り product
+      20: その他
+    """
+    name = fp.name.lower()
+
+    if wavelength_angstrom is not None:
+        pat = rf"_{int(wavelength_angstrom):03d}eu_r(?:\.|_)"
+        if re.search(pat, name):
+            return 0
+
+    if re.search(r"_\d{3}eu_r(?:\.|_)", name):
+        return 1
+
+    if re.search(r"_n4eu[a-z](?:\.|_)", name):
+        return 10
+
+    return 20
+
+
+def _maps_share_grid(m1: sunpy.map.Map, m2: sunpy.map.Map, atol: float = 1e-6) -> bool:
+    """
+    2つのMapが実質的に同じpixel grid / WCSかを緩く判定する。
+    """
+    if m1.data.shape != m2.data.shape:
+        return False
+
+    keys = ("CRPIX1", "CRPIX2", "CRVAL1", "CRVAL2", "CDELT1", "CDELT2", "CROTA", "CROTA1", "CROTA2")
+    for key in keys:
+        v1 = m1.meta.get(key, None)
+        v2 = m2.meta.get(key, None)
+
+        if v1 is None or v2 is None:
+            continue
+
+        try:
+            if not np.isclose(float(v1), float(v2), atol=atol, rtol=0.0):
+                return False
+        except Exception:
+            if str(v1) != str(v2):
+                return False
+
+    return True
 
 def get_euvi_search_dirs(base_dir: Path, wavelength_angstrom: Optional[int]) -> List[Path]:
     """
@@ -119,15 +170,15 @@ def make_target_running_difference(
     target_utc の画像と、(target_utc - dt_minutes) の画像を選び、
     diff = I(target) - I(target - dt) を1枚だけ作って保存する。
 
-    - search_window_minutes: 対象ファイル探索の余裕（±分）
-    - max_time_error_seconds: 最近傍採用時の許容誤差（秒）
-      （例：観測の時刻がきっちり 5分刻みでない場合に備える）
+    修正点:
+    - processed product (*_195eu_R.fts) を優先
+    - 読み込み時に north-up 回転
+    - target 側を prev 側のWCSへ揃えて差分
     """
     dt = timedelta(minutes=dt_minutes)
     t_prev_req = target_utc - dt
     t_cur_req = target_utc
 
-    # 余裕を持ってファイルを収集（間引きはしない：最近傍選択を正確にする）
     start_utc = t_prev_req - timedelta(minutes=search_window_minutes)
     end_utc = t_cur_req + timedelta(minutes=search_window_minutes)
 
@@ -150,29 +201,27 @@ def make_target_running_difference(
             "Increase search_window_minutes or relax max_time_error_seconds."
         )
 
-    prev_map = load_map(prev_file.path)
-    cur_map = load_map(cur_file.path)
+    prev_map = load_map(prev_file.path, reference_map=None, rotate_north_up=True)
+    cur_map = load_map(cur_file.path, reference_map=prev_map, rotate_north_up=True)
 
     if cur_map.data.shape != prev_map.data.shape:
         raise RuntimeError(
-            f"Shape mismatch: prev={prev_map.data.shape} vs cur={cur_map.data.shape}\n"
+            f"Shape mismatch after alignment: prev={prev_map.data.shape} vs cur={cur_map.data.shape}\n"
             f"prev={prev_file.obs_time}, cur={cur_file.obs_time}"
         )
 
     diff = cur_map.data - prev_map.data
 
-    # 出力先
     out_base = ensure_dir(OUT_DIR / f"EUVI_{wavelength_angstrom:03d}" / "target_running_diff")
     out_png = out_base / f"diff_{safe_timestr(prev_file.obs_time)}_{safe_timestr(cur_file.obs_time)}.png"
 
     title = (
-        f"STEREO-A EUVI {wavelength_angstrom} Å  target running-diff (dt={dt_minutes} min)\n"
-        f"target={target_utc.strftime('%Y-%m-%d %H:%M:%S')}  "
-        f"used: {prev_file.obs_time.strftime('%H:%M:%S')} -> {cur_file.obs_time.strftime('%H:%M:%S')}"
+        f"STEREO-A EUVI {wavelength_angstrom} Å target running-diff\n"
+        # f"target={target_utc.strftime('%Y-%m-%d %H:%M:%S')}  "
+        f"{cur_file.obs_time.strftime('%H:%M:%S')} - {prev_file.obs_time.strftime('%H:%M:%S')}"
     )
 
-    # WCSは通常同一なので cur_map を基準にプロット
-    plot_and_save_diff(cur_map, diff, title, out_png)
+    plot_and_save_diff(prev_map, diff, title, out_png)
 
     print("[INFO] requested times:")
     print(f"  prev_req = {t_prev_req}  cur_req = {t_cur_req}")
@@ -180,7 +229,6 @@ def make_target_running_difference(
     print(f"  prev_use = {prev_file.obs_time}  ({prev_file.path.name})")
     print(f"  cur_use  = {cur_file.obs_time}  ({cur_file.path.name})")
     print(f"[DONE] saved image: {out_png}")
-
 
 def parse_dt(s: str) -> datetime:
     """
@@ -270,8 +318,9 @@ def collect_euvi_files_in_range(
     Rawdataから、指定時間範囲に入るEUVIファイルを列挙（時刻順）。
 
     修正点:
-    - Rawdata直下ではなく Rawdata/<WL4桁>（例: 0195）配下を優先して探索する
-    - サブディレクトリも含めて再帰探索する（rglob）
+    - Rawdata/<WL4桁>（例: 0195）を優先探索
+    - サブディレクトリを再帰探索
+    - 同一時刻に複数 product がある場合は *_195eu_R.fts を優先
     """
     if not BASE_DATA_DIR.exists():
         raise FileNotFoundError(f"Rawdata directory not found: {BASE_DATA_DIR}")
@@ -281,13 +330,11 @@ def collect_euvi_files_in_range(
     def is_fits_like(p: Path) -> bool:
         if not p.is_file():
             return False
-        suf = [s.lower() for s in p.suffixes]  # 例: ['.fts', '.gz']
+        suf = [s.lower() for s in p.suffixes]
         if len(suf) == 0:
             return False
-        # 末尾が .fts / .fits
         if suf[-1] in (".fts", ".fits"):
             return True
-        # 末尾が .gz で、その1つ前が .fts / .fits
         if suf[-1] == ".gz" and len(suf) >= 2 and suf[-2] in (".fts", ".fits"):
             return True
         return False
@@ -296,7 +343,6 @@ def collect_euvi_files_in_range(
     n_scanned = 0
 
     for root in search_dirs:
-        # root直下だけでなく、配下を再帰的に探索
         for fp in root.rglob("*"):
             if not is_fits_like(fp):
                 continue
@@ -311,11 +357,9 @@ def collect_euvi_files_in_range(
             if not (start_utc <= obs_time <= end_utc):
                 continue
 
-            # 波長がfilenameで取れない場合はheaderから読む
             if wl is None:
                 wl = read_wavelength_from_header(fp)
 
-            # 波長フィルタ
             if wavelength_angstrom is not None:
                 if wl is None or int(wl) != int(wavelength_angstrom):
                     continue
@@ -323,7 +367,6 @@ def collect_euvi_files_in_range(
             files.append(EUVIFile(path=fp, obs_time=obs_time, wavelength=wl))
 
     if len(files) == 0:
-        # デバッグしやすいように探索場所を明示
         scanned_dirs = ", ".join(str(d) for d in search_dirs)
         raise RuntimeError(
             "No EUVI files found in the requested time range.\n"
@@ -332,9 +375,20 @@ def collect_euvi_files_in_range(
             f"time_range={start_utc}..{end_utc}, wavelength={wavelength_angstrom}"
         )
 
+    # 同一時刻に複数productがある場合は processed product を優先
+    best_by_time = {}
+    for f in files:
+        rank = _euvi_product_rank(f.path, wavelength_angstrom)
+        if f.obs_time not in best_by_time:
+            best_by_time[f.obs_time] = (rank, f)
+        else:
+            old_rank, old_f = best_by_time[f.obs_time]
+            if rank < old_rank:
+                best_by_time[f.obs_time] = (rank, f)
+
+    files = [v[1] for v in best_by_time.values()]
     files.sort(key=lambda x: x.obs_time)
 
-    # 間引き（step_minutes）
     if step_minutes is not None and step_minutes > 0 and len(files) > 0:
         kept: List[EUVIFile] = [files[0]]
         last = files[0].obs_time
@@ -347,13 +401,38 @@ def collect_euvi_files_in_range(
 
     return files
 
-
-def load_map(fp: Path) -> sunpy.map.Map:
+def load_map(
+    fp: Path,
+    reference_map: Optional[sunpy.map.Map] = None,
+    rotate_north_up: bool = True,
+) -> sunpy.map.Map:
+    """
+    EUVI map を読み込んで、必要なら north-up 回転し、
+    reference_map が与えられた場合はそのWCSへ揃える。
+    """
     m = sunpy.map.Map(fp)
-    # 差分計算のためfloat化（符号付きにする）
     m = sunpy.map.Map(m.data.astype(np.float32), m.meta)
-    return m
 
+    if rotate_north_up:
+        try:
+            m = m.rotate(order=1, missing=np.nan, clip=False)
+        except Exception as e:
+            print(f"[WARN] rotate() failed for {fp.name}; using original orientation. error={e}")
+
+    if reference_map is not None:
+        if not _maps_share_grid(m, reference_map):
+            try:
+                m = m.reproject_to(reference_map.wcs)
+                m = sunpy.map.Map(m.data.astype(np.float32), m.meta)
+            except Exception as e:
+                raise RuntimeError(
+                    "Map grids do not match after rotation, and reprojection failed.\n"
+                    f"reference={reference_map.data.shape}, current={m.data.shape}\n"
+                    f"file={fp.name}\n"
+                    f"error={e}"
+                )
+
+    return m
 
 def _robust_sym_vmax(diff: np.ndarray, q: float = 99.0) -> float:
     finite = diff[np.isfinite(diff)]
@@ -376,7 +455,7 @@ def plot_and_save_diff(
 ):
     ensure_dir(out_png.parent)
 
-    vmax = _robust_sym_vmax(diff_data, q=99.0)
+    vmax = _robust_sym_vmax(diff_data, q=95.0)
     norm = TwoSlopeNorm(vmin=-vmax, vcenter=0.0, vmax=vmax)
 
     fig = plt.figure(figsize=(10, 10))
@@ -403,16 +482,16 @@ def plot_and_save_diff(
             pass
 
     ax.set_title(title, fontsize=11, pad=12)
-    ax.set_xlim(-800, 100)
-    ax.set_ylim(-300, 800)
+    # ax.set_xlim(-800, 100)
+    # ax.set_ylim(-300, 800)
     ax.coords[0].set_axislabel("Solar X (arcsec)")
     ax.coords[1].set_axislabel("Solar Y (arcsec)")
 
-    cbar = plt.colorbar(im, ax=ax, shrink=0.82, pad=0.04)
+    # cbar = plt.colorbar(im, ax=ax, shrink=0.82, pad=0.04)
     # cbar.set_label("Difference (DN)", rotation=270, labelpad=14)
 
     plt.tight_layout()
-    plt.savefig(out_png, dpi=250, bbox_inches="tight")
+    plt.savefig(out_png, dpi=300, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -421,7 +500,7 @@ def make_difference_images(
     end_utc: datetime,
     wavelength_angstrom: int = 195,
     mode: str = "running",              # "running" or "base"
-    base_time_utc: Optional[datetime] = None,  # mode="base" で任意指定
+    base_time_utc: Optional[datetime] = None,
     sample_minutes: Optional[int] = 5,
 ):
     """
@@ -431,7 +510,11 @@ def make_difference_images(
       I(t_i) - I(t_{i-1})
     mode="base":
       I(t_i) - I(t_base)
-      base_time_utc を指定しない場合は範囲内の最初の画像を基準にする。
+
+    修正点:
+    - processed product (*_195eu_R.fts) を優先
+    - 各Mapを north-up 回転
+    - 差分前に reference WCS へ揃える
     """
     files = collect_euvi_files_in_range(
         start_utc=start_utc,
@@ -443,17 +526,14 @@ def make_difference_images(
     if len(files) < 2:
         raise RuntimeError(f"Not enough files in range. Found {len(files)} files.")
 
-    # 出力先ディレクトリ
     out_base = ensure_dir(OUT_DIR / f"EUVI_{wavelength_angstrom:03d}" / f"{mode}_diff")
 
-    # 基準画像
     if mode == "base":
         if base_time_utc is None:
             base_file = files[0]
         else:
-            # base_timeに最も近いファイルを選ぶ
             base_file = min(files, key=lambda f: abs((f.obs_time - base_time_utc).total_seconds()))
-        base_map = load_map(base_file.path)
+        base_map = load_map(base_file.path, reference_map=None, rotate_north_up=True)
         base_label = safe_timestr(base_file.obs_time)
         print(f"[INFO] base file: {base_file.path.name}  ({base_file.obs_time})")
     else:
@@ -464,24 +544,23 @@ def make_difference_images(
     prev_time = None
 
     for i, f in enumerate(files):
-        cur_map = load_map(f.path)
-
         if mode == "running":
             if prev_map is None:
-                prev_map = cur_map
+                prev_map = load_map(f.path, reference_map=None, rotate_north_up=True)
                 prev_time = f.obs_time
                 continue
 
-            # 形状が違う場合は差分不能なので明示的に止める（必要ならreprojectを実装してください）
+            cur_map = load_map(f.path, reference_map=prev_map, rotate_north_up=True)
+
             if cur_map.data.shape != prev_map.data.shape:
                 raise RuntimeError(
-                    f"Shape mismatch: {prev_map.data.shape} vs {cur_map.data.shape}\n"
-                    f"prev={prev_map.date}, cur={cur_map.date}"
+                    f"Shape mismatch after alignment: {prev_map.data.shape} vs {cur_map.data.shape}\n"
+                    f"prev={prev_time}, cur={f.obs_time}"
                 )
 
             diff = cur_map.data - prev_map.data
             title = (
-                f"STEREO-A EUVI {wavelength_angstrom} Å  running-diff\n"
+                f"STEREO-A EUVI {wavelength_angstrom} Å running-diff\n"
                 f"{prev_time.strftime('%Y-%m-%d %H:%M:%S')} -> {f.obs_time.strftime('%H:%M:%S')}"
             )
             out_png = out_base / f"diff_{safe_timestr(prev_time)}_{safe_timestr(f.obs_time)}.png"
@@ -491,15 +570,17 @@ def make_difference_images(
             prev_time = f.obs_time
 
         elif mode == "base":
+            cur_map = load_map(f.path, reference_map=base_map, rotate_north_up=True)
+
             if cur_map.data.shape != base_map.data.shape:
                 raise RuntimeError(
-                    f"Shape mismatch: base={base_map.data.shape} vs cur={cur_map.data.shape}\n"
+                    f"Shape mismatch after alignment: base={base_map.data.shape} vs cur={cur_map.data.shape}\n"
                     f"base={base_map.date}, cur={cur_map.date}"
                 )
 
             diff = cur_map.data - base_map.data
             title = (
-                f"STEREO-A EUVI {wavelength_angstrom} Å  base-diff (base={base_label})\n"
+                f"STEREO-A EUVI {wavelength_angstrom} Å base-diff (base={base_label})\n"
                 f"{f.obs_time.strftime('%Y-%m-%d %H:%M:%S')}"
             )
             out_png = out_base / f"diff_base{base_label}_{safe_timestr(f.obs_time)}.png"
@@ -510,48 +591,31 @@ def make_difference_images(
 
     print(f"[DONE] saved image: {out_png}")
 
-
 def main():
     # ===== ここを調整してください（UTC）=====
-    # target_time = parse_dt("2022-06-13 03:00")  # 例：この時刻の差分画像を作る
-    # start_time, end_time, delta_minを調整してください
     start_time = parse_dt("2022-06-13 01:00")
     end_time = parse_dt("2022-06-13 04:00")
-    delta_min = 5
+    delta_min = 10
+    wl = 195
 
     time_list = []
     t = start_time
     while t <= end_time:
         time_list.append(t)
-        t += timedelta(minutes=delta_min)
-
-    wl = 195
+        t += timedelta(minutes=1)
 
     ensure_dir(OUT_DIR)
 
-    # 各時刻ごとに差分画像を作成
     for target_time in time_list:
+    # target_time = parse_dt("2022-06-13 03:30:36")
         print(f"[INFO] target_time = {target_time}")
         make_target_running_difference(
             target_utc=target_time,
             wavelength_angstrom=wl,
             dt_minutes=delta_min,
-            search_window_minutes=30,
-            max_time_error_seconds=240,  # 必要に応じて調整
+            search_window_minutes=delta_min+1,
+            max_time_error_seconds=300,
         )
-    wl = 195
-
-    ensure_dir(OUT_DIR)
-
-    # target_time と 5分前の差分（I(target) - I(target-5min)）を1枚作る
-    make_target_running_difference(
-        target_utc=target_time,
-        wavelength_angstrom=wl,
-        dt_minutes=5,
-        search_window_minutes=30,
-        max_time_error_seconds=240,  # 必要に応じて調整（例：300=±5分）
-    )
-
 
 if __name__ == "__main__":
     main()

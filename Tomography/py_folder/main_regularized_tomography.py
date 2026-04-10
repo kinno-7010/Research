@@ -1710,8 +1710,8 @@ if __name__ == "__main__":
     from types import SimpleNamespace
 
     PB_FITS = [
-        "/mnt/d/wsl/home/kinno-7010/Research/Tomography/Rawdata/pB_Kcor_LASCO_axi_20220613_0300.fits",
-        "/mnt/d/wsl/home/kinno-7010/Research/Tomography/Rawdata/COR1A_pb_pre_20220613_030100.fits",
+        "/mnt/d/wsl/home/kinno-7010/Research_data/Tomography/Rawdata/pB_Kcor_LASCO_axi_20220613_0300.fits",
+        "/mnt/d/wsl/home/kinno-7010/Research_data/Tomography/Rawdata/COR1A_pb_pre_20220613_030100.fits",
     ]
 
     DEFAULT_LONLAT = "0.0,0.0"
@@ -1754,13 +1754,13 @@ if __name__ == "__main__":
     ISO_COLORS = ["gold"]
     
 
-    SAVE_PREPPED_DIR = "/mnt/d/wsl/home/kinno-7010/Research/Tomography/Rawdata/tomo_prepped"
-    SAVE_NE_NPZ = f"/mnt/d/wsl/home/kinno-7010/Research/Tomography/Rawdata/ne3d_solution_"+\
+    SAVE_PREPPED_DIR = "/mnt/d/wsl/home/kinno-7010/Research_data/Tomography/Rawdata/tomo_prepped"
+    SAVE_NE_NPZ = f"/mnt/d/wsl/home/kinno-7010/Research_data/Tomography/Rawdata/ne3d_solution_"+\
         "-".join(str(f) for f in FREQ_MHZ_LIST)+"MHz.npz"
 
 
 
-    SAVE_PNG_PATH = f"/mnt/d/wsl/home/kinno-7010/Research/Tomography/output/tomo_" + \
+    SAVE_PNG_PATH = f"/mnt/d/wsl/home/kinno-7010/Research_data/Tomography/output/tomo_" + \
         "-".join(str(f) for f in FREQ_MHZ_LIST) + "MHz.png"
 
     args = SimpleNamespace(

@@ -276,7 +276,7 @@ def plot_combined_image(image_data, r_map_plot, params_lasco, r_ranges,
     ax.tick_params(axis='both', which='major', labelsize=12)
     plt.tight_layout()
     
-    output_path = f"/mnt/d/wsl/home/kinno-7010/Research/SDO_Mk4_SOHO/pB/pB_combined_image.png"
+    output_path = f"/mnt/d/wsl/home/kinno-7010/Research_data/SDO_Mk4_SOHO/pB/pB_combined_image.png"
     fig.savefig(output_path, dpi=300)
     print(f"✓ pB combined image saved: {output_path}")
     plt.show()

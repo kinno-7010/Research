@@ -18,7 +18,7 @@ def test_real_data_processing():
     print("=== 実観測データ処理テスト ===")
     
     # HMI FITSファイルのパス
-    hmi_file = "/mnt/d/wsl/home/kinno-7010/Research/SDO/HMI/Rawdata/hmi.M_720s.20220613_030000_TAI.fits"
+    hmi_file = "/mnt/d/wsl/home/kinno-7010/Research_data/SDO/HMI/Rawdata/hmi.M_720s.20220613_030000_TAI.fits"
     
     if not os.path.exists(hmi_file):
         print(f"✗ HMI FITSファイルが見つかりません: {hmi_file}")

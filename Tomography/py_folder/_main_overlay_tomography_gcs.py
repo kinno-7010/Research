@@ -419,12 +419,12 @@ def overlay_isosurface_and_gcs(
 # -----------------------------------------------------------------------------
 if __name__ == "__main__":
     # 1) Directories (EDIT as needed)
-    TOMOGRAPHY_DIR = Path("/mnt/d/wsl/home/kinno-7010/Research/Tomography/")
-    GCS_OVERLAY_DIR = Path("/mnt/d/wsl/home/kinno-7010/Research/GCS/gcs_overlay")
+    TOMOGRAPHY_DIR = Path("/mnt/d/wsl/home/kinno-7010/Research_data/Tomography/")
+    GCS_OVERLAY_DIR = Path("/mnt/d/wsl/home/kinno-7010/Research_data/GCS/gcs_overlay")
 
     # If PyThea is *not* installed as a pip package but is a local repo, set the parent directory
     # that contains the "PyThea/" folder.
-    PYTHEA_ROOT = None  # e.g., Path("/mnt/d/wsl/home/kinno-7010/Research")
+    PYTHEA_ROOT = None  # e.g., Path("/mnt/d/wsl/home/kinno-7010/Research_data")
 
     # 2) Inputs
     TOMO_NPZ = TOMOGRAPHY_DIR /"Rawdata/ne3d_solution.npz"  # <-- change to your file

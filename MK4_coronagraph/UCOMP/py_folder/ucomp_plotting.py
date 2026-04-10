@@ -486,7 +486,7 @@ def plot_single_extension(ax, target_time, start_time, end_time, extension_num=1
     # return fig
 
 def plot_ext_12_diff(ax, target_start_time, target_end_time, start_time, end_time, extension_num=12, 
-                         wavelength=DEFAULT_WAVELENGTH, save_path='/mnt/d/wsl/home/kinno-7010/Research/MK4_coronagraph/UCOMP/ucomp_diff_plot.png', 
+                         wavelength=DEFAULT_WAVELENGTH, save_path='/mnt/d/wsl/home/kinno-7010/Research_data/MK4_coronagraph/UCOMP/ucomp_diff_plot.png', 
                          smooth_ext12=False, ext12_sigma=1.0):
     
     # 最も近いデータを見つける

@@ -23,14 +23,14 @@ import sunpy.map  # type: ignore
 
 # HMI 磁場ファイル
 HMI_FILE = Path(
-    "/mnt/d/wsl/home/kinno-7010/Research/SDO/HMI/Rawdata/"
+    "/mnt/d/wsl/home/kinno-7010/Research_data/SDO/HMI/Rawdata/"
     "hmi.M_720s.20220613_030000_TAI.fits"
 )
 
 # あなたの Python モジュールの場所
-HMI_PY_DIR = Path("/mnt/d/wsl/home/kinno-7010/Research/SDO/HMI/py_folder")
-PB_PY_DIR = Path("/mnt/d/wsl/home/kinno-7010/Research/SOHO/pB/py_folder")
-PFSS_PY_DIR = Path("/mnt/d/wsl/home/kinno-7010/Research/PFSS/py_folder")  # このスクリプトのあるフォルダ想定
+HMI_PY_DIR = Path("/mnt/d/wsl/home/kinno-7010/Research_data/SDO/HMI/py_folder")
+PB_PY_DIR = Path("/mnt/d/wsl/home/kinno-7010/Research_data/SOHO/pB/py_folder")
+PFSS_PY_DIR = Path("/mnt/d/wsl/home/kinno-7010/Research_data/PFSS/py_folder")  # このスクリプトのあるフォルダ想定
 
 for p in (HMI_PY_DIR, PB_PY_DIR, PFSS_PY_DIR):
     if str(p) not in sys.path:
@@ -48,11 +48,11 @@ from magnetic_field_2D_map import (  # type: ignore
 
 # LASCO / Mk4 pB ファイル（Stage 3 用・必要なら書き換え）
 F_LASCO = Path(
-    "/mnt/d/wsl/home/kinno-7010/Research/SOHO/pB/"
+    "/mnt/d/wsl/home/kinno-7010/Research_data/SOHO/pB/"
     "C2-PB-20220613_0258.fts"
 )
 F_MK4 = Path(
-    "/mnt/d/wsl/home/kinno-7010/Research/MK4_coronagraph/"
+    "/mnt/d/wsl/home/kinno-7010/Research_data/MK4_coronagraph/"
     "MK4_coronagraph_KCOR/pB/20220613_025810_kcor_l2.fts"
 )
 

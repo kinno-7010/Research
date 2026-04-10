@@ -625,12 +625,12 @@ def apply_brightness_scale_like_main(tomo, ne_raw, y_obs):
 
 def main():
     # ---- Import modules ----
-    TOMO_DIR = Path("/mnt/d/wsl/home/kinno-7010/Research/Tomography/py_folder")
-    GCS_PKG_DIR = Path("/mnt/d/wsl/home/kinno-7010/Research/GCS/gcs_overlay")
+    TOMO_DIR = Path("/mnt/d/wsl/home/kinno-7010/Research_data/Tomography/py_folder")
+    GCS_PKG_DIR = Path("/mnt/d/wsl/home/kinno-7010/Research_data/GCS/gcs_overlay")
     
     PB_FITS_LIST = [
-        "/mnt/d/wsl/home/kinno-7010/Research/Tomography/Rawdata/pB_Kcor_LASCO_axi_20220613_0300.fits",
-        "/mnt/d/wsl/home/kinno-7010/Research/Tomography/Rawdata/COR1A_pb_pre_20220613_030100.fits"
+        "/mnt/d/wsl/home/kinno-7010/Research_data/Tomography/Rawdata/pB_Kcor_LASCO_axi_20220613_0300.fits",
+        "/mnt/d/wsl/home/kinno-7010/Research_data/Tomography/Rawdata/COR1A_pb_pre_20220613_030100.fits"
     ]
 
     # 2) Time used for GCS orientation and frame transform
@@ -678,7 +678,7 @@ def main():
     SHOW_SUN = True
     SHOW_GUI = True
     SAVE_PNG = True
-    PNG_PATH = Path(f"/mnt/d/wsl/home/kinno-7010/Research/Tomography/output/overlay_tomo_gcs_{''.join(str(f) for f in ISO_FREQ_MHZ)}MHz.png")
+    PNG_PATH = Path(f"/mnt/d/wsl/home/kinno-7010/Research_data/Tomography/output/overlay_tomo_gcs_{''.join(str(f) for f in ISO_FREQ_MHZ)}MHz.png")
 
     (
         SphericalGrid,

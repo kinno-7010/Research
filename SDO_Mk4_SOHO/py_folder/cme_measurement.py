@@ -698,7 +698,7 @@ def analyze_single_time_cme_multi_points(target_time_str: str,
             print(f"\nデータを保存: {csv_filename}")
             
             # プロットを保存（analysis_pngフォルダに保存）
-            png_dir = '/mnt/d/wsl/home/kinno-7010/Research/SDO_Mk4_SOHO/CME_measurement/analysis_png'
+            png_dir = '/mnt/d/wsl/home/kinno-7010/Research_data/SDO_Mk4_SOHO/CME_measurement/analysis_png'
             os.makedirs(png_dir, exist_ok=True)
             plot_filename = os.path.join(png_dir, f'cme_analysis_{time_label}.png')
             fig2.savefig(plot_filename, dpi=300, bbox_inches='tight')

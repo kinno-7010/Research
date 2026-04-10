@@ -182,7 +182,7 @@ def plot_density_model(rho: np.ndarray, branch: str = "F", factor: float = 1.0):
     ax.legend(loc="upper left", bbox_to_anchor=(0.5, 0.8), fontsize=16)
 
     
-    output_path = '/mnt/d/wsl/home/kinno-7010/Research/DensityModel/output/density_model_HF_antenna.png'
+    output_path = '/mnt/d/wsl/home/kinno-7010/Research_data/DensityModel/output/density_model_HF_antenna.png'
     plt.savefig(output_path, bbox_inches='tight')
     print(f"Saved {output_path}")
 

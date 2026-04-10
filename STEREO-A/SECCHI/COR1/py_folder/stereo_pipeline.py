@@ -862,8 +862,8 @@ def main():
     import glob
     
     # 入力・出力ディレクトリの設定
-    input_dir = "/mnt/d/wsl/home/kinno-7010/Research/STEREO-A/SECCHI/COR1/Rawdata"
-    output_dir = "/mnt/d/wsl/home/kinno-7010/Research/STEREO-A/SECCHI/COR1/Rawdata/calibration"
+    input_dir = "/mnt/d/wsl/home/kinno-7010/Research_data/STEREO-A/SECCHI/COR1/Rawdata"
+    output_dir = "/mnt/d/wsl/home/kinno-7010/Research_data/STEREO-A/SECCHI/COR1/Rawdata/calibration"
     
     print("=== STEREO-A/SECCHI/COR1 自動校正処理 ===")
     print(f"入力ディレクトリ: {input_dir}")

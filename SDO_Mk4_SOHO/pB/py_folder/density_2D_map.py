@@ -1409,8 +1409,8 @@ def write_2d_fits_like(ref_header, data2d: np.ndarray, out_path: str, *, bunit: 
 
 if __name__ == "__main__":
     # === 入力ファイル（既存と同じ） ===
-    filename_mk4   = r'/mnt/d/wsl/home/kinno-7010/Research/MK4_coronagraph/MK4_coronagraph_KCOR/pB/Rawdata/20220613_025810_kcor_l2_pb.fts'
-    filename_lasco = r'/mnt/d/wsl/home/kinno-7010/Research/SOHO/pB/C2-PB-20220613_0258.fts'
+    filename_mk4   = r'/mnt/d/wsl/home/kinno-7010/Research_data/MK4_coronagraph/MK4_coronagraph_KCOR/pB/Rawdata/20220613_025810_kcor_l2_pb.fts'
+    filename_lasco = r'/mnt/d/wsl/home/kinno-7010/Research_data/SOHO/pB/C2-PB-20220613_0258.fts'
 
     # === 反転モードを選択 ===
     #   'axisymmetric'  : セクタ毎の軸対称反転（従来方式）
@@ -1577,7 +1577,7 @@ if __name__ == "__main__":
     combined_density[mk4_mask] = mk4_on_lasco[mk4_mask]
 
     # === プロット & 保存（重ね合わせ結果） ===
-    out_base = r"/mnt/d/wsl/home/kinno-7010/Research/SDO_Mk4_SOHO/pB/2D_density_map"
+    out_base = r"/mnt/d/wsl/home/kinno-7010/Research_data/SDO_Mk4_SOHO/pB/2D_density_map"
 
     title_combined = (
         f"K-COR (1.0-2.2 $R_\\odot$) + SOHO/LASCO-C2 (2.2-6.0 $R_\\odot$)\n"
@@ -1625,7 +1625,7 @@ if __name__ == "__main__":
     #         hdr_lasco["CUNIT2"] = "arcsec"
     #     hdr_lasco.add_history("Added/verified minimal HPC WCS keywords (CTYPE1/2, CUNIT1/2)")
         
-    #     out_dir = "/mnt/d/wsl/home/kinno-7010/Research/SDO_Mk4_SOHO/pB/Rawdata"
+    #     out_dir = "/mnt/d/wsl/home/kinno-7010/Research_data/SDO_Mk4_SOHO/pB/Rawdata"
     #     # 1) 合成pB（SSCトモグラフィで本質的に必要になるのはこれの“時系列”）
     #     pb_fits_path = os.path.join(out_dir, f"pB_Kcor_LASCO_{suffix}_20220613_0300.fits")
     #     # === Save Earth-view combined pB FITS for regularized tomography ===

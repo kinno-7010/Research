@@ -12,7 +12,7 @@ from peak_analysis import plot_removed_dynamic_spectrum_with_peak, plot_removed_
 from frequency_conversion import density_from_frequency, frequency_from_density
 from utils import _initialize_data_parameters
 
-sys.path.append("/mnt/d/wsl/home/kinno-7010/Research/RadioData/combine")
+sys.path.append("/home/kinno-7010/Research_code/RadioData/combine")
 from predict_type2_const_speed import f_model_from_r, invert_r_from_f
 
 
@@ -354,7 +354,7 @@ def plot_peak_dynamic_spectrum(start_time: str, end_time: str, freq_min: float, 
     ax.plot(lower_x, lower_y, color='purple', linestyle='--', linewidth=2, label=lower_label)
 
     ax.legend(fontsize=12)
-    output_path = '/mnt/d/wsl/home/kinno-7010/Research/RadioData/HF_plot/output/peak_dynamic_spectrum_upper_lower_160degree.png'
+    output_path = '/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/HF_plot/output/peak_dynamic_spectrum_upper_lower_160degree.png'
     plt.savefig(output_path)
     print(f'Saved: {output_path}')
     plt.show()

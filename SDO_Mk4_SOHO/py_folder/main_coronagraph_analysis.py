@@ -92,7 +92,7 @@ def main():
         print("ログを確認してトラブルシューティングを行ってください。")
 
 
-def save_cme_measurements_to_csv(result, target_time_str, base_dir='/mnt/d/wsl/home/kinno-7010/Research/SDO_Mk4_SOHO/CME_measurement/', mk4_time_str=None):
+def save_cme_measurements_to_csv(result, target_time_str, base_dir='/mnt/d/wsl/home/kinno-7010/Research_data/SDO_Mk4_SOHO/CME_measurement/', mk4_time_str=None):
     """
     CME測定結果をCSVファイルに保存（観測量と統計量を分離）
     
@@ -433,7 +433,7 @@ def raw_data_analysis(target_time: str, show_raw_image: bool = True):
         return None
 
 
-def save_raw_cme_measurements_to_csv(result, target_time_str, base_dir='/mnt/d/wsl/home/kinno-7010/Research/SDO_Mk4_SOHO/CME_measurement/', mk4_time_str=None):
+def save_raw_cme_measurements_to_csv(result, target_time_str, base_dir='/mnt/d/wsl/home/kinno-7010/Research_data/SDO_Mk4_SOHO/CME_measurement/', mk4_time_str=None):
     """
     CME測定結果をCSVファイルに保存（生データ用・raw_プレフィックス付き）
     

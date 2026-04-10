@@ -437,7 +437,7 @@ def main():
     print("=" * 50)
     
     # HMI FITSファイルのパス（WSL形式）
-    hmi_file = "/mnt/d/wsl/home/kinno-7010/Research/SDO/HMI/Rawdata/hmi.M_720s.20220613_030000_TAI.fits"
+    hmi_file = "/mnt/d/wsl/home/kinno-7010/Research_data/SDO/HMI/Rawdata/hmi.M_720s.20220613_030000_TAI.fits"
     
     print(f"対象ファイル: {hmi_file}")
     

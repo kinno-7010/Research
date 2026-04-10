@@ -463,13 +463,13 @@ def overlay_isosurface_and_gcs(
 # -----------------------------------------------------------------------------
 if __name__ == "__main__":
     # 1) Set your local code locations
-    TOMO_DIR = Path("/mnt/d/wsl/home/kinno-7010/Research/Tomography/py_folder")
-    GCS_PARENT_DIR = Path("/mnt/d/wsl/home/kinno-7010/Research/GCS")  # contains gcs_overlay/
+    TOMO_DIR = Path("/mnt/d/wsl/home/kinno-7010/Research_data/Tomography/py_folder")
+    GCS_PARENT_DIR = Path("/mnt/d/wsl/home/kinno-7010/Research_data/GCS")  # contains gcs_overlay/
 
     setup_import_paths(TOMO_DIR, GCS_PARENT_DIR)
 
     # 2) Tomography NPZ (your saved 3D solution)
-    TOMO_NPZ = Path("/mnt/d/wsl/home/kinno-7010/Research/SDO_Mk4_SOHO/pB/Rawdata/ne3d_solution.npz")
+    TOMO_NPZ = Path("/mnt/d/wsl/home/kinno-7010/Research_data/SDO_Mk4_SOHO/pB/Rawdata/ne3d_solution.npz")
 
     # 3) Iso-frequency surface (MHz) and harmonic
     #    Example: harmonic=2 means you provide observed frequency ~ 2 f_pe
@@ -500,7 +500,7 @@ if __name__ == "__main__":
     # 7) Output control
     SHOW_GUI = True
     SAVE_PNG = True
-    PNG_PATH = Path("/mnt/d/wsl/home/kinno-7010/Research/overlay_tomo_gcs.png")
+    PNG_PATH = Path("/mnt/d/wsl/home/kinno-7010/Research_data/overlay_tomo_gcs.png")
 
     overlay_isosurface_and_gcs(
         tomo_npz=TOMO_NPZ,

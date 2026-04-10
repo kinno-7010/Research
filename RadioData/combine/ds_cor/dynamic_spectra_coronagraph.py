@@ -15,49 +15,49 @@ import math
 import gc
 import sunpy.map
 from sunpy.coordinates import frames
-sys.path.append(r"F:\wsl\home\kinno-7010\Research\RadioData\combine")
+sys.path.append(r"/home/kinno-7010/Research_code/RadioData/combine")
 from wind_hf_assa_dynamic_spectrum import draw_line_between_points, load_wind_rad2, load_hf, load_callisto, create_dataframe, resample_to_grid, normalize_by_median, combine_spectra
 
 import sys
-sys.path.append(r"F:\wsl\home\kinno-7010\Research\SDO_Mk4_SOHO\py_folder")
+sys.path.append(r"/home/kinno-7010/Research_code/SDO_Mk4_SOHO/py_folder")
 from integrated_analysis import create_single_diff_from_time_image
 from predict_type2_const_speed import overlay_prediction_fullspan, frequency_to_r_saito_factor, r_to_frequency_saito_factor
-sys.path.append(r"F:\wsl\home\kinno-7010\Research\SDO\AIA")
+sys.path.append(r"/home/kinno-7010/Research_code/SDO/AIA")
 from aia_diff_plot_analysis import parse_datetime_str, normalize_log_stretch, get_dn_per_s, add_center_and_rsun, _format_time_str
 
 # from 
 
 # Fixed data locations
-# WIND_CDF_PATH = Path("/mnt/d/wsl/home/kinno-7010/Research/RadioData/Wind/Rawdata/wi_l2_wav_rad2_20220613_v01.cdf")
-# HF_CDF_PATH = Path("/mnt/d/wsl/home/kinno-7010/Research/RadioData/HF_plot/Rawdata/it_h1_hf_20220613_v01.cdf")
+# WIND_CDF_PATH = Path("/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/Wind/Rawdata/wi_l2_wav_rad2_20220613_v01.cdf")
+# HF_CDF_PATH = Path("/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/HF_plot/Rawdata/it_h1_hf_20220613_v01.cdf")
 # ASSA_FITS_PATHS = [
-#     Path("/mnt/d/wsl/home/kinno-7010/Research/RadioData/e-Callisto/Rawdata/Australia-ASSA_20220613_010001_62.fit"),
-#     Path("/mnt/d/wsl/home/kinno-7010/Research/RadioData/e-Callisto/Rawdata/Australia-ASSA_20220613_011501_62.fit"),
-#     Path("/mnt/d/wsl/home/kinno-7010/Research/RadioData/e-Callisto/Rawdata/Australia-ASSA_20220613_013001_62.fit"),
-#     Path("/mnt/d/wsl/home/kinno-7010/Research/RadioData/e-Callisto/Rawdata/Australia-ASSA_20220613_014501_62.fit"),
-#     Path("/mnt/d/wsl/home/kinno-7010/Research/RadioData/e-Callisto/Rawdata/Australia-ASSA_20220613_020001_62.fit"),
-#     Path("/mnt/d/wsl/home/kinno-7010/Research/RadioData/e-Callisto/Rawdata/Australia-ASSA_20220613_021501_62.fit"),
-#     Path("/mnt/d/wsl/home/kinno-7010/Research/RadioData/e-Callisto/Rawdata/Australia-ASSA_20220613_023001_62.fit"),
-#     Path("/mnt/d/wsl/home/kinno-7010/Research/RadioData/e-Callisto/Rawdata/Australia-ASSA_20220613_024500_62.fit"),
-#     Path("/mnt/d/wsl/home/kinno-7010/Research/RadioData/e-Callisto/Rawdata/Australia-ASSA_20220613_030000_62.fit"),
-#     Path("/mnt/d/wsl/home/kinno-7010/Research/RadioData/e-Callisto/Rawdata/Australia-ASSA_20220613_031500_62.fit"),
-#     Path("/mnt/d/wsl/home/kinno-7010/Research/RadioData/e-Callisto/Rawdata/Australia-ASSA_20220613_033000_62.fit"),
+#     Path("/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/e-Callisto/Rawdata/Australia-ASSA_20220613_010001_62.fit"),
+#     Path("/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/e-Callisto/Rawdata/Australia-ASSA_20220613_011501_62.fit"),
+#     Path("/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/e-Callisto/Rawdata/Australia-ASSA_20220613_013001_62.fit"),
+#     Path("/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/e-Callisto/Rawdata/Australia-ASSA_20220613_014501_62.fit"),
+#     Path("/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/e-Callisto/Rawdata/Australia-ASSA_20220613_020001_62.fit"),
+#     Path("/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/e-Callisto/Rawdata/Australia-ASSA_20220613_021501_62.fit"),
+#     Path("/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/e-Callisto/Rawdata/Australia-ASSA_20220613_023001_62.fit"),
+#     Path("/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/e-Callisto/Rawdata/Australia-ASSA_20220613_024500_62.fit"),
+#     Path("/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/e-Callisto/Rawdata/Australia-ASSA_20220613_030000_62.fit"),
+#     Path("/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/e-Callisto/Rawdata/Australia-ASSA_20220613_031500_62.fit"),
+#     Path("/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/e-Callisto/Rawdata/Australia-ASSA_20220613_033000_62.fit"),
 # ]
-AIA_BASE_DATA_DIR = Path(r"F:\wsl\home\kinno-7010\Research\SDO\AIA\Rawdata")
-WIND_CDF_PATH = Path(r"F:\wsl\home\kinno-7010\Research\RadioData\Wind\Rawdata\wi_l2_wav_rad2_20220613_v01.cdf")
-HF_CDF_PATH = Path(r"F:\wsl\home\kinno-7010\Research\RadioData\HF_plot\Rawdata\it_h1_hf_20220613_v01.cdf")
+AIA_BASE_DATA_DIR = Path(r"/mnt/d/wsl/home/kinno-7010/Research_data/SDO\AIA\Rawdata")
+WIND_CDF_PATH = Path(r"/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/Wind/Rawdata/wi_l2_wav_rad2_20220613_v01.cdf")
+HF_CDF_PATH = Path(r"/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/HF_plot/Rawdata/it_h1_hf_20220613_v01.cdf")
 ASSA_FITS_PATHS = [
-    Path(r"F:\wsl\home\kinno-7010\Research\RadioData\e-Callisto\Rawdata\Australia-ASSA_20220613_010001_62.fit"),
-    Path(r"F:\wsl\home\kinno-7010\Research\RadioData\e-Callisto\Rawdata\Australia-ASSA_20220613_011501_62.fit"),
-    Path(r"F:\wsl\home\kinno-7010\Research\RadioData\e-Callisto\Rawdata\Australia-ASSA_20220613_013001_62.fit"),
-    Path(r"F:\wsl\home\kinno-7010\Research\RadioData\e-Callisto\Rawdata\Australia-ASSA_20220613_014501_62.fit"),
-    Path(r"F:\wsl\home\kinno-7010\Research\RadioData\e-Callisto\Rawdata\Australia-ASSA_20220613_020001_62.fit"),
-    Path(r"F:\wsl\home\kinno-7010\Research\RadioData\e-Callisto\Rawdata\Australia-ASSA_20220613_021501_62.fit"),
-    Path(r"F:\wsl\home\kinno-7010\Research\RadioData\e-Callisto\Rawdata\Australia-ASSA_20220613_023001_62.fit"),
-    Path(r"F:\wsl\home\kinno-7010\Research\RadioData\e-Callisto\Rawdata\Australia-ASSA_20220613_024500_62.fit"),
-    Path(r"F:\wsl\home\kinno-7010\Research\RadioData\e-Callisto\Rawdata\Australia-ASSA_20220613_030000_62.fit"),
-    Path(r"F:\wsl\home\kinno-7010\Research\RadioData\e-Callisto\Rawdata\Australia-ASSA_20220613_031500_62.fit"),
-    Path(r"F:\wsl\home\kinno-7010\Research\RadioData\e-Callisto\Rawdata\Australia-ASSA_20220613_033000_62.fit"),
+    Path(r"/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/e-Callisto/Rawdata/Australia-ASSA_20220613_010001_62.fit"),
+    Path(r"/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/e-Callisto/Rawdata/Australia-ASSA_20220613_011501_62.fit"),
+    Path(r"/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/e-Callisto/Rawdata/Australia-ASSA_20220613_013001_62.fit"),
+    Path(r"/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/e-Callisto/Rawdata/Australia-ASSA_20220613_014501_62.fit"),
+    Path(r"/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/e-Callisto/Rawdata/Australia-ASSA_20220613_020001_62.fit"),
+    Path(r"/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/e-Callisto/Rawdata/Australia-ASSA_20220613_021501_62.fit"),
+    Path(r"/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/e-Callisto/Rawdata/Australia-ASSA_20220613_023001_62.fit"),
+    Path(r"/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/e-Callisto/Rawdata/Australia-ASSA_20220613_024500_62.fit"),
+    Path(r"/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/e-Callisto/Rawdata/Australia-ASSA_20220613_030000_62.fit"),
+    Path(r"/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/e-Callisto/Rawdata/Australia-ASSA_20220613_031500_62.fit"),
+    Path(r"/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/e-Callisto/Rawdata/Australia-ASSA_20220613_033000_62.fit"),
 ]
 
 
@@ -609,9 +609,9 @@ def main(
     if combined.empty:
         raise ValueError("No data remains after applying the frequency bounds.")
 
-    # data_output_path = Path(f"/mnt/d/wsl/home/kinno-7010/Research/RadioData/combine/wind_hf_assa_dynamic_spectrum_{start_time.strftime('%Y-%m-%d_%H%M%S')}_{end_time.strftime('%H%M%S')}.csv")
-    # figure_path = Path(f"/mnt/d/wsl/home/kinno-7010/Research/RadioData/combine/wind_hf_assa_dynamic_spectrum_{start_time.strftime('%Y-%m-%d_%H%M%S')}_{end_time.strftime('%H%M%S')}.png")
-    data_output_path = Path(r"F:\wsl\home\kinno-7010\Research\RadioData\combine\ds_cor")
+    # data_output_path = Path(f"/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/combine/wind_hf_assa_dynamic_spectrum_{start_time.strftime('%Y-%m-%d_%H%M%S')}_{end_time.strftime('%H%M%S')}.csv")
+    # figure_path = Path(f"/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/combine/wind_hf_assa_dynamic_spectrum_{start_time.strftime('%Y-%m-%d_%H%M%S')}_{end_time.strftime('%H%M%S')}.png")
+    data_output_path = Path(r"/mnt/d/wsl/home/kinno-7010/Research_data/RadioData\combine\ds_cor")
     # create a safe filename from the target time (works for str or pd.Timestamp)
     if isinstance(cor_target_time, pd.Timestamp):
         ts_str = cor_target_time.strftime("%Y%m%dT%H%M%S")
@@ -748,7 +748,7 @@ if __name__ == "__main__":
     ds_min_frequency = 1.0
     ds_max_frequency = 86.0
     
-    output_dir = Path(r"F:\wsl\home\kinno-7010\Research\RadioData\combine\ds_cor")
+    output_dir = Path(r"/mnt/d/wsl/home/kinno-7010/Research_data/RadioData\combine\ds_cor")
     
     # # 時間帯1: 01:00 - 03:13 (mk4_inner=1.4)
     # cor_start_time_1 = pd.Timestamp("2022-06-13T03:08:00")

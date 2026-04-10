@@ -4,7 +4,7 @@ Custom Group動画作成テストスクリプト
 """
 
 import sys
-sys.path.append('/mnt/d/wsl/home/kinno-7010/Research/MK4_coronagraph/UCOMP/py_folder')
+sys.path.append('/home/kinno-7010/Research_code/MK4_coronagraph/UCOMP/py_folder')
 
 from ucomp_config import *
 from ucomp_plotting_groups import create_ucomp_animation_custom1, create_ucomp_animation_custom2

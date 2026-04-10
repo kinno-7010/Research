@@ -302,7 +302,7 @@ def main():
                        help='Vector field pattern')
     parser.add_argument('--annotations', action='store_true', help='Show angle annotations')
     parser.add_argument('--save', type=str, help='Save path for the figure')
-    parser.add_argument('--output-dir', type=str, default='/mnt/d/wsl/home/kinno-7010/Research/figures',
+    parser.add_argument('--output-dir', type=str, default='/mnt/d/wsl/home/kinno-7010/Research_data/figures',
                        help='Output directory for figures')
     
     args = parser.parse_args()

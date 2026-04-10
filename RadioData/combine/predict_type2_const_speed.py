@@ -595,8 +595,8 @@ if __name__ == "__main__":
     yscale = "log"           # display scale
     with_spectrum = True
     dt_s = 1.0               # sampling for the line across the window
-    # outfile = f"/mnt/d/wsl/home/kinno-7010/Research/RadioData/combine/dynamic_spectra_with_fitting_line_from_pB_convert.png"
-    outfile = f"/mnt/d/wsl/home/kinno-7010/Research/RadioData/combine/all_dynamic_spectra_with_fitting_line.png"
+    # outfile = f"/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/combine/dynamic_spectra_with_fitting_line_from_pB_convert.png"
+    outfile = f"/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/combine/all_dynamic_spectra_with_fitting_line.png"
     # ==== USER CONFIG END ====
 
     plot_type2_prediction(

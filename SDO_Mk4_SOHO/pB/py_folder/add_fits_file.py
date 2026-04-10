@@ -193,7 +193,7 @@ def main():
     )
     parser.add_argument(
         "--fits",
-        default="/mnt/d/wsl/home/kinno-7010/Research/Tomography/Rawdata/pB_Kcor_LASCO_axi_20220613_0300.fits",
+        default="/mnt/d/wsl/home/kinno-7010/Research_data/Tomography/Rawdata/pB_Kcor_LASCO_axi_20220613_0300.fits",
         help="Target FITS path to update in place."
     )
     parser.add_argument(

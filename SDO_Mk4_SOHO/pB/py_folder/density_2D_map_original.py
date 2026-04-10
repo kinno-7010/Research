@@ -1060,8 +1060,8 @@ def export_density_csv(
 
 if __name__ == "__main__":
     # === 入力ファイル（既存と同じ） ===
-    filename_mk4   = r'/mnt/d/wsl/home/kinno-7010/Research/MK4_coronagraph/MK4_coronagraph_KCOR/pB/Rawdata/20220613_025810_kcor_l2.fts'
-    filename_lasco = r'/mnt/d/wsl/home/kinno-7010/Research/SOHO/pB/C2-PB-20220613_0258.fts'
+    filename_mk4   = r'/mnt/d/wsl/home/kinno-7010/Research_data/MK4_coronagraph/MK4_coronagraph_KCOR/pB/Rawdata/20220613_025810_kcor_l2.fts'
+    filename_lasco = r'/mnt/d/wsl/home/kinno-7010/Research_data/SOHO/pB/C2-PB-20220613_0258.fts'
 
     # === 反転モードを選択 ===
     #   'axisymmetric'  : セクタ毎の軸対称反転（従来方式）
@@ -1147,7 +1147,7 @@ if __name__ == "__main__":
     )
 
     # === 保存（モード別のファイル名を付与） ===
-    out_base = r"/mnt/d/wsl/home/kinno-7010/Research/SDO_Mk4_SOHO/pB/2D_density_map"
+    out_base = r"/mnt/d/wsl/home/kinno-7010/Research_data/SDO_Mk4_SOHO/pB/2D_density_map"
     png_path = f"{out_base}_{suffix}_20220613_0300.png"
     csv_path = f"{out_base}_{suffix}_20220613_0300.csv"
 

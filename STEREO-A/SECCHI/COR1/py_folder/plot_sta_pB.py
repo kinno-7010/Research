@@ -350,7 +350,7 @@ def plot_pB(f0: str, f120: str, f240: str,
 
     plt.tight_layout()
     
-    output_path = f"/mnt/d/wsl/home/kinno-7010/Research/STEREO-A/SECCHI/COR1/plot_sta_pB_{TIME_STR.replace(':', '')}.png"
+    output_path = f"/mnt/d/wsl/home/kinno-7010/Research_data/STEREO-A/SECCHI/COR1/plot_sta_pB_{TIME_STR.replace(':', '')}.png"
     fig.savefig(output_path, dpi=200)
     print(f"✓ pB plot saved: {output_path}")
     plt.show()
@@ -359,13 +359,13 @@ def plot_pB(f0: str, f120: str, f240: str,
 if __name__ == "__main__":
     # ========================= Editable parameters ==========================
     # Paths to the three polarized frames (~0°, ~120°, ~240°).
-    f0   = "/mnt/d/wsl/home/kinno-7010/Research/STEREO-A/SECCHI/COR1/Rawdata/20220613_030100_n4c1A.fts"
-    f120 = "/mnt/d/wsl/home/kinno-7010/Research/STEREO-A/SECCHI/COR1/Rawdata/20220613_030118_n4c1A.fts"
-    f240 = "/mnt/d/wsl/home/kinno-7010/Research/STEREO-A/SECCHI/COR1/Rawdata/20220613_030136_n4c1A.fts"
+    f0   = "/mnt/d/wsl/home/kinno-7010/Research_data/STEREO-A/SECCHI/COR1/Rawdata/20220613_030100_n4c1A.fts"
+    f120 = "/mnt/d/wsl/home/kinno-7010/Research_data/STEREO-A/SECCHI/COR1/Rawdata/20220613_030118_n4c1A.fts"
+    f240 = "/mnt/d/wsl/home/kinno-7010/Research_data/STEREO-A/SECCHI/COR1/Rawdata/20220613_030136_n4c1A.fts"
     
-    daily_med_p000 = "/mnt/d/wsl/home/kinno-7010/Research/STEREO-A/SECCHI/COR1/Rawdata/dc1A_p000_220613.fts"
+    daily_med_p000 = "/mnt/d/wsl/home/kinno-7010/Research_data/STEREO-A/SECCHI/COR1/Rawdata/dc1A_p000_220613.fts"
     # 追加：ユーザー指定の p120 を明示
-    daily_med_p120 = "/mnt/d/wsl/home/kinno-7010/Research/STEREO-A/SECCHI/COR1/Rawdata/dc1A_p120_220613.fts"
+    daily_med_p120 = "/mnt/d/wsl/home/kinno-7010/Research_data/STEREO-A/SECCHI/COR1/Rawdata/dc1A_p120_220613.fts"
     # p240 は無ければ自動推定、あるなら明示で OK
     daily_med_p240 = daily_med_p000.replace("p000", "p240")
 

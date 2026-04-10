@@ -8,7 +8,7 @@ from cor_prep import CORPrep
 import os
 
 # テストファイル
-test_file = "/mnt/d/wsl/home/kinno-7010/Research/STEREO-A/SECCHI/COR1/Rawdata/20220613_032136_n4c1A.fts"
+test_file = "/mnt/d/wsl/home/kinno-7010/Research_data/STEREO-A/SECCHI/COR1/Rawdata/20220613_032136_n4c1A.fts"
 
 print("=== ヘッダー情報の転送デバッグ ===")
 

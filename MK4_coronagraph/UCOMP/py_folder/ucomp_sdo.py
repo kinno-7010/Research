@@ -5,7 +5,7 @@ ucomp_ext12.pyの関数をそのまま使用してUCoMP Ext12とSDO/AIA 211を�
 
 import sys
 import os
-sys.path.append('/mnt/d/wsl/home/kinno-7010/Research/MK4_coronagraph/UCOMP/py_folder')
+sys.path.append('/home/kinno-7010/Research_code/MK4_coronagraph/UCOMP/py_folder')
 
 # UCoMP関連のインポート
 from ucomp_config import *
@@ -31,9 +31,9 @@ from datetime import datetime
 import astropy.visualization as vis
 
 # 定数
-SDO_AIA_211_DATA_DIR = Path("/mnt/d/wsl/home/kinno-7010/Research/SDO/AIA/Rawdata/211")
+SDO_AIA_211_DATA_DIR = Path("/mnt/d/wsl/home/kinno-7010/Research_data/SDO/AIA/Rawdata/211")
 SOLAR_RADIUS_THRESHOLD = 1.2  # Rs（太陽半径） - AIA 211を内側に表示
-BASE_DATA_DIR = Path("/mnt/d/wsl/home/kinno-7010/Research/SDO/AIA/Rawdata")
+BASE_DATA_DIR = Path("/mnt/d/wsl/home/kinno-7010/Research_data/SDO/AIA/Rawdata")
 
 def normalize_log_stretch(data):
     """

@@ -16,7 +16,7 @@ import gc
 from scipy.ndimage import map_coordinates
 from reproject import reproject_interp
 
-out_dir_str = "/mnt/d/wsl/home/kinno-7010/Research/SDO_Mk4_SOHO/raw"
+out_dir_str = "/mnt/d/wsl/home/kinno-7010/Research_data/SDO_Mk4_SOHO/raw"
 # --- 1. 時刻パースとデータリスト取得 ---
 
 out_dir = Path(out_dir_str)
@@ -265,7 +265,7 @@ if __name__ == "__main__":
     target_time_obj = Time(target_time_str)
     fig, ax = plt.subplots(figsize=(12, 12))
     create_single_raw_image(ax, target_time_str)
-    output_dir = Path(f"/mnt/d/wsl/home/kinno-7010/Research/SDO_Mk4_SOHO/raw/single_raw_image_multiline_{target_time_obj.strftime('%Y%m%d_%H%M%S')}.png")
+    output_dir = Path(f"/mnt/d/wsl/home/kinno-7010/Research_data/SDO_Mk4_SOHO/raw/single_raw_image_multiline_{target_time_obj.strftime('%Y%m%d_%H%M%S')}.png")
     output_dir.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_dir, dpi=300, bbox_inches="tight")
     print(f"Saved figure to {output_dir}")

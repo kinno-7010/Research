@@ -408,8 +408,8 @@ def export_B_csv(
 # ------------------------------------------------------------
 
 # def main():
-#     filename_mk4 = r"/mnt/d/wsl/home/kinno-7010/Research/MK4_coronagraph/MK4_coronagraph_KCOR/pB/20220613_025810_kcor_l2.fts"
-#     filename_lasco = r"/mnt/d/wsl/home/kinno-7010/Research/SOHO/pB/C2-PB-20220613_0258.fts"
+#     filename_mk4 = r"/mnt/d/wsl/home/kinno-7010/Research_data/MK4_coronagraph/MK4_coronagraph_KCOR/pB/20220613_025810_kcor_l2.fts"
+#     filename_lasco = r"/mnt/d/wsl/home/kinno-7010/Research_data/SOHO/pB/C2-PB-20220613_0258.fts"
     
 #     r_ranges = {"mk4_inner": 1.0, "mk4_outer_lasco_inner": 2.2, "lasco_outer": 7.0}
     
@@ -430,7 +430,7 @@ def export_B_csv(
 #         "--synoptic",
 #         type=str,
 #         default=(
-#             "/mnt/d/wsl/home/kinno-7010/Research/SDO/HMI/Rawdata/"
+#             "/mnt/d/wsl/home/kinno-7010/Research_data/SDO/HMI/Rawdata/"
 #             # "hmi.synoptic_mr_polfil_720s.2258.Mr_polfil.fits"
 #             "hmi.synoptic_mr_polfil_720s.2115.Mr_polfil.fits"
 #         ),
@@ -440,7 +440,7 @@ def export_B_csv(
 #         "--hmi",
 #         type=str,
 #         default=(
-#             "/mnt/d/wsl/home/kinno-7010/Research/SDO/HMI/Rawdata/"
+#             "/mnt/d/wsl/home/kinno-7010/Research_data/SDO/HMI/Rawdata/"
 #             # "hmi.M_720s.20220613_030000_TAI.fits"
 #             "hmi.M_720s.20110922_090000_TAI.fits"
 #         ),
@@ -488,8 +488,8 @@ def export_B_csv(
 #     parser.add_argument(
 #         "--csv",
 #         type=str,
-#         # default="/mnt/d/wsl/home/kinno-7010/Research/PFSS/magnetic_field_2D_map_rss=2.5_20220613_0300.csv",
-#         default="/mnt/d/wsl/home/kinno-7010/Research/PFSS/magnetic_field_2D_map_rss=2.5_20110922_0900.csv",
+#         # default="/mnt/d/wsl/home/kinno-7010/Research_data/PFSS/magnetic_field_2D_map_rss=2.5_20220613_0300.csv",
+#         default="/mnt/d/wsl/home/kinno-7010/Research_data/PFSS/magnetic_field_2D_map_rss=2.5_20110922_0900.csv",
 #         help="2D |B| マップを出力する CSV ファイルパス.",
 #     )
 #     parser.add_argument(
@@ -556,7 +556,7 @@ def export_B_csv(
 #     )
 
 #     output_path = (
-#         f"/mnt/d/wsl/home/kinno-7010/Research/PFSS/"
+#         f"/mnt/d/wsl/home/kinno-7010/Research_data/PFSS/"
 #         # f"magnetic_field_2D_map_rss={args.rss}_20220613_0300.png"
 #         f"magnetic_field_2D_map_rss={args.rss}_20110922_0900.png"
 #     )
@@ -568,11 +568,11 @@ def export_B_csv(
 def main():
     # ---- Paths (edit to your environment) ----
     # pB / density-map side (same as you used for 2D density)
-    filename_mk4 = r"/mnt/d/wsl/home/kinno-7010/Research/MK4_coronagraph/MK4_coronagraph_KCOR/pB/20220613_025810_kcor_l2.fts"
-    filename_lasco = r"/mnt/d/wsl/home/kinno-7010/Research/SOHO/pB/C2-PB-20220613_0258.fts"
+    filename_mk4 = r"/mnt/d/wsl/home/kinno-7010/Research_data/MK4_coronagraph/MK4_coronagraph_KCOR/pB/20220613_025810_kcor_l2.fts"
+    filename_lasco = r"/mnt/d/wsl/home/kinno-7010/Research_data/SOHO/pB/C2-PB-20220613_0258.fts"
 
     # PFSS / HMI input
-    hmi_file = r"/mnt/d/wsl/home/kinno-7010/Research/SDO/HMI/Rawdata/hmi.M_720s.20110922_090000_TAI.fits"
+    hmi_file = r"/mnt/d/wsl/home/kinno-7010/Research_data/SDO/HMI/Rawdata/hmi.M_720s.20110922_090000_TAI.fits"
 
     # Same annulus as density figure
     r_ranges = {"mk4_inner": 1.0, "mk4_outer_lasco_inner": 2.2, "lasco_outer": 7.0}
@@ -617,7 +617,7 @@ def main():
     B_map = np.where((r_map >= r_ranges["mk4_inner"]) & (r_map <= r_ranges["lasco_outer"]), B_map, np.nan)
     
         # Output directory (adjust if needed)
-    out_dir = r"/mnt/d/wsl/home/kinno-7010/Research/PFSS"
+    out_dir = r"/mnt/d/wsl/home/kinno-7010/Research_data/PFSS"
     # out_png = os.path.join(out_dir, f"2D_magnetic_field_map_rss={rss}.png")
     # out_csv = os.path.join(out_dir, f"2D_magnetic_field_map_rss={rss}.csv")
     out_png = os.path.join(out_dir, f"2D_magnetic_field_map_rss={rss}_20110922_0900.png")

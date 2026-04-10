@@ -32,8 +32,8 @@ def _fill_nan_1d(arr):
     return filled
 
 # --- File paths (unchanged) ---
-filename_kcor = r'/mnt/d/wsl/home/kinno-7010/Research/MK4_coronagraph/MK4_coronagraph_KCOR/pB/Rawdata/20220613_025810_kcor_l2_pb.fts'
-filename_lasco = r'/mnt/d/wsl/home/kinno-7010/Research/SOHO/pB/C2-PB-20220613_0258.fts'
+filename_kcor = r'/mnt/d/wsl/home/kinno-7010/Research_data/MK4_coronagraph/MK4_coronagraph_KCOR/pB/Rawdata/20220613_025810_kcor_l2_pb.fts'
+filename_lasco = r'/mnt/d/wsl/home/kinno-7010/Research_data/SOHO/pB/C2-PB-20220613_0258.fts'
 
 def main(fit_r_min, fit_r_max):
     # instrument_mk4 = "Mk4"
@@ -270,7 +270,7 @@ def main(fit_r_min, fit_r_max):
 
     ax_ne.set_xlim(r_min_for_plot, r_max_for_plot)
     ax_ne.set_ylim(1e5, 1e9)
-    pB_line_output_path = f"/mnt/d/wsl/home/kinno-7010/Research/SDO_Mk4_SOHO/pB/pB_line_main_{theta_to_plot:.0f}deg_fit{fit_r_min:.1f}-{fit_r_max:.1f}.png"
+    pB_line_output_path = f"/mnt/d/wsl/home/kinno-7010/Research_data/SDO_Mk4_SOHO/pB/pB_line_main_{theta_to_plot:.0f}deg_fit{fit_r_min:.1f}-{fit_r_max:.1f}.png"
     plt.savefig(pB_line_output_path, dpi=300, bbox_inches="tight")
     print(f"✓ pB line plot saved: {pB_line_output_path}")
     plt.show()

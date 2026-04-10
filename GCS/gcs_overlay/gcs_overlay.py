@@ -18,7 +18,7 @@ from astropy.coordinates import SkyCoord
 from astropy.time import Time
 
 # We import only our minimal geometry helper
-sys.path.append("F:/wsl/home/kinno-7010/Research/GCS")
+sys.path.append("/home/kinno-7010/Research_code/GCS")
 from gcs_geometry import GCSParams, sample_gcs_wireframe_points
 
 # SunPy frames imports are inside functions to avoid import-time issues if SunPy is not present.

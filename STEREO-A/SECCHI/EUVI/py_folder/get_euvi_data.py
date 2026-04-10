@@ -264,7 +264,7 @@ def download_stereo_euvi(
 
 def main():
     # 例: あなたの AIA synoptic 取得コードと同じ中心時刻・時間窓
-    target_time_str = "2022-06-13T01:00:00"
+    target_time_str = "2022-06-13T00:50:00"
     tw = TimeWindow(
         center_utc=parse_utc(target_time_str),
         minutes_before=0,
@@ -272,16 +272,16 @@ def main():
     )
 
     # 出力先（Windows パスでもOK）
-    out_dir = ensure_dir(pathlib.Path(r"/mnt/d/wsl/home/kinno-7010/Research/STEREO-A/SECCHI/EUVI/Rawdata"))
+    out_dir = ensure_dir(pathlib.Path(r"/mnt/d/wsl/home/kinno-7010/Research_data/STEREO-A/SECCHI/EUVI/Rawdata"))
 
     # STEREO-A EUVI（例: 195Å、5分間引き）
-    # 195 (10min), 171(2.5min), 284(20min), 304(10min)
+    # 195 , 171(2.5min), 284(20min), 304(10min)
     download_stereo_euvi(
         tw=tw,
         out_dir=out_dir,
         spacecraft="A",
         wavelength_angstrom=195,
-        sample_minutes=5,
+        sample_minutes=1,
     )
     
 if __name__ == "__main__":

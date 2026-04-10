@@ -37,7 +37,7 @@ def _slice_data(time_array, data, start_dt, end_dt, freq_mhz, freq_min, freq_max
 
 def _initialize_data_parameters():
         # CDFファイルのパス
-    file_path = "/mnt/d/wsl/home/kinno-7010/Research/RadioData/HF_plot/Rawdata/it_h1_hf_20220613_v01.cdf"
+    file_path = "/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/HF_plot/Rawdata/it_h1_hf_20220613_v01.cdf"
 
     # CDFファイルを読み込み
     cdf_file = cdflib.CDF(file_path)

@@ -32,9 +32,9 @@ from astropy.time import Time
 
 CANDIDATE_PATHS = [
     r"D:\\wsl\\home\\kinno-7010\\Research\\SDO_Mk4_SOHO\\py_folder",
-    "/mnt/d/wsl/home/kinno-7010/Research/SDO_Mk4_SOHO/py_folder",
+    "/mnt/d/wsl/home/kinno-7010/Research_data/SDO_Mk4_SOHO/py_folder",
     r"D:\\wsl\\home\\kinno-7010\\Research\\PyThea\\Kouloumvakos_GitHub",
-    "/mnt/d/wsl/home/kinno-7010/Research/PyThea/Kouloumvakos_GitHub",
+    "/mnt/d/wsl/home/kinno-7010/Research_data/PyThea/Kouloumvakos_GitHub",
 ]
 
 for path in CANDIDATE_PATHS:

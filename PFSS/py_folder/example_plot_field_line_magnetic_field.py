@@ -18,7 +18,7 @@ from pfsspy.sample_data import get_gong_map
 
 ###############################################################################
 # Load a GONG magnetic field map
-gong_fname = '/mnt/d/wsl/home/kinno-7010/Research/SDO/HMI/Rawdata/hmi.M_720s.20110922_090000_TAI.fits'
+gong_fname = '/mnt/d/wsl/home/kinno-7010/Research_data/SDO/HMI/Rawdata/hmi.M_720s.20110922_090000_TAI.fits'
 gong_map = sunpy.map.Map(gong_fname)
 
 ###############################################################################

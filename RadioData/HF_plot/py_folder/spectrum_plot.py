@@ -217,7 +217,7 @@ if __name__ == "__main__":
         exit(1)
     
     # --- Define the output directory path ---
-    output_dir = '../output' # <-- 2. Define the correct output path
+    output_dir = '/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/HF_plot/output' # <-- 2. Define the correct output path
     os.makedirs(output_dir, exist_ok=True) # <-- 3. Create the directory if it doesn't exist
     
     print()

@@ -29,7 +29,7 @@ import astropy.visualization as vis
 
 
 # HMI解析モジュールのインポート
-sys.path.append('/mnt/d/wsl/home/kinno-7010/Research/SDO/HMI/py_folder')
+sys.path.append('/home/kinno-7010/Research_code/SDO/HMI/py_folder')
 from hmi_analysis_wcs import read_hmi_quick, draw_hmi_solar_grid
 
 
@@ -320,7 +320,7 @@ def plot_sdo_aia_rgb(datetime_str,
     --------
     tuple or None : return_data=Trueの場合、(rgb_image, reference_map, success)
     """
-    BASE_DATA_DIR = Path('/mnt/d/wsl/home/kinno-7010/Research/SDO/AIA/Rawdata')
+    BASE_DATA_DIR = Path('/mnt/d/wsl/home/kinno-7010/Research_data/SDO/AIA/Rawdata')
     # 1. 日時文字列のパース
     try:
         dt_obj = datetime.strptime(datetime_str, "%Y-%m-%d %H:%M")
@@ -479,7 +479,7 @@ def find_files_in_time_range(start_time: str, end_time: str, time_tolerance_seco
     指定された時間範囲にあるFITSファイルを検索し、時刻をグループ化して返す。
     時刻のわずかなズレを許容するため、指定された秒数で時刻を丸める（タイムビン）。
     """
-    BASE_DATA_DIR = Path('/mnt/d/wsl/home/kinno-7010/Research/SDO/AIA/Rawdata')
+    BASE_DATA_DIR = Path('/mnt/d/wsl/home/kinno-7010/Research_data/SDO/AIA/Rawdata')
     print(f"ディレクトリ '{BASE_DATA_DIR}' 内の.fits/.ftsファイルを再帰的に検索しています...")
     all_files = sorted(BASE_DATA_DIR.rglob('*.fits')) + sorted(BASE_DATA_DIR.rglob('*.fts'))
     all_files = sorted(list(set(all_files))) # 重複を削除
@@ -755,7 +755,7 @@ def plot_hmi_with_pfss(hmi_data, aia_rgb_data, pfss_output, field_lines, rss, nr
     # fig.subplots_adjust(top=0.92)
 
     if save_filename is None:
-        save_filename = '/mnt/d/wsl/home/kinno-7010/Research/PFSS/hmi_pfss_overlay.png'
+        save_filename = '/mnt/d/wsl/home/kinno-7010/Research_data/PFSS/hmi_pfss_overlay.png'
     
     plt.savefig(save_filename, dpi=300, bbox_inches='tight')
     print(f"  プロットを保存: {save_filename}")
@@ -774,7 +774,7 @@ def main():
     np.random.seed(42)
     
     # HMIファイルパス
-    hmi_file = "/mnt/d/wsl/home/kinno-7010/Research/SDO/HMI/Rawdata/hmi.M_720s.20220613_030000_TAI.fits"
+    hmi_file = "/mnt/d/wsl/home/kinno-7010/Research_data/SDO/HMI/Rawdata/hmi.M_720s.20220613_030000_TAI.fits"
     
     # ======================= ここからが修正部分 =======================
     # PFSSパラメータを定数として定義（変更可能）

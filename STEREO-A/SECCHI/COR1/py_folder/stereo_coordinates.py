@@ -159,6 +159,56 @@ class STEREOCoordinateTransform:
         return pa_north
     
     @staticmethod
+    def get_solar_center_pixel(header, image_shape, origin=0):
+        """
+        WCS上の太陽中心 (HPLN=0 arcsec, HPLT=0 arcsec) を
+        pixel座標に変換して返す。
+
+        Parameters
+        ----------
+        header : astropy.io.fits.Header
+            FITSヘッダー
+        image_shape : tuple
+            画像サイズ (ny, nx)
+        origin : int
+            0ならnumpy index系, 1ならFITS系
+
+        Returns
+        -------
+        center_x, center_y : float, float
+            太陽中心のpixel座標
+        """
+        updated_header = STEREOCoordinateTransform.correct_pointing(header, image_shape)
+
+        # CROTA がある場合は WCS が解釈しやすいように CROTA2 にも入れる
+        if 'CROTA2' not in updated_header:
+            if 'CROTA' in updated_header:
+                updated_header['CROTA2'] = float(updated_header['CROTA'])
+            elif 'CROTA1' in updated_header:
+                updated_header['CROTA2'] = float(updated_header['CROTA1'])
+
+        try:
+            wcs = WCS(updated_header)
+            world = np.array([[0.0, 0.0]], dtype=float)  # (HPLN, HPLT) = (0, 0) arcsec
+            center_x, center_y = wcs.all_world2pix(world, origin)[0]
+
+            if np.isfinite(center_x) and np.isfinite(center_y):
+                return float(center_x), float(center_y)
+
+        except Exception as e:
+            warnings.warn(f"WCS solar-center transform failed, fallback to CRPIX: {e}")
+
+        # fallback
+        if origin == 0:
+            fallback_x = float(updated_header.get('CRPIX1', image_shape[1] / 2.0 + 0.5)) - 1.0
+            fallback_y = float(updated_header.get('CRPIX2', image_shape[0] / 2.0 + 0.5)) - 1.0
+        else:
+            fallback_x = float(updated_header.get('CRPIX1', image_shape[1] / 2.0 + 0.5))
+            fallback_y = float(updated_header.get('CRPIX2', image_shape[0] / 2.0 + 0.5))
+
+        return fallback_x, fallback_y
+    
+    @staticmethod
     def get_crota_angle(header, spacecraft=None):
         """
         FITSヘッダーから回転角を取得・計算（実際のファイルデータを優先）
@@ -315,51 +365,40 @@ class STEREOVignettingCorrection:
     def create_vignetting_map(image_shape, header=None, method='polynomial'):
         """
         ビネッティング補正マップを生成
-        
-        Parameters:
-        -----------
-        image_shape : tuple
-            画像サイズ (ny, nx)
-        header : astropy.io.fits.Header, optional
-            FITSヘッダー（パラメータ取得用）
-        method : str
-            補正方法 ('polynomial', 'radial', 'empirical')
-            
-        Returns:
-        --------
-        vignetting_map : numpy.ndarray
-            ビネッティング補正マップ
+        中心は画像中心ではなく、headerがあればWCS上の太陽中心を使う。
         """
         ny, nx = image_shape
-        
-        # 画像中心
-        center_x = nx / 2.0
-        center_y = ny / 2.0
-        
-        # 座標メッシュ
+
+        if header is not None:
+            center_x, center_y = STEREOCoordinateTransform.get_solar_center_pixel(
+                header, image_shape, origin=0
+            )
+        else:
+            center_x = (nx - 1) / 2.0
+            center_y = (ny - 1) / 2.0
+
         y, x = np.ogrid[:ny, :nx]
         r = np.sqrt((x - center_x)**2 + (y - center_y)**2)
-        
-        # 正規化半径
-        max_radius = min(nx, ny) / 2.0
+
+        # WCS太陽中心から最も近い端までを有効半径とする
+        max_radius = min(center_x, center_y, (nx - 1) - center_x, (ny - 1) - center_y)
+        if not np.isfinite(max_radius) or max_radius <= 0:
+            max_radius = min(nx, ny) / 2.0
+
         r_norm = r / max_radius
-        
+
         if method == 'polynomial':
-            # 多項式補正（COR1用）
-            vignetting_map = (1.0 - 0.15 * r_norm**2 + 
-                            0.08 * r_norm**4 - 0.02 * r_norm**6)
+            vignetting_map = (1.0 - 0.15 * r_norm**2 +
+                              0.08 * r_norm**4 - 0.02 * r_norm**6)
         elif method == 'radial':
-            # 単純な放射状補正
             vignetting_map = 1.0 / (1.0 + 0.1 * r_norm**2)
         else:
-            # 経験的補正
             vignetting_map = np.exp(-0.1 * r_norm**2)
-        
-        # 最小値制限
+
         vignetting_map = np.clip(vignetting_map, 0.1, 1.0)
-        
         return vignetting_map.astype(np.float32)
     
+        
     @staticmethod
     def apply_flat_field(image, flat_field=None):
         """

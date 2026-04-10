@@ -182,7 +182,7 @@ def main():
     )
 
     # 出力先（Windows パスでもOK）
-    out_dir = ensure_dir(pathlib.Path(r"/mnt/d/wsl/home/kinno-7010/Research/GOES_EUVI"))
+    out_dir = ensure_dir(pathlib.Path(r"/mnt/d/wsl/home/kinno-7010/Research_data/GOES_EUVI"))
 
     # # GOES XRS（軟X線時系列）
     # download_goes_xrs(

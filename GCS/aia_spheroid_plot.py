@@ -26,7 +26,7 @@ import sunpy.map
 # --- 既存コードから必要なものを import ---
 # モジュール名は実際のファイル名に合わせて変更してください
 import sys
-sys.path.append("/mnt/d/wsl/home/kinno-7010/Research/SDO/AIA")
+sys.path.append("/home/kinno-7010/Research_code/SDO/AIA")
 from aia_diff_plot_analysis import (
     BASE_DATA_DIR,
     parse_datetime_str,
@@ -39,7 +39,7 @@ from aia_diff_plot_analysis import (
 # 太陽中心＋Rsun 円を描く関数（既存と整合）
 from aia_MGN_diff_plot import add_center_and_rsun
 
-sys.path.append("/mnt/d/wsl/home/kinno-7010/Research/GCS/gcs_overlay")
+sys.path.append("/home/kinno-7010/Research_code/GCS/gcs_overlay")
 
 # GCS パラメータ & ワイヤーフレーム生成
 # --- 追加import（既存の SkyCoord import 行を差し替え） ---
@@ -1027,7 +1027,7 @@ if __name__ == "__main__":
     xlim_arcsec = (-1240.0, -100.0)
     ylim_arcsec = (-300.0, 1240.0)
     out_png = (
-        Path("/mnt/d/wsl/home/kinno-7010/Research/GCS/output")
+        Path("/mnt/d/wsl/home/kinno-7010/Research_data/GCS/output")
         / "AIA_GCS"
         / f"aiaRGB_diff_spheroid_{target_time_str_no_colon.replace(' ', '_')}.png"
     )

@@ -12,7 +12,7 @@ from matplotlib.ticker import FuncFormatter
 from astropy.io import fits
 
 # --- 定数定義 ---
-BASE_DATA_DIR = Path(r"/mnt/d/wsl/home/kinno-7010/Research/STEREO-A/SECCHI/EUVI/Rawdata")
+BASE_DATA_DIR = Path(r"/mnt/d/wsl/home/kinno-7010/Research_data/STEREO-A/SECCHI/EUVI/Rawdata")
 
 def find_closest_euvi_file(target_datetime, wavelength):
     """
@@ -239,7 +239,7 @@ def plot_euvi_image(datetime_str, wavelength):
         print(f"カラーバー設定: {n_ticks}個の目盛り, 範囲=[{vmin:.3f}, {vmax:.3f}]")
 
     plt.tight_layout()
-    output_dir = "/mnt/d/wsl/home/kinno-7010/Research/STEREO-A/SECCHI/EUVI"
+    output_dir = "/mnt/d/wsl/home/kinno-7010/Research_data/STEREO-A/SECCHI/EUVI"
     plt.savefig(f"{output_dir}/euvi_{wavelength_str}_{datetime_str}.png", dpi=300, bbox_inches='tight')
     plt.show()
 
@@ -290,4 +290,4 @@ if __name__ == "__main__":
     
     # プロット例
     print("\n=== プロット例 ===")
-    plot_euvi_image("2022-06-13 03:00", 304)
+    plot_euvi_image("2022-06-13 03:00", 195)

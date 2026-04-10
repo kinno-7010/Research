@@ -1,8 +1,8 @@
 # main_regularized_tomography.pyで作成したTomogprahy上にGCSを重ね合わせてプロットするスクリプト．
 import sys
 
-sys.path.append("/mnt/d/wsl/home/kinno-7010/Research/GCS")
-sys.path.append("/mnt/d/wsl/home/kinno-7010/Research/GCS/gcs_overlay")
+sys.path.append("/home/kinno-7010/Research_code/GCS")
+sys.path.append("/home/kinno-7010/Research_code/GCS/gcs_overlay")
 from main_regularized_tomography import *
 from gcs_overlay import GCSParams, sample_gcs_wireframe_points
 import pyvista as pv
@@ -332,8 +332,8 @@ if __name__ == "__main__":
     from types import SimpleNamespace
 
     PB_FITS = [
-        "/mnt/d/wsl/home/kinno-7010/Research/Tomography/Rawdata/pB_Kcor_LASCO_axi_20220613_0300.fits",
-        "/mnt/d/wsl/home/kinno-7010/Research/Tomography/Rawdata/COR1A_pb_pre_20220613_030100.fits",
+        "/mnt/d/wsl/home/kinno-7010/Research_data/Tomography/Rawdata/pB_Kcor_LASCO_axi_20220613_0300.fits",
+        "/mnt/d/wsl/home/kinno-7010/Research_data/Tomography/Rawdata/COR1A_pb_pre_20220613_030100.fits",
     ]
 
     DEFAULT_LONLAT = "0.0,0.0"
@@ -391,13 +391,13 @@ if __name__ == "__main__":
     )
     
     
-    SAVE_PREPPED_DIR = "/mnt/d/wsl/home/kinno-7010/Research/Tomography/Rawdata/tomo_prepped"
-    SAVE_NE_NPZ = f"/mnt/d/wsl/home/kinno-7010/Research/Tomography/Rawdata/ne3d_solution_"+\
+    SAVE_PREPPED_DIR = "/mnt/d/wsl/home/kinno-7010/Research_data/Tomography/Rawdata/tomo_prepped"
+    SAVE_NE_NPZ = f"/mnt/d/wsl/home/kinno-7010/Research_data/Tomography/Rawdata/ne3d_solution_"+\
         "-".join(str(f) for f in FREQ_MHZ_LIST)+"MHz.npz"
 
 
 
-    SAVE_PNG_PATH = f"/mnt/d/wsl/home/kinno-7010/Research/Tomography/output/tomo_" + \
+    SAVE_PNG_PATH = f"/mnt/d/wsl/home/kinno-7010/Research_data/Tomography/output/tomo_" + \
         "-".join(str(f) for f in FREQ_MHZ_LIST) + "MHz.png"
 
     args = SimpleNamespace(

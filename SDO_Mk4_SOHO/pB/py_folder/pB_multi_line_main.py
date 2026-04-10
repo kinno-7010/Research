@@ -439,7 +439,7 @@ def main(fit_r_min=2.2, fit_r_max=5.0, min_angle_deg=140.0, max_angle_deg=201.0,
         xlim_pix=(-200, 0),
         ylim_pix=(-100, 150),
     )
-    img_output = "/mnt/d/wsl/home/kinno-7010/Research/SDO_Mk4_SOHO/pB/pB_multi_lines.png"
+    img_output = "/mnt/d/wsl/home/kinno-7010/Research_data/SDO_Mk4_SOHO/pB/pB_multi_lines.png"
     fig_img.savefig(img_output, dpi=300, bbox_inches="tight")
     print(f"✓ pB multi-line image saved: {img_output}")
 
@@ -544,7 +544,7 @@ def main(fit_r_min=2.2, fit_r_max=5.0, min_angle_deg=140.0, max_angle_deg=201.0,
     unique = dict(zip(labels, handles))
     ax_ne.legend(unique.values(), unique.keys(), fontsize=10, loc="upper right", ncol=2)
 
-    ne_output = f"/mnt/d/wsl/home/kinno-7010/Research/SDO_Mk4_SOHO/pB/pB_multi_line_profile_{int(angles_deg[0])}-{int(angles_deg[-1])}deg.png"
+    ne_output = f"/mnt/d/wsl/home/kinno-7010/Research_data/SDO_Mk4_SOHO/pB/pB_multi_line_profile_{int(angles_deg[0])}-{int(angles_deg[-1])}deg.png"
     fig_ne.savefig(ne_output, dpi=300, bbox_inches="tight")
     print(f"✓ pB multi-line Ne profile saved: {ne_output}")
     plt.show()

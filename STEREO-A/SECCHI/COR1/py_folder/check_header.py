@@ -7,7 +7,7 @@ from astropy.io import fits
 import os
 
 # テストファイルのパス
-filepath = "/mnt/d/wsl/home/kinno-7010/Research/STEREO-A/SECCHI/COR1/Rawdata/20220613_032136_n4c1A.fts"
+filepath = "/mnt/d/wsl/home/kinno-7010/Research_data/STEREO-A/SECCHI/COR1/Rawdata/20220613_032136_n4c1A.fts"
 
 try:
     with fits.open(filepath) as hdul:

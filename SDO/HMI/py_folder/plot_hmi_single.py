@@ -41,9 +41,9 @@ def plot_hmi_single(hmi_data, downsample=1):
     return fig, ax, masked_data, hmi_map
 
 if __name__ == "__main__":
-    hmi_file = "/mnt/d/wsl/home/kinno-7010/Research/SDO/HMI/Rawdata/hmi.M_720s.20220613_030000_TAI.fits"
+    hmi_file = "/mnt/d/wsl/home/kinno-7010/Research_data/SDO/HMI/Rawdata/hmi.M_720s.20220613_030000_TAI.fits"
     hmi_data = read_hmi_quick(hmi_file)
     fig, ax, masked_data, hmi_map = plot_hmi_single(hmi_data)
-    plt.savefig("/mnt/d/wsl/home/kinno-7010/Research/SDO/HMI/hmi_single.png", dpi=300)
-    print("Saved figure to /mnt/d/wsl/home/kinno-7010/Research/SDO/HMI/hmi_single.png")
+    plt.savefig("/mnt/d/wsl/home/kinno-7010/Research_data/SDO/HMI/hmi_single.png", dpi=300)
+    print("Saved figure to /mnt/d/wsl/home/kinno-7010/Research_data/SDO/HMI/hmi_single.png")
     plt.show()

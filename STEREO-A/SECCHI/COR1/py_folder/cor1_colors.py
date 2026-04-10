@@ -339,7 +339,7 @@ def main():
     plt.colorbar(im3, ax=axes[2])
     
     plt.tight_layout()
-    plt.savefig('/mnt/d/wsl/home/kinno-7010/Research/STEREO-A/SECCHI/COR1/py_folder/secchi_colormap_test.png')
+    plt.savefig('/mnt/d/wsl/home/kinno-7010/Research_data/STEREO-A/SECCHI/COR1/py_folder/secchi_colormap_test.png')
     plt.close()
     
     print("Colormap test completed successfully!")

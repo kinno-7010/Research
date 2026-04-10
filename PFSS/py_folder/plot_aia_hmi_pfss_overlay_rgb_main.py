@@ -661,8 +661,8 @@ if __name__ == "__main__":
     from datetime import datetime
 
     # 入力ファイル/ディレクトリ
-    HMI_FILE = r"/mnt/d/wsl/home/kinno-7010/Research/SDO/HMI/Rawdata/hmi.M_720s.20220613_030000_TAI.fits"
-    AIA_ROOT = r"/mnt/d/wsl/home/kinno-7010/Research/SDO/AIA/Rawdata"
+    HMI_FILE = r"/mnt/d/wsl/home/kinno-7010/Research_data/SDO/HMI/Rawdata/hmi.M_720s.20220613_030000_TAI.fits"
+    AIA_ROOT = r"/mnt/d/wsl/home/kinno-7010/Research_data/SDO/AIA/Rawdata"
 
     # 対象時刻（AIAファイル名は分解能1分の想定）
     TIME_OBJ = datetime.strptime("2022-06-13 03:00", "%Y-%m-%d %H:%M")
@@ -689,7 +689,7 @@ if __name__ == "__main__":
     BLEND_DR = 0.6     # 非放射成分をゼロにするまでの厚み [Rsun]    
 
     # 出力先（Noneなら表示のみ）
-    SAVE_PATH = fr"/mnt/d/wsl/home/kinno-7010/Research/PFSS/aia_pfss_Rss{RSS}_nrho{NRHO}_{TIME_OBJ.strftime('%Y%m%d_%H%M')}_triming.png"
+    SAVE_PATH = fr"/mnt/d/wsl/home/kinno-7010/Research_data/PFSS/aia_pfss_Rss{RSS}_nrho{NRHO}_{TIME_OBJ.strftime('%Y%m%d_%H%M')}_triming.png"
 
     # 実行
     run_pipeline(HMI_FILE, AIA_ROOT, TIME_OBJ,

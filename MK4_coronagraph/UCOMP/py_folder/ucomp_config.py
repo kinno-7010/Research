@@ -5,7 +5,7 @@ UCOMPデータの読み込み、処理、描画のための設定とユーティ
 
 import sys
 import os
-sys.path.append('/mnt/d/wsl/home/kinno-7010/Research/SDO_Mk4_SOHO/py_folder')
+sys.path.append('/home/kinno-7010/Research_code/SDO_Mk4_SOHO/py_folder')
 
 # 必要なライブラリのインポート
 import numpy as np
@@ -27,8 +27,8 @@ except ImportError:
     matplotlib.use('Agg')
 
 # UCOMPデータパス設定
-UCOMP_DATA_DIR = "/mnt/d/wsl/home/kinno-7010/Research/MK4_coronagraph/UCOMP/Rawdata"
-UCOMP_OUTPUT_DIR = "/mnt/d/wsl/home/kinno-7010/Research/MK4_coronagraph/UCOMP"
+UCOMP_DATA_DIR = "/mnt/d/wsl/home/kinno-7010/Research_data/MK4_coronagraph/UCOMP/Rawdata"
+UCOMP_OUTPUT_DIR = "/mnt/d/wsl/home/kinno-7010/Research_data/MK4_coronagraph/UCOMP"
 
 # UCOMPファイル名パターン設定
 UCOMP_FILENAME_PATTERN = "YYYYMMDD.HHMMSS.ucomp.{wavelength}.l2.fts"

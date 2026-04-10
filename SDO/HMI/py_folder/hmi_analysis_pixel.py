@@ -221,7 +221,7 @@ def plot_hmi_quick(hmi_data, downsample=1):
     plt.tight_layout()
     
     # 保存場所をResearch/SDO/HMIに変更
-    save_dir = "/mnt/d/wsl/home/kinno-7010/Research/SDO/HMI"
+    save_dir = "/mnt/d/wsl/home/kinno-7010/Research_data/SDO/HMI"
     filename = f"hmi_quick_view_{time_str.replace(':', '').replace('.', '').replace('-', '')}.png"
     full_path = os.path.join(save_dir, filename)
     os.makedirs(save_dir, exist_ok=True)
@@ -247,7 +247,7 @@ def main():
     print("=" * 40)
     
     # HMI FITSファイルのパス
-    hmi_file = "/mnt/d/wsl/home/kinno-7010/Research/SDO/HMI/Rawdata/hmi.M_720s.20220613_030000_TAI.fits"
+    hmi_file = "/mnt/d/wsl/home/kinno-7010/Research_data/SDO/HMI/Rawdata/hmi.M_720s.20220613_030000_TAI.fits"
     
     if not os.path.exists(hmi_file):
         print(f"エラー: ファイルが見つかりません: {hmi_file}")

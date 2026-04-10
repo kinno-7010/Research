@@ -164,7 +164,7 @@ def sswidl_style_execution():
     print("対象時刻: 2022-06-13T03:00:00")
     
     # まず実観測データの使用を試行
-    hmi_file = "/mnt/d/wsl/home/kinno-7010/Research/SDO/HMI/Rawdata/hmi.M_720s.20220613_030000_TAI.fits"
+    hmi_file = "/mnt/d/wsl/home/kinno-7010/Research_data/SDO/HMI/Rawdata/hmi.M_720s.20220613_030000_TAI.fits"
     
     if os.path.exists(hmi_file) and MODULES_AVAILABLE:
         print("実観測データを使用してSSWIDL処理を実行します...")
@@ -277,7 +277,7 @@ def demo_mode():
     print("時刻: 2022-06-13T03:00:00 - HMI実観測データ")
     
     # HMI FITSファイルのパス
-    hmi_file = "/mnt/d/wsl/home/kinno-7010/Research/SDO/HMI/Rawdata/hmi.M_720s.20220613_030000_TAI.fits"
+    hmi_file = "/mnt/d/wsl/home/kinno-7010/Research_data/SDO/HMI/Rawdata/hmi.M_720s.20220613_030000_TAI.fits"
     
     if not os.path.exists(hmi_file):
         print(f"✗ HMI FITSファイルが見つかりません: {hmi_file}")

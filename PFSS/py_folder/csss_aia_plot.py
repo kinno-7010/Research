@@ -39,7 +39,7 @@ from pfsspy import tracing
 from astropy.wcs import WCS  # ← 追加
 
 # ===================== AIA の読込とRGB合成（あなたの体裁に揃える） =====================
-BASE_AIA_DIR = Path(r"/mnt/d/wsl/home/kinno-7010/Research/SDO/AIA/Rawdata")
+BASE_AIA_DIR = Path(r"/mnt/d/wsl/home/kinno-7010/Research_data/SDO/AIA/Rawdata")
 
 
 def _load_aia_map(dt: datetime, wl: str) -> sunpy.map.Map:
@@ -389,7 +389,7 @@ def plot_aia_with_csss_overlay(
 
 
     DATETIME_STR = ref_map.date.strftime('%Y%m%d-%H%M')
-    output_path = f"/mnt/d/wsl/home/kinno-7010/Research/PFSS/csss_aia_plot_{DATETIME_STR}.png"
+    output_path = f"/mnt/d/wsl/home/kinno-7010/Research_data/PFSS/csss_aia_plot_{DATETIME_STR}.png"
     plt.savefig(output_path, dpi=300)
     print(f"✓ CSSS-AIA プロットが正常に保存されました: {output_path}")
     
@@ -401,7 +401,7 @@ def plot_aia_with_csss_overlay(
 if __name__ == "__main__":
     # 入力：ユーザー指定
     DATETIME_STR = "2022-06-13 03:00"
-    HMI_PATH = r"/mnt/d/wsl/home/kinno-7010/Research/SDO/HMI/Rawdata/hmi.M_720s.20220613_030000_TAI.fits"
+    HMI_PATH = r"/mnt/d/wsl/home/kinno-7010/Research_data/SDO/HMI/Rawdata/hmi.M_720s.20220613_030000_TAI.fits"
 
     # パラメータ（ご指定）
     RCS = 2.5

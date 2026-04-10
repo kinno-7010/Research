@@ -33,9 +33,9 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 import sys
-sys.path.append(r'D:\wsl\home\kinno-7010\Research\SDO_Mk4_SOHO\pB')
-sys.path.append(r'D:\wsl\home\kinno-7010\Research\PFSS')
-sys.path.append(r'D:\wsl\home\kinno-7010\Research\PFSS\py_folder')
+sys.path.append(r'/home/kinno-7010/Research_code/SDO_Mk4_SOHO/pB')
+sys.path.append(r'/home/kinno-7010/Research_code/PFSS')
+sys.path.append(r'/home/kinno-7010/Research_code/PFSS/py_folder')
 
 
 
@@ -419,18 +419,18 @@ def main():
     # ---- 入力 CSV のパスをあなたの環境に合わせて設定 ----
 
     # 2D_density_map.py で出力した CSV（軸対称 or 球対称）
-    # density_csv = r"/mnt/d/wsl/home/kinno-7010/Research/SDO_Mk4_SOHO/pB/2D_density_map_axi.csv"
-    density_csv = r"/mnt/d/wsl/home/kinno-7010/Research/SDO_Mk4_SOHO/pB/2D_density_map_axi_20220613_0300.csv"
+    # density_csv = r"/mnt/d/wsl/home/kinno-7010/Research_data/SDO_Mk4_SOHO/pB/2D_density_map_axi.csv"
+    density_csv = r"/mnt/d/wsl/home/kinno-7010/Research_data/SDO_Mk4_SOHO/pB/2D_density_map_axi_20220613_0300.csv"
 
     # 2D_magnetic_field_map.py で出力した CSV
     # ここでは Bmap のファイル名に rss を含める想定にしています。
     # （PFSS 側のコードの出力名を例えば "Bmap_2D_POS_rss2.5.csv" のように揃えてください）
-    out_dir_pfss = r"/mnt/d/wsl/home/kinno-7010/Research/PFSS"
+    out_dir_pfss = r"/mnt/d/wsl/home/kinno-7010/Research_data/PFSS"
     B_csv = os.path.join(out_dir_pfss, f"magnetic_field_2D_map_rss={rss:.1f}_20220613_0300.csv")
     # B_csv = os.path.join(out_dir_pfss, f"magnetic_field_2D_map_rss={rss:.1f}_20220613_0900.csv")
 
     # ---- 出力ファイル ----
-    out_dir  = r"/mnt/d/wsl/home/kinno-7010/Research/SDO_Mk4_SOHO/pB/"
+    out_dir  = r"/mnt/d/wsl/home/kinno-7010/Research_data/SDO_Mk4_SOHO/pB/"
     out_png  = os.path.join(out_dir, f"2D_alfven_speed_map_rss={rss:.1f}_20220613_0300.png")
     out_csv  = os.path.join(out_dir, f"2D_alfven_speed_map_rss={rss:.1f}_20220613_0300.csv")
 

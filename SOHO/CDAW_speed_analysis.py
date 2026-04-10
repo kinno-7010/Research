@@ -164,7 +164,7 @@ def main():
     """
     メイン実行関数
     """
-    data_file = "/mnt/d/wsl/home/kinno-7010/Research/SOHO/LASCO-C2_AIA_image_from_CDAW/20220613.031211.w360h.v1150.p098g.yht"
+    data_file = "/mnt/d/wsl/home/kinno-7010/Research_data/SOHO/LASCO-C2_AIA_image_from_CDAW/20220613.031211.w360h.v1150.p098g.yht"
     
     try:
         print(f"データファイル読み込み中: {data_file}")
@@ -178,7 +178,7 @@ def main():
         if not df.empty:
             print(df.head())
             
-            output_file = "/mnt/d/wsl/home/kinno-7010/Research/SOHO/CDAW_cme_analysis_20220613_031211.png"
+            output_file = "/mnt/d/wsl/home/kinno-7010/Research_data/SOHO/CDAW_cme_analysis_20220613_031211.png"
             plot_cme_height_time(metadata, df, output_file)
         else:
             print("データが見つかりませんでした。")

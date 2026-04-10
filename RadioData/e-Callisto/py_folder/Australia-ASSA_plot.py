@@ -564,7 +564,7 @@ class eCallistoSpectrum:
         time_start_str = start_time.split('.')[0].replace(':', '')  # 03:14:58.217 → 031458
         time_end_str = end_time.split('.')[0].replace(':', '')    # 03:29:58 → 032958
         
-        filename = f'/mnt/d/wsl/home/kinno-7010/Research/RadioData/e-Callisto/output/Australia-ASSA_{date_str}_{time_start_str}_{time_end_str}_{background_method}.png'
+        filename = f'/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/e-Callisto/output/Australia-ASSA_{date_str}_{time_start_str}_{time_end_str}_{background_method}.png'
         fig.savefig(filename, dpi=300, bbox_inches='tight')
         print(f'画像を保存しました: {filename}')
         plt.tight_layout()
@@ -592,15 +592,15 @@ def main():
         
         # 固定ファイルパス
         # file_paths = [
-        #     '/mnt/d/wsl/home/kinno-7010/Research/RadioData/e-Callisto/Rawdata/Australia-ASSA_20220613_031500_62.fit',
-        #     '/mnt/d/wsl/home/kinno-7010/Research/RadioData/e-Callisto/Rawdata/Australia-ASSA_20220613_033000_62.fit'
+        #     '/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/e-Callisto/Rawdata/Australia-ASSA_20220613_031500_62.fit',
+        #     '/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/e-Callisto/Rawdata/Australia-ASSA_20220613_033000_62.fit'
         # ]
-        file_paths = ["/mnt/d/wsl/home/kinno-7010/Research/RadioData/e-Callisto/Rawdata/Australia-ASSA_20240621_232959_63.fit",
-                      "/mnt/d/wsl/home/kinno-7010/Research/RadioData/e-Callisto/Rawdata/Australia-ASSA_20240621_233000_56.fit",
-                      "/mnt/d/wsl/home/kinno-7010/Research/RadioData/e-Callisto/Rawdata/Australia-ASSA_20240621_234459_63.fit",
-                      "/mnt/d/wsl/home/kinno-7010/Research/RadioData/e-Callisto/Rawdata/Australia-ASSA_20240621_234500_56.fit",
-                      "/mnt/d/wsl/home/kinno-7010/Research/RadioData/e-Callisto/Rawdata/Australia-ASSA_20240622_000000_56.fit",
-                      "/mnt/d/wsl/home/kinno-7010/Research/RadioData/e-Callisto/Rawdata/Australia-ASSA_20240622_000000_63.fit"]
+        file_paths = ["/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/e-Callisto/Rawdata/Australia-ASSA_20240621_232959_63.fit",
+                      "/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/e-Callisto/Rawdata/Australia-ASSA_20240621_233000_56.fit",
+                      "/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/e-Callisto/Rawdata/Australia-ASSA_20240621_234459_63.fit",
+                      "/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/e-Callisto/Rawdata/Australia-ASSA_20240621_234500_56.fit",
+                      "/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/e-Callisto/Rawdata/Australia-ASSA_20240622_000000_56.fit",
+                      "/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/e-Callisto/Rawdata/Australia-ASSA_20240622_000000_63.fit"]
         
         # ファイル存在確認
         existing_files = []

@@ -70,7 +70,7 @@ def plot_pfss(hmi_map, field_lines, x_lims_pix, y_lims_pix, RSS_VAL):
     # plt.tight_layout(pad=0.2, w_pad=0.2, h_pad=0.2)
     # fig.subplots_adjust(top=0.92)
 
-    save_filename = f'/mnt/d/wsl/home/kinno-7010/Research/PFSS/pfss_plot_Rss_{RSS_VAL}.png'
+    save_filename = f'/mnt/d/wsl/home/kinno-7010/Research_data/PFSS/pfss_plot_Rss_{RSS_VAL}.png'
     
     plt.savefig(save_filename, dpi=300, bbox_inches='tight')
     print(f"  プロットを保存: {save_filename}")
@@ -90,7 +90,7 @@ def main():
     np.random.seed(42)
     
     # HMIファイルパス
-    hmi_file = "/mnt/d/wsl/home/kinno-7010/Research/SDO/HMI/Rawdata/hmi.M_720s.20220613_030000_TAI.fits"
+    hmi_file = "/mnt/d/wsl/home/kinno-7010/Research_data/SDO/HMI/Rawdata/hmi.M_720s.20220613_030000_TAI.fits"
     
     # ======================= ここからが修正部分 =======================
     # PFSSパラメータを定数として定義（変更可能）

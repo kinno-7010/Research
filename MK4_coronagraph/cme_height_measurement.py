@@ -616,8 +616,8 @@ def create_cme_height_measurement_movie_enhanced(map_sequence: sunpy.map.MapSequ
 def main():
     """メイン実行関数"""
     # データパスの設定
-    data_folder = r"D:\wsl\home\kinno-7010\Research\MK4_coronagraph\MK4_coronagraph_KCOR\Subtraction_data\Rawdata\kcor_nrgf\20220613.kcor_nrgf.fits"
-    output_folder = r"D:\wsl\home\kinno-7010\Research\MK4_coronagraph\MK4_coronagraph_KCOR\Subtraction_data\output"
+    data_folder = r"/mnt/d/wsl/home/kinno-7010/Research_data/MK4_coronagraph/MK4_coronagraph_KCOR/Subtraction_data/Rawdata/kcor_nrgf/20220613.kcor_nrgf.fits"
+    output_folder = r"/mnt/d/wsl/home/kinno-7010/Research_data/MK4_coronagraph\MK4_coronagraph_KCOR\Subtraction_data\output"
     
     # 出力フォルダを作成
     os.makedirs(output_folder, exist_ok=True)

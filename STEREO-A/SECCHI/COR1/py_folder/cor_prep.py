@@ -601,7 +601,7 @@ def main():
     テスト用のメイン関数
     """
     # テスト用のファイルパス
-    test_file = "/mnt/d/wsl/home/kinno-7010/Research/STEREO-A/SECCHI/COR1/Rawdata/20220613_032136_n4c1A.fts"
+    test_file = "/mnt/d/wsl/home/kinno-7010/Research_data/STEREO-A/SECCHI/COR1/Rawdata/20220613_032136_n4c1A.fts"
     
     # CORPrepインスタンスを作成
     prep = CORPrep(silent=False)
@@ -627,7 +627,7 @@ def main():
             plt.colorbar(label='DN/s')
             plt.title('COR1 Processed Image')
             plt.tight_layout()
-            plt.savefig('/mnt/d/wsl/home/kinno-7010/Research/STEREO-A/SECCHI/COR1/py_folder/cor_prep_test.png')
+            plt.savefig('/mnt/d/wsl/home/kinno-7010/Research_data/STEREO-A/SECCHI/COR1/py_folder/cor_prep_test.png')
             plt.close()
             
             print("Test image saved as cor_prep_test.png")

@@ -1755,7 +1755,7 @@ if __name__ == "__main__":
     pa_bin_deg = 5.0
     envelope_bin_deg = 2.0
 
-    backend = "mpfit"          # "auto", "mpfit", or "scipy"
+    backend = "scipy"          # "auto", "mpfit", or "scipy"
     multistarts = 10
     seed = 0
     fit_anchor = False
@@ -1771,13 +1771,13 @@ if __name__ == "__main__":
     # ------------------------------------------
     ###########################################
     # 変数
-    target_time = "2022-06-13T03:48:36"
+    target_time = "2022-06-13T03:36:18"
     
     anchor_lon_deg = -30.0
     anchor_lat_deg = 19.0
     apex_lon_deg = -54.0394
     apex_lat_deg = 4.9501
-    apex_r_rsun = 4.6322
+    apex_r_rsun = 3.6322
     kappa = 0.5304
     epsilon = -0.3125
 

@@ -37,6 +37,12 @@ COMBINE_DIR = RESEARCH_ROOT / "RadioData" / "combine"
 if str(COMBINE_DIR) not in sys.path:
     sys.path.append(str(COMBINE_DIR))
 
+_RADIO_DATA_DIR = Path(__file__).resolve().parents[2]
+if str(_RADIO_DATA_DIR) not in sys.path:
+    sys.path.insert(0, str(_RADIO_DATA_DIR))
+
+import radio_event_search as _radio_es
+
 from predict_type2_const_speed import f_model_from_r, invert_r_from_f
 from wind_hf_assa_dynamic_spectrum import (
     combine_spectra,
@@ -48,13 +54,9 @@ from wind_hf_assa_dynamic_spectrum import (
     resample_to_grid,
 )
 
-
-WIND_CDF_PATH = RESEARCH_ROOT / "RadioData" / "Wind" / "Rawdata" / "wi_l2_wav_rad2_20220613_v01.cdf"
-HF_CDF_PATH = RESEARCH_ROOT / "RadioData" / "HF_plot" / "Rawdata" / "it_h1_hf_20220613_v01.cdf"
-ASSA_FITS_PATHS = [
-    RESEARCH_ROOT / "RadioData" / "e-Callisto" / "Rawdata" / "Australia-ASSA_20220613_031500_62.fit",
-    RESEARCH_ROOT / "RadioData" / "e-Callisto" / "Rawdata" / "Australia-ASSA_20220613_033000_62.fit",
-]
+WIND_RAW_DIR = Path("/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/Wind/Rawdata")
+HF_RAW_DIR = Path("/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/HF_plot/Rawdata")
+ASSA_RAW_DIR = Path("/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/e-Callisto/Rawdata")
 
 DEFAULT_PEAK_START = [
     "2022-06-13T03:25:00",
@@ -76,6 +78,98 @@ DEFAULT_PEAK_END = [
 ]
 DEFAULT_PEAK_FREQ_MIN = [24, 32, 30, 29.64, 28.2, 27.5, 26]
 DEFAULT_PEAK_FREQ_MAX = [38, 37, 37, 34, 34, 34, 33]
+
+
+def _patch_radio_event_search_directories() -> None:
+    """Align radio_event_search raw-directory globals with this module (see radio_event_search.py)."""
+    _radio_es.WIND_RAW_DIR = WIND_RAW_DIR
+    _radio_es.HF_RAW_DIR = HF_RAW_DIR
+    _radio_es.ASSA_RAW_DIR = ASSA_RAW_DIR
+
+
+def _resolve_instrument_paths(
+    start_time: pd.Timestamp,
+    end_time: pd.Timestamp,
+    assa_focuscodes: Sequence[str],
+) -> tuple[list[Path], list[Path], list[Path]]:
+    """
+    Resolve Wind/HF daily CDF paths from date stamps in filenames, and ASSA FITS paths
+    from filename times plus FITS header/calibration coverage (find_assa_paths).
+    """
+    _patch_radio_event_search_directories()
+    wind_expected = _radio_es.expected_wind_paths(start_time, end_time)
+    hf_expected = _radio_es.expected_hf_paths(start_time, end_time)
+    wind_paths = [p for p in wind_expected if p.is_file() and p.stat().st_size > 0]
+    hf_paths = [p for p in hf_expected if p.is_file() and p.stat().st_size > 0]
+    assa_paths = _radio_es.find_assa_paths(start_time, end_time, focuscodes=assa_focuscodes)
+
+    if not wind_paths:
+        raise FileNotFoundError(
+            "No Wind/RAD2 CDF found for the requested interval under "
+            f"{WIND_RAW_DIR}. Expected filenames like "
+            f"wi_l2_wav_rad2_{start_time.strftime('%Y%m%d')}_v01.cdf "
+            f"(see expected_wind_paths in radio_event_search.py)."
+        )
+    if not hf_paths:
+        raise FileNotFoundError(
+            "No Iitate HF CDF found for the requested interval under "
+            f"{HF_RAW_DIR}. Expected filenames like "
+            f"it_h1_hf_{start_time.strftime('%Y%m%d')}_v01.cdf "
+            f"(see expected_hf_paths in radio_event_search.py)."
+        )
+    if not assa_paths:
+        raise FileNotFoundError(
+            "No Australia-ASSA FITS overlapping the requested interval under "
+            f"{ASSA_RAW_DIR} for focuscodes={tuple(assa_focuscodes)} "
+            f"(see find_assa_paths in radio_event_search.py)."
+        )
+    return wind_paths, hf_paths, assa_paths
+
+
+def _load_wind_rad2_stacked(paths: Sequence[Path]) -> Tuple[pd.DatetimeIndex, np.ndarray, np.ndarray]:
+    """Load one or more daily Wind RAD2 CDFs and concatenate along time."""
+    ordered = sorted(paths, key=lambda p: p.name)
+    times_parts: list[pd.DatetimeIndex] = []
+    values_parts: list[np.ndarray] = []
+    freq_mhz: np.ndarray | None = None
+    for path in ordered:
+        t, f, v = load_wind_rad2(path)
+        if freq_mhz is None:
+            freq_mhz = f
+        elif not np.allclose(freq_mhz, f):
+            raise ValueError(f"Wind/RAD2 frequency grid mismatch between files (check {path.name}).")
+        times_parts.append(t)
+        values_parts.append(v)
+    assert freq_mhz is not None
+    combined_times = pd.DatetimeIndex(
+        np.concatenate([np.asarray(ti, dtype="datetime64[ns]") for ti in times_parts])
+    )
+    combined_values = np.vstack(values_parts)
+    order = np.argsort(combined_times)
+    return combined_times[order], freq_mhz, combined_values[order]
+
+
+def _load_hf_stacked(paths: Sequence[Path], polarization: str) -> Tuple[pd.DatetimeIndex, np.ndarray, np.ndarray]:
+    """Load one or more daily HF CDFs and concatenate along time."""
+    ordered = sorted(paths, key=lambda p: p.name)
+    times_parts: list[pd.DatetimeIndex] = []
+    values_parts: list[np.ndarray] = []
+    freq_mhz: np.ndarray | None = None
+    for path in ordered:
+        t, f, v = load_hf(path, polarization)
+        if freq_mhz is None:
+            freq_mhz = f
+        elif not np.allclose(freq_mhz, f):
+            raise ValueError(f"HF frequency grid mismatch between files (check {path.name}).")
+        times_parts.append(t)
+        values_parts.append(v)
+    assert freq_mhz is not None
+    combined_times = pd.DatetimeIndex(
+        np.concatenate([np.asarray(ti, dtype="datetime64[ns]") for ti in times_parts])
+    )
+    combined_values = np.vstack(values_parts)
+    order = np.argsort(combined_times)
+    return combined_times[order], freq_mhz, combined_values[order]
 
 
 def _freq_to_r(f_mhz: np.ndarray | float, branch: str = "F", factor: float = 1.0) -> np.ndarray | float:

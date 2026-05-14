@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""
+# https://soleil.i4ds.ch/solarradio/data/
+
 e-Callisto Dynamic Spectrum Plotter
 太陽電波バースト観測データのダイナミックスペクトル可視化ツール
 複数HDU対応版 - バイナリテーブルから実際の周波数軸を読み取る

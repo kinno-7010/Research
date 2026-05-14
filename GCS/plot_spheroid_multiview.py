@@ -43,7 +43,7 @@ sys.path.append("/home/kinno-7010/Research_code/SDO_Mk4_SOHO/py_folder")
 sys.path.append("/home/kinno-7010/Research_code/STEREO-A/SECCHI")
 
 try:
-    from integrated_analysis import create_single_diff_from_time_image
+    from integrated_analysis import create_single_diff_from_time_image, get_data_list, select_by_midpoint, select_lasco_by_time_threshold
 except Exception as exc:
     raise ImportError(
         "Failed to import create_single_diff_from_time_image from integrated_analysis.py"
@@ -53,6 +53,8 @@ try:
     from STEREO_integrated_plot import (
         build_common_reference_map,
         create_integrated_stereo_image,
+        build_cor1_diff_map,
+        build_euvi_diff_map,
     )
 except Exception as exc:
     raise ImportError(
@@ -60,6 +62,7 @@ except Exception as exc:
         "from STEREO_integrated_plot.py"
     ) from exc
 
+from astropy.time import Time
 
 # =============================================================================
 # Spheroid model (copied/adapted from plot_spheroid_C2.py)
@@ -187,17 +190,35 @@ class SpheroidDome3DParams:
             self.center_r_rsun = float(self.apex_r_rsun - self.a_rsun)
 
     def legend_label(self) -> str:
-        return (
-            f"Spheroid: κ={self.kappa:.3f}, ε={self.epsilon:.3f}, "
-            f"apex(lon,lat)=({float(self.apex_lon_deg):.1f},{float(self.apex_lat_deg):.1f})°, "
-            f"r_apex={float(self.apex_r_rsun):.2f} R☉"
+        return (f"Spheroid: r_apex={float(self.apex_r_rsun):.2f} $R_\\odot$"
+            f"$\\kappa$={self.kappa:.3f}, $\\epsilon$={self.epsilon:.3f}, "
+            f"apex(lon,lat)=({float(self.apex_lon_deg):.1f},{float(self.apex_lat_deg):.1f})$\\circ$"
         )
+
+def _disable_cursor_data_for_axes_images(ax: plt.Axes) -> None:
+    """Avoid Matplotlib cursor-data OverflowError on displayed images.
+
+    Some of the imshow artists created by the existing Earth/STEREO background
+    plotting code can trigger a Matplotlib backend bug while formatting hover
+    cursor values. The image itself is fine; only the GUI cursor readout fails.
+    This helper disables cursor-data formatting for the image artists without
+    changing the plotted data or overlay geometry.
+    """
+    for im in getattr(ax, "images", []):
+        try:
+            im.get_cursor_data = lambda event, _im=im: None
+        except Exception:
+            pass
+        try:
+            im.format_cursor_data = lambda data, _im=im: ""
+        except Exception:
+            pass
 
 def _extract_earth_display_calibration(ax: plt.Axes) -> dict[str, float] | None:
     """Infer the Earth-panel display scale from the already drawn reference circles.
 
     The guide-circle labels in integrated_analysis.py are written like
-    ``1.4 $R_\odot$`` and ``3.0 $R_\odot$``. Therefore the parser must accept
+    ``1.4 $R_odot$`` and ``3.0 $R_odot$``. Therefore the parser must accept
     the optional LaTeX dollar sign between the numeric value and the letter R.
     """
     import re
@@ -458,6 +479,85 @@ def _observer_hgs_from_map(reference_map: sunpy.map.GenericMap) -> tuple[float, 
         rsun_ref = float(meta.get("RSUN_REF", 6.957e8))
         d_rsun = float(dsun_obs / rsun_ref)
         return lon_deg, lat_deg, d_rsun
+
+def _select_previous_or_equal_map(reference_time: Time, map_list: list[tuple]):
+    """Return the last map whose observation time is <= reference_time."""
+    if not map_list:
+        raise ValueError("map_list is empty")
+
+    sorted_list = sorted(map_list, key=lambda mp: mp[0].date)
+    idx = 0
+    for i, (m, _) in enumerate(sorted_list):
+        if m.date <= reference_time:
+            idx = i
+        else:
+            break
+    return sorted_list[idx][0]
+
+
+def _format_hms(t) -> str:
+    """Format Time / datetime-like object to HH:MM:SS."""
+    if hasattr(t, "strftime"):
+        return t.strftime("%H:%M:%S")
+    return Time(t).strftime("%H:%M:%S")
+
+
+def _resolve_earth_view_time_strings(target_time_str: str, delta_time_min: int) -> dict[str, str]:
+    """Resolve K-COR/LASCO target and base times from the actual selected data files.
+
+    The selection logic is matched to integrated_analysis.create_single_diff_from_time_image():
+    - K-COR uses select_by_midpoint() for target and base
+    - LASCO-C2 uses select_lasco_by_time_threshold() for target and base
+    """
+    target_time_obj = Time(target_time_str)
+    base_time_obj = target_time_obj - float(delta_time_min) * u.min
+
+    scan_start = min(target_time_obj, base_time_obj) - 1 * u.hour
+    scan_end = max(target_time_obj, base_time_obj) + 1 * u.hour
+
+    mk4_list, lasco_list, _ = get_data_list(scan_start, scan_end)
+
+    mk4_target_map, _ = select_by_midpoint(target_time_obj, mk4_list)
+    mk4_base_map, _ = select_by_midpoint(base_time_obj, mk4_list)
+
+    # LASCO-C2 target/base are both resolved from the actual selection logic.
+    lasco_target_map, _ = select_lasco_by_time_threshold(target_time_obj, lasco_list)
+    lasco_base_map, _ = select_lasco_by_time_threshold(base_time_obj, lasco_list)
+
+    return {
+        "kcor_time_str": _format_hms(mk4_target_map.date),
+        "kcor_base_time_str": _format_hms(mk4_base_map.date),
+        "lasco_time_str": _format_hms(lasco_target_map.date),
+        "lasco_base_time_str": _format_hms(lasco_base_map.date),
+    }
+
+
+
+def _resolve_stereo_view_time_strings(target_time_str: str, delta_time_min: int) -> dict[str, str]:
+    """Resolve STEREO-A title times from the actual selected data files.
+
+    COR1 uses three files (0 s, 18 s, 36 s), and build_cor1_diff_map() returns the
+    times of the anchor files selected by select_nearest_cor1_fits_path(), i.e. the
+    0-second file times used for the sequence construction.
+    """
+    _, cor1_target_time, cor1_base_time = build_cor1_diff_map(
+        target_time_str,
+        base_minutes_before=delta_time_min,
+    )
+    _, euvi_prev_time, euvi_cur_time = build_euvi_diff_map(
+        target_time_str,
+        wavelength_angstrom=195,
+        dt_minutes=delta_time_min,
+    )
+
+    return {
+        "cor1_target_time_str": _format_hms(cor1_target_time),
+        "cor1_base_time_str": _format_hms(cor1_base_time),
+        "euvi_target_time_str": _format_hms(euvi_cur_time),
+        "euvi_base_time_str": _format_hms(euvi_prev_time),
+    }
+
+
 
 def _spheroid_axis_geometry_rsun(params: SpheroidDome3DParams) -> dict[str, np.ndarray]:
     if params._has_two_point_axis():
@@ -983,10 +1083,10 @@ def overlay_spheroid_on_coronagraph_axes(
     spheroid_params: SpheroidDome3DParams,
     *,
     color: str = "#00FF00",
-    lw_wire: float = 1.0,
-    lw_footprint: float = 2.2,
-    alpha_wire: float = 0.85,
-    alpha_footprint: float = 0.95,
+    lw_wire: float = 0.7,
+    lw_footprint: float = 1.5,
+    alpha_wire: float = 0.7,
+    alpha_footprint: float = 0.7,
     zorder_wire: int = 6,
     zorder_markers: int = 8,
     add_legend_handles: bool = True,
@@ -1058,8 +1158,8 @@ def overlay_spheroid_on_coronagraph_axes(
             linestyle="None",
             markerfacecolor="yellow",
             markeredgecolor="black",
-            markeredgewidth=0.7,
-            markersize=18.0,
+            markeredgewidth=0.3,
+            markersize=5.0,
             zorder=zorder_markers,
             label="Anchor" if add_legend_handles else None,
         )
@@ -1079,8 +1179,8 @@ def overlay_spheroid_on_coronagraph_axes(
             linestyle="None",
             markerfacecolor="orange",
             markeredgecolor="black",
-            markeredgewidth=0.7,
-            markersize=9.0,
+            markeredgewidth=0.3,
+            markersize=5.0,
             zorder=zorder_markers,
             label="Apex" if add_legend_handles else None,
         )
@@ -1107,10 +1207,10 @@ def overlay_spheroid_on_wcs_axes(
     spheroid_params: SpheroidDome3DParams,
     *,
     color: str = "#00FF00",
-    lw_wire: float = 1.0,
-    lw_footprint: float = 2.2,
-    alpha_wire: float = 0.85,
-    alpha_footprint: float = 0.95,
+    lw_wire: float = 0.7,
+    lw_footprint: float = 1.5,
+    alpha_wire: float = 0.7,
+    alpha_footprint: float = 0.7,
     zorder_wire: int = 6,
     zorder_markers: int = 8,
     add_legend_handles: bool = False,
@@ -1161,7 +1261,7 @@ def overlay_spheroid_on_wcs_axes(
             markerfacecolor="yellow",
             markeredgecolor="black",
             markeredgewidth=0.7,
-            markersize=18.0,
+            markersize=5.0,
             zorder=zorder_markers,
             label="Anchor" if add_legend_handles else None,
         )
@@ -1180,7 +1280,7 @@ def overlay_spheroid_on_wcs_axes(
             markerfacecolor="orange",
             markeredgecolor="black",
             markeredgewidth=0.7,
-            markersize=9.0,
+            markersize=5.0,
             zorder=zorder_markers,
             label="Apex" if add_legend_handles else None,
         )
@@ -1211,6 +1311,10 @@ def plot_multiview_spheroid(
     delta_time_min: int = 10,
     euvi_outer_rsun: float = 1.30,
     cor1_outer_rsun: float = 4.0,
+    kcor_time_str: str | None = None,
+    kcor_base_time_str: str | None = None,
+    lasco_time_str: str | None = None,
+    lasco_base_time_str: str | None = None,
 ):
     backend_initial = plt.get_backend().lower()
     if "agg" in backend_initial:
@@ -1228,17 +1332,29 @@ def plot_multiview_spheroid(
     # Earth view: keep the existing plotting settings
     # ------------------------------------------------------------------
     print(f"[INFO] Building Earth-view composite for {target_time_str}")
+    # earth_res = create_single_diff_from_time_image(
+    #     ax_earth,
+    #     target_time_str,
+    #     delta_time_min,
+    #     mk4_inner=1.4,
+    #     mk4_outer_lasco_inner=3.0,
+    #     lasco_outer=6.0,
+    #     xlim_min=-400,
+    #     xlim_max=400,
+    #     ylim_min=-400,
+    #     ylim_max=400,
+    # )
     earth_res = create_single_diff_from_time_image(
         ax_earth,
         target_time_str,
         delta_time_min,
         mk4_inner=1.4,
-        mk4_outer_lasco_inner=3.0,
+        mk4_outer_lasco_inner=2.2,
         lasco_outer=6.0,
-        xlim_min=-250,
-        xlim_max=0,
-        ylim_min=-100,
-        ylim_max=200,
+        xlim_min=-512,
+        xlim_max=512,
+        ylim_min=-512,
+        ylim_max=512,
     )
     lasco_map = earth_res["lasco_map"]
     params_lasco = earth_res["params_lasco"]
@@ -1251,11 +1367,50 @@ def plot_multiview_spheroid(
         color=spheroid_color,
         add_legend_handles=True,
     )
-    ax_earth.set_title(f"Earth view: K-COR + LASCO-C2\n{target_time_str}")
+
+    if any(v is None for v in [kcor_time_str, kcor_base_time_str, lasco_time_str, lasco_base_time_str]):
+        earth_times = _resolve_earth_view_time_strings(target_time_str, delta_time_min)
+        kcor_time_str = earth_times["kcor_time_str"]
+        kcor_base_time_str = earth_times["kcor_base_time_str"]
+        lasco_time_str = earth_times["lasco_time_str"]
+        lasco_base_time_str = earth_times["lasco_base_time_str"]
+
+    ax_earth.set_title(
+        f"Earth view: K-COR ({kcor_time_str} - {kcor_base_time_str})\n"
+        f"+ LASCO-C2 ({lasco_time_str} - {lasco_base_time_str})"
+    )
     ax_earth.set_aspect("equal")
     ax_earth.set_xlabel("X [pixels]")
     ax_earth.set_ylabel("Y [pixels]")
-    ax_earth.legend(loc="upper left", fontsize=8)
+
+    handles, labels = ax_earth.get_legend_handles_labels()
+
+    wanted_order = [
+        "1.4 $R_\\odot$",
+        "2.2 $R_\\odot$",
+        "Anchor",
+        "Apex",
+    ]
+
+    label_to_handle = {lab: h for h, lab in zip(handles, labels)}
+    selected_handles = [label_to_handle[lab] for lab in wanted_order if lab in label_to_handle]
+    selected_labels = [lab for lab in wanted_order if lab in label_to_handle]
+
+    spheroid_labels = [lab for lab in labels if lab.startswith("Spheroid:")]
+    for lab in spheroid_labels:
+        selected_handles.append(label_to_handle[lab])
+        selected_labels.append(lab)
+
+    ax_earth.legend(
+        selected_handles,
+        selected_labels,
+        loc="upper left",
+        fontsize=8,
+        ncol=4,
+        columnspacing=1.0,
+        handletextpad=0.4,
+        borderaxespad=0.3,
+    )
 
     # ------------------------------------------------------------------
     # STEREO-A view: keep the existing integrated plot settings
@@ -1270,7 +1425,14 @@ def plot_multiview_spheroid(
         cor1_outer_rsun=cor1_outer_rsun,
     )
 
-    # Rebuild the same common WCS used by create_integrated_stereo_image().
+    stereo_times = _resolve_stereo_view_time_strings(target_time_str, delta_time_min)
+    ax_stereo.set_title(
+        "STEREO-A/SECCHI/EUVI 195 Å + COR1 Integrated Difference\n"
+        f"EUVI: {stereo_times['euvi_target_time_str']} - {stereo_times['euvi_base_time_str']} | "
+        f"COR1: {stereo_times['cor1_target_time_str']} - {stereo_times['cor1_base_time_str']}",
+        fontsize=14,
+    )
+
     stereo_common_map = build_common_reference_map(
         euvi_diff_map,
         outer_rsun=cor1_outer_rsun,
@@ -1284,11 +1446,9 @@ def plot_multiview_spheroid(
         add_legend_handles=False,
     )
 
-    # fig.suptitle(
-    #     "Same 3D Spheroid projected to Earth view and STEREO-A view",
-    #     fontsize=15,
-    #     y=0.98,
-    # )
+    _disable_cursor_data_for_axes_images(ax_earth)
+    _disable_cursor_data_for_axes_images(ax_stereo)
+
     plt.tight_layout()
 
     if out_png is not None:
@@ -1313,21 +1473,31 @@ def plot_multiview_spheroid(
         "euvi_map": euvi_diff_map,
         "stereo_common_map": stereo_common_map,
     }
-
+    
 if __name__ == "__main__":
-    target_time = "2022-06-13T03:36:18"
-
+    target_time = "2022-06-13T03:34:18"
+    
+    # 固定パラメータ
+    anchor_lon_deg = -30.0
+    anchor_lat_deg = 19.0
+    n_meridians = 14
+    n_parallels = 7
+    n_line_pts = 240
+    
+    apex_lon_deg = -39.0
+    apex_lat_deg = -3
+    
     spheroid = SpheroidDome3DParams(
-        kappa=0.40,
-        epsilon=0.62,
-        anchor_lon_deg=-30.0,
-        anchor_lat_deg=19.0,
-        apex_lon_deg=-45.0,
-        apex_lat_deg=17.0,
-        apex_r_rsun=5.13,
-        n_meridians=12,
-        n_parallels=7,
-        n_line_pts=240,
+        apex_r_rsun=3.8,
+        kappa=0.5,
+        epsilon=-0.45,
+        anchor_lon_deg=anchor_lon_deg,
+        anchor_lat_deg=anchor_lat_deg,
+        apex_lon_deg=apex_lon_deg,
+        apex_lat_deg=apex_lat_deg,
+        n_meridians=n_meridians,
+        n_parallels=n_parallels,
+        n_line_pts=n_line_pts,
         only_above_surface=True,
         only_visible=True,
     )

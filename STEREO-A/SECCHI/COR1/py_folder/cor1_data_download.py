@@ -139,8 +139,8 @@ if __name__ == "__main__":
     # =========================
     # 設定
     # =========================
-    START = datetime(2022, 6, 13, 0, 40, 0)
-    END   = datetime(2022, 6, 13, 4, 30, 0)
+    START = datetime(2022, 6, 6, 0, 40, 0)
+    END   = datetime(2022, 6, 20, 4, 30, 0)
 
     SAVE_ROOT = Path("/mnt/d/wsl/home/kinno-7010/Research_data/STEREO-A/SECCHI/COR1/Rawdata")
     SAVE_ROOT.mkdir(parents=True, exist_ok=True)

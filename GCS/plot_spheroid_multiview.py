@@ -1082,9 +1082,9 @@ def overlay_spheroid_on_coronagraph_axes(
     params_lasco: dict,
     spheroid_params: SpheroidDome3DParams,
     *,
-    color: str = "#00FF00",
-    lw_wire: float = 0.7,
-    lw_footprint: float = 1.5,
+    color: str = "magenta",
+    lw_wire: float = 3.0,
+    lw_footprint: float = 3.5,
     alpha_wire: float = 0.7,
     alpha_footprint: float = 0.7,
     zorder_wire: int = 6,
@@ -1206,9 +1206,9 @@ def overlay_spheroid_on_wcs_axes(
     reference_map: sunpy.map.GenericMap,
     spheroid_params: SpheroidDome3DParams,
     *,
-    color: str = "#00FF00",
-    lw_wire: float = 0.7,
-    lw_footprint: float = 1.5,
+    color: str = "magenta",
+    lw_wire: float = 3.0,
+    lw_footprint: float = 3.5,
     alpha_wire: float = 0.7,
     alpha_footprint: float = 0.7,
     zorder_wire: int = 6,
@@ -1307,7 +1307,7 @@ def plot_multiview_spheroid(
     spheroid_params: SpheroidDome3DParams,
     *,
     out_png: str | Path | None = None,
-    spheroid_color: str = "#00FF00",
+    spheroid_color: str = "magenta",
     delta_time_min: int = 10,
     euvi_outer_rsun: float = 1.30,
     cor1_outer_rsun: float = 4.0,
@@ -1351,10 +1351,10 @@ def plot_multiview_spheroid(
         mk4_inner=1.4,
         mk4_outer_lasco_inner=2.2,
         lasco_outer=6.0,
-        xlim_min=-512,
-        xlim_max=512,
-        ylim_min=-512,
-        ylim_max=512,
+        xlim_min=-300   ,
+        xlim_max=300,
+        ylim_min=-300,
+        ylim_max=300,
     )
     lasco_map = earth_res["lasco_map"]
     params_lasco = earth_res["params_lasco"]
@@ -1475,7 +1475,7 @@ def plot_multiview_spheroid(
     }
     
 if __name__ == "__main__":
-    target_time = "2022-06-13T03:34:18"
+    target_time = "2022-06-13T03:51:36"
     
     # 固定パラメータ
     anchor_lon_deg = -30.0
@@ -1484,12 +1484,12 @@ if __name__ == "__main__":
     n_parallels = 7
     n_line_pts = 240
     
-    apex_lon_deg = -39.0
-    apex_lat_deg = -3
+    apex_lon_deg = -55.0
+    apex_lat_deg = 5.0
     
     spheroid = SpheroidDome3DParams(
-        apex_r_rsun=3.8,
-        kappa=0.5,
+        apex_r_rsun=5.05,
+        kappa=0.53,
         epsilon=-0.45,
         anchor_lon_deg=anchor_lon_deg,
         anchor_lat_deg=anchor_lat_deg,

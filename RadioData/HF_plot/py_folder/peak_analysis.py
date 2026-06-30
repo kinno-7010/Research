@@ -99,13 +99,13 @@ def calculate_dynamic_spectrum_with_peak(
     )
 
     # ── Mark peak points ───────────────────────────────────
-    # if peak_times.size > 0:
-    #     ax.scatter(
-    #         mdates.date2num(peak_times), peak_freqs,
-    #         s=30, facecolors=scatter_color,
-    #         edgecolors='black', linewidth=0.8,
-    #         alpha=0.9, zorder=5
-    #     )
+    if peak_times.size > 0:
+        ax.scatter(
+            mdates.date2num(peak_times), peak_freqs,
+            s=30, facecolors=scatter_color,
+            edgecolors='black', linewidth=0.8,
+            alpha=0.9, zorder=5
+        )
 
     # ── Plot formatting ────────────────────────────────────
     ax.set_title(title, fontsize=18)
@@ -262,13 +262,13 @@ def plot_removed_dynamic_spectrum_with_peak_2(
         data_array=masked_data
     )
     
-    # ax.scatter(
-    #     mdates.date2num(peak_times),
-    #     peak_freqs,
-    #     s=30, facecolors=scatter_color,
-    #     edgecolors='black', linewidth=0.8,
-    #     alpha=0.9, zorder=5
-    # )
+    ax.scatter(
+        mdates.date2num(peak_times),
+        peak_freqs,
+        s=30, facecolors=scatter_color,
+        edgecolors='black', linewidth=0.8,
+        alpha=0.9, zorder=5
+    )
     
     return masked_data
 

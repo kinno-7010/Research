@@ -58,6 +58,7 @@ WIND_RAW_DIR = Path("/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/Wind/Raw
 HF_RAW_DIR = Path("/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/HF_plot/Rawdata")
 ASSA_RAW_DIR = Path("/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/e-Callisto/Rawdata")
 
+
 DEFAULT_PEAK_START = [
     "2022-06-13T03:25:00",
     "2022-06-13T03:25:30",
@@ -219,8 +220,10 @@ def _build_combined_spectrum(
     cadence: str = "0.5s",
     polarization: str = "RH",
 ) -> pd.DataFrame:
-    wind_times, wind_freqs, wind_values = load_wind_rad2(WIND_CDF_PATH)
-    hf_times, hf_freqs, hf_values = load_hf(HF_CDF_PATH, polarization)
+    WIND_CDF_PATH, HF_CDF_PATH, ASSA_FITS_PATHS = _resolve_instrument_paths(start_time, end_time, assa_focuscodes=["56", "62"])
+    
+    wind_times, wind_freqs, wind_values = _load_wind_rad2_stacked(WIND_CDF_PATH)
+    hf_times, hf_freqs, hf_values = _load_hf_stacked(HF_CDF_PATH, polarization)
     assa_times, assa_freqs, assa_values = load_callisto(ASSA_FITS_PATHS)
 
     target_index = pd.date_range(start=start_time, end=end_time, freq=cadence)
@@ -460,7 +463,7 @@ def plot_bandsplit_fig1_with_main_peak_points(
         )
         values = np.where(normalized_values >= 1.01, normalized_values, np.nan)
 
-    fig, ax = plt.subplots(figsize=(16.5, 8.3))
+    fig, ax = plt.subplots(figsize=(12, 6))
     ax.pcolormesh(
         mdates.date2num(time_axis),
         freq_axis,
@@ -528,7 +531,7 @@ def plot_bandsplit_fig1_with_main_peak_points(
 
     intermittent_time = pd.Timestamp("2022-06-13T03:28:45")
     ax.axvline(x=mdates.date2num(intermittent_time), color="black", linestyle="--", linewidth=2)
-    ax.text(mdates.date2num(intermittent_time), 47, intermittent_time.strftime("%H:%M:%S"), color="black", fontsize=16, ha="left", va="top")
+    ax.text(mdates.date2num(intermittent_time), min_frequency, intermittent_time.strftime("%H:%M:%S"), color="black", fontsize=16, ha="left", va="bottom", bbox=dict(facecolor="white", edgecolor="black", boxstyle="square,pad=0.2", linewidth=1.5))
 
     shift_lower_frequency, shift_upper_frequency = 4.7, 8.3
     upper_x_np, upper_y_np = np.array(upper_x), np.array(upper_y)
@@ -680,12 +683,12 @@ def plot_bandsplit_fig1_with_main_peak_points(
     t_line_red = dt.datetime.fromisoformat("2022-06-13T03:25:30")
     xnum_red_line = mdates.date2num(t_line_red)
     ax.axvline(xnum_red_line, color="red", linestyle="--", linewidth=2)
-    ax.text(xnum_red_line, max_frequency, "03:25:30", color="red", va="top", ha="left", fontsize=16)
+    ax.text(xnum_red_line, min_frequency, "03:25:30", color="red", va="bottom", ha="left", fontsize=16, bbox=dict(facecolor="white", edgecolor="red", boxstyle="square,pad=0.2", linewidth=1.5))
 
     t_line_blue = dt.datetime.fromisoformat("2022-06-13T03:31:20")
     xnum_blue_line = mdates.date2num(t_line_blue)
     ax.axvline(xnum_blue_line, color="blue", linestyle="--", linewidth=2)
-    ax.text(xnum_blue_line, max_frequency, "03:31:20", color="blue", va="top", ha="left", fontsize=16)
+    ax.text(xnum_blue_line, min_frequency, "03:31:20", color="blue", va="bottom", ha="left", fontsize=16, bbox=dict(facecolor="white", edgecolor="blue", boxstyle="square,pad=0.2", linewidth=1.5))
 
     ax.set_ylabel("Frequency [MHz]", fontsize=16)
     if log_scale is not False:
@@ -739,7 +742,7 @@ def main() -> None:
     min_frequency = 23
     max_frequency = 47
     use_removed_background = True
-    output_path = RESEARCH_ROOT / "RadioData" / "HF_plot" / "output" / "bandsplit_fig1_with_main_peak_points.png"
+    output_path = Path("/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/HF_plot/output/bandsplit_fig1_with_main_peak_points.png")
 
     plot_bandsplit_fig1_with_main_peak_points(
         start_time=start_time,

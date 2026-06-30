@@ -361,14 +361,28 @@ def _visible_mask(
     *,
     only_visible: bool = True,
 ) -> np.ndarray:
+    """Front-side visibility mask using the physical observer direction.
+
+    The previous implementation multiplied the dot product by sign(obs_vec[0]),
+    which can flip the visible hemisphere depending on the observer longitude and
+    make the spheroid appear inconsistent or disappear for otherwise valid input
+    parameters.  The physically relevant criterion is simply
+    ``pt_hat · obs_hat > 0``.
+    """
     if not only_visible or reference_map is None:
         return np.ones(coords_hgs.shape, dtype=bool)
     try:
-        obs_vec = reference_map.observer_coordinate.cartesian.xyz.to_value(u.R_sun)
-        pt_vec = coords_hgs.cartesian.xyz.to_value(u.R_sun)
-        s = np.sign(obs_vec[0]) if obs_vec[0] != 0 else 1.0
-        dot_sum = np.sum(obs_vec[:, None] * pt_vec, axis=0)
-        return (dot_sum * s > 0)
+        obs_vec = np.asarray(
+            reference_map.observer_coordinate.cartesian.xyz.to_value(u.R_sun),
+            dtype=float,
+        ).reshape(3)
+        obs_hat = _unit_vec(obs_vec)
+
+        pt_vec = np.asarray(coords_hgs.cartesian.xyz.to_value(u.R_sun), dtype=float)
+        pt_hat = _unit_vec(pt_vec)
+
+        dot_sum = np.sum(obs_hat[:, None] * pt_hat, axis=0)
+        return dot_sum > 0.0
     except Exception as exc:
         print(f"[WARN] visibility mask disabled (visible check failed): {exc}")
         return np.ones(coords_hgs.shape, dtype=bool)
@@ -542,12 +556,89 @@ def sample_spheroid_dome_wireframe_hpc(params: SpheroidDome3DParams, reference_m
 # Plot helpers (HPC -> relative pixels in composite axes)
 # ==========================================================
 
-def _hpc_to_rel_pix(coords_hpc: SkyCoord, rsun_arcsec: float, px_per_rsun: float) -> tuple[np.ndarray, np.ndarray]:
-    """Convert HPC Tx/Ty [arcsec] into composite plot coordinates [pixels]."""
+def _extract_earth_display_calibration(ax: "plt.Axes") -> dict[str, float] | None:
+    """Recover the actual display scale from the already-drawn guide circles.
+
+    ``create_single_diff_from_time_image()`` draws the Earth-view composite on an
+    AIA-based common canvas, while ``params_lasco['px_per_rsun']`` is the raw LASCO
+    scale.  Therefore the overlay must use the display-space solar-radius scale,
+    which can be inferred robustly from the labelled guide circles already plotted
+    on the axes (for example ``1.4 $R_\odot$`` and ``3.0 $R_\odot$``).
+    """
+    import re
+
+    candidates: list[tuple[float, float, float, str]] = []
+    for ln in ax.lines:
+        label = str(ln.get_label())
+        if 'R' not in label:
+            continue
+
+        m = re.search(r'([0-9]+(?:\.[0-9]+)?)\s*\$?\s*R', label)
+        if m is None:
+            continue
+
+        radius_rsun = float(m.group(1))
+        if not np.isfinite(radius_rsun) or radius_rsun <= 0.0:
+            continue
+
+        x = np.asarray(ln.get_xdata(), dtype=float)
+        y = np.asarray(ln.get_ydata(), dtype=float)
+        good = np.isfinite(x) & np.isfinite(y)
+        x = x[good]
+        y = y[good]
+        if x.size < 20:
+            continue
+
+        rr = np.sqrt(x * x + y * y)
+        r_disp = float(np.nanmedian(rr))
+        scatter = float(np.nanmedian(np.abs(rr - r_disp)))
+        if not np.isfinite(r_disp) or r_disp <= 0.0:
+            continue
+
+        px_per_rsun_disp = r_disp / radius_rsun
+        candidates.append((scatter, radius_rsun, px_per_rsun_disp, label))
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda t: (t[0], t[1]))
+    scatter, radius_rsun, px_per_rsun_disp, label = candidates[0]
+    return {
+        'cx_disp': 0.0,
+        'cy_disp': 0.0,
+        'px_per_rsun_disp': float(px_per_rsun_disp),
+        'radius_rsun_label': float(radius_rsun),
+        'label': label,
+        'scatter': float(scatter),
+    }
+
+
+
+def _hpc_to_rel_pix(
+    coords_hpc: SkyCoord,
+    rsun_arcsec: float,
+    px_per_rsun: float,
+    *,
+    x0: float = 0.0,
+    y0: float = 0.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Convert HPC arcsec to the Earth composite display coordinates.
+
+    Parameters
+    ----------
+    coords_hpc : SkyCoord
+        Helioprojective coordinates in the observer frame of ``reference_map``.
+    rsun_arcsec : float
+        Apparent solar radius of the reference map in arcsec.
+    px_per_rsun : float
+        Solar radius measured in *display-axis* pixels/units, not raw LASCO pixels.
+    x0, y0 : float
+        Display-space solar-center coordinates.
+    """
     x_arcsec = np.asarray(coords_hpc.Tx.to_value(u.arcsec), dtype=float)
     y_arcsec = np.asarray(coords_hpc.Ty.to_value(u.arcsec), dtype=float)
-    x_px = (x_arcsec / float(rsun_arcsec)) * float(px_per_rsun)
-    y_px = (y_arcsec / float(rsun_arcsec)) * float(px_per_rsun)
+    x_px = x0 + (x_arcsec / rsun_arcsec) * px_per_rsun
+    y_px = y0 + (y_arcsec / rsun_arcsec) * px_per_rsun
     return x_px, y_px
 
 
@@ -558,18 +649,43 @@ def overlay_spheroid_on_coronagraph_axes(
     spheroid_params: SpheroidDome3DParams,
     *,
     color: str = "#00FF00",
-    lw_wire: float = 1.0,
-    lw_footprint: float = 2.2,
-    alpha_wire: float = 0.85,
-    alpha_footprint: float = 0.95,
+    lw_wire: float = 0.7,
+    lw_footprint: float = 1.5,
+    alpha_wire: float = 0.7,
+    alpha_footprint: float = 0.7,
     zorder_wire: int = 6,
     zorder_markers: int = 8,
     verbose: bool = True,
 ) -> SpheroidDome3DParams:
-    """Overlay spheroid dome (wireframe + footprint + markers) on the composite axes."""
+    """Overlay spheroid on the Earth-view panel using the displayed panel scale.
 
+    This matches the Earth-view spheroid drawing logic used in
+    ``plot_spheroid_multiview.py``: the background image is already drawn on a
+    display canvas, so the overlay must use the display-space solar-radius scale
+    inferred from the guide circles, not the raw LASCO pixel scale.
+    """
     rsun_arcsec = float(reference_map.rsun_obs.to_value(u.arcsec))
-    px_per_rsun = float(params_lasco["px_per_rsun"])
+
+    display_cal = _extract_earth_display_calibration(ax)
+    if display_cal is not None:
+        px_per_rsun = float(display_cal["px_per_rsun_disp"])
+        x_center_disp = float(display_cal["cx_disp"])
+        y_center_disp = float(display_cal["cy_disp"])
+        if verbose:
+            print(
+                f"[INFO] Earth-view display calibration from '{display_cal['label']}': "
+                f"px_per_rsun={px_per_rsun:.3f}, center=({x_center_disp:.3f},{y_center_disp:.3f}), "
+                f"scatter={display_cal.get('scatter', np.nan):.3f}"
+            )
+    else:
+        px_per_rsun = float(params_lasco["px_per_rsun"])
+        x_center_disp = 0.0
+        y_center_disp = 0.0
+        if verbose:
+            print(
+                "[WARN] Earth-view display calibration could not be inferred from the drawn "
+                "reference circles; falling back to params_lasco['px_per_rsun']."
+            )
 
     if verbose:
         psi_deg = spheroid_footprint_angular_radius_deg(spheroid_params)
@@ -577,6 +693,9 @@ def overlay_spheroid_on_coronagraph_axes(
             print("[INFO] footprint ψ = N/A (no photospheric intersection)")
         else:
             print(f"[INFO] footprint ψ = {psi_deg:.2f} deg")
+
+    xlim0 = ax.get_xlim()
+    ylim0 = ax.get_ylim()
 
     wire_lines_hpc = sample_spheroid_dome_wireframe_hpc(spheroid_params, reference_map)
     if (len(wire_lines_hpc) == 0) and spheroid_params.only_visible:
@@ -586,18 +705,30 @@ def overlay_spheroid_on_coronagraph_axes(
         wire_lines_hpc = sample_spheroid_dome_wireframe_hpc(spheroid_params, reference_map)
 
     for ln in wire_lines_hpc:
-        x_px, y_px = _hpc_to_rel_pix(ln, rsun_arcsec, px_per_rsun)
+        x_px, y_px = _hpc_to_rel_pix(
+            ln, rsun_arcsec, px_per_rsun, x0=x_center_disp, y0=y_center_disp
+        )
         ax.plot(x_px, y_px, color=color, linewidth=lw_wire, alpha=alpha_wire, zorder=zorder_wire)
 
     footprint_lines_hpc = sample_spheroid_footprint_hpc(spheroid_params, reference_map)
     for fp in footprint_lines_hpc:
-        x_px, y_px = _hpc_to_rel_pix(fp, rsun_arcsec, px_per_rsun)
-        ax.plot(x_px, y_px, color=color, linewidth=lw_footprint, alpha=alpha_footprint, zorder=zorder_wire + 1)
+        x_px, y_px = _hpc_to_rel_pix(
+            fp, rsun_arcsec, px_per_rsun, x0=x_center_disp, y0=y_center_disp
+        )
+        ax.plot(
+            x_px,
+            y_px,
+            color=color,
+            linewidth=lw_footprint,
+            alpha=alpha_footprint,
+            zorder=zorder_wire + 1,
+        )
 
-    # axis-footpoint marker (Anchor in HGS / Stonyhurst)
     try:
         anchor_hpc = spheroid_axis_footpoint_hpc(spheroid_params, reference_map)
-        x0, y0 = _hpc_to_rel_pix(anchor_hpc, rsun_arcsec, px_per_rsun)
+        x0, y0 = _hpc_to_rel_pix(
+            anchor_hpc, rsun_arcsec, px_per_rsun, x0=x_center_disp, y0=y_center_disp
+        )
         ax.plot(
             [float(np.atleast_1d(x0)[0])],
             [float(np.atleast_1d(y0)[0])],
@@ -605,8 +736,8 @@ def overlay_spheroid_on_coronagraph_axes(
             linestyle="None",
             markerfacecolor="yellow",
             markeredgecolor="black",
-            markeredgewidth=0.7,
-            markersize=20.0,
+            markeredgewidth=0.3,
+            markersize=5.0,
             zorder=zorder_markers,
             label=(
                 f"axis surface intersection (HGS lon,lat)=({float(spheroid_params.anchor_lon_deg):.1f},"
@@ -617,14 +748,15 @@ def overlay_spheroid_on_coronagraph_axes(
         if verbose:
             print(f"[WARN] axis-footpoint marker skipped: {exc}")
 
-    # apex marker
     try:
         apex_hpc = spheroid_dome_apex_hpc(spheroid_params, reference_map)
-        x1, y1 = _hpc_to_rel_pix(apex_hpc, rsun_arcsec, px_per_rsun)
+        x1, y1 = _hpc_to_rel_pix(
+            apex_hpc, rsun_arcsec, px_per_rsun, x0=x_center_disp, y0=y_center_disp
+        )
         apex_label = (
-            f"3D spheroid apex ($\\kappa$={spheroid_params.kappa:.3f}, "
-            f"$\\epsilon$={spheroid_params.epsilon:.3f}, "
-            f"r={spheroid_params.apex_r_rsun:.3f} $R_\\odot$)"
+            f"3D spheroid apex ($\kappa$={spheroid_params.kappa:.3f}, "
+            f"$\epsilon$={spheroid_params.epsilon:.3f}, "
+            f"r={spheroid_params.apex_r_rsun:.3f} $R_\odot$)"
         )
         ax.plot(
             [float(np.atleast_1d(x1)[0])],
@@ -633,8 +765,8 @@ def overlay_spheroid_on_coronagraph_axes(
             linestyle="None",
             markerfacecolor="orange",
             markeredgecolor="black",
-            markeredgewidth=0.7,
-            markersize=10.0,
+            markeredgewidth=0.3,
+            markersize=5.0,
             zorder=zorder_markers,
             label=apex_label,
         )
@@ -642,9 +774,17 @@ def overlay_spheroid_on_coronagraph_axes(
         if verbose:
             print(f"[WARN] apex marker skipped: {exc}")
 
-    # dummy handle for legend
     ax.plot([], [], color=color, lw=3, alpha=0.7, label=spheroid_params.legend_label())
     ax.plot([], [], color=color, lw=3, alpha=0.7)
+
+    ax.set_xlim(xlim0)
+    ax.set_ylim(ylim0)
+
+    if verbose:
+        print(
+            f"[INFO] Earth-view display scale used for overlay: "
+            f"rsun_arcsec={rsun_arcsec:.3f}, px_per_rsun={px_per_rsun:.3f}"
+        )
 
     return spheroid_params
 # ==========================================================
@@ -740,20 +880,20 @@ def main(
 
 if __name__ == "__main__":
     # Example: parameterization consistent with aia_spheroid_plot.py
-    target_time = "2022-06-13T03:36:18"
+    target_time = "2022-06-13T03:25:29"
 
     # Axis surface intersection (anchor)
     anchor_lon_deg = -30.0
     anchor_lat_deg = +19.0
 
     # Apex direction (can differ from anchor direction)
-    apex_lon_deg = -45.0
-    apex_lat_deg = +17.0
+    apex_lon_deg = -55.0
+    apex_lat_deg = +5.0
 
     # Apex radius and spheroid shape
-    apex_rsun = 5.13
-    kappa = 0.40
-    epsilon = 0.62
+    apex_rsun = 3.27
+    kappa = 0.50
+    epsilon = -0.45
 
     spheroid = SpheroidDome3DParams(
         kappa=float(kappa),

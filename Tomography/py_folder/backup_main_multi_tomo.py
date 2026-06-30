@@ -22,7 +22,7 @@ but this is not a byte-for-byte reproduction of SSC's Fortran toolchain.
 Dependencies:
   pip install numpy astropy scipy pyvista pyvistaqt
 
-- LASCO-C2 pB / K-Cor pB のダウンロードと結合は `SOHO/SECCHI/LASCO/py_folder/download_integrate_kcor_lasco_pb.py` で事前に完了させる。
+- LASCO-C2 pB / K-Cor pB のダウンロードと結合は `SOHO/LASCO/py_folder/download_integrate_kcor_lasco_pb.py` で事前に完了させる。
 
 - このファイルは、作成済みの `pB_Kcor_LASCO_axi_*.fits` と `COR1A_pb_pre_*.fits` を読み込み、tomography のみを実行する。
 
@@ -441,211 +441,28 @@ def frequency_range_mhz_from_ne(ne: np.ndarray, harmonic: int = 1) -> Optional[T
     return ne_min, ne_max, min(f_min, f_max), max(f_min, f_max)
 
 
-# ----------------------------
-# Calibration / density-prior helpers
-# ----------------------------
-def normalize_group_float_map(value, name: str = "group_float_map") -> dict[str, float]:
+def saito_equatorial_ne_cm3(r_rsun: np.ndarray | float) -> np.ndarray:
     """
-    Normalize a group->float mapping used for per-instrument settings.
+    Saito-type equatorial empirical density profile in cm^-3.
 
-    Accepted input:
-      - dict, e.g. {"cor1a": 1.8}
-      - empty string / None -> {}
-      - comma-separated string, e.g. "cor1a:1.8,earth_merged:1.5"
+    This is intentionally provided only as a density prior/profile, not as a
+    multiplicative correction to the Thomson-scattering forward operator.  The
+    equatorial form avoids latitude-factor ambiguities between common Saito/SPM
+    implementations:
+
+        ne = 1e8 * (3.09 r^-16 + 1.58 r^-6 + 0.0251 r^-2.5)
+
+    where r is in solar radii.
     """
-    if value is None or value == "":
-        return {}
-    if isinstance(value, dict):
-        out = {}
-        for k, v in value.items():
-            if k is None or str(k).strip() == "":
-                continue
-            out[str(k).strip()] = float(v)
-        return out
-    if isinstance(value, str):
-        out = {}
-        text = value.strip()
-        if not text:
-            return out
-        for item in text.split(","):
-            item = item.strip()
-            if not item:
-                continue
-            if ":" not in item and "=" not in item:
-                raise ValueError(f"Invalid {name} item {item!r}; use group:value")
-            sep = ":" if ":" in item else "="
-            k, v = item.split(sep, 1)
-            out[k.strip()] = float(v)
-        return out
-    raise TypeError(f"{name} must be dict, str, None, or empty string; got {type(value)!r}")
-
-
-def scale_observation_pb(obs: "Observation", scale: float) -> "Observation":
-    """Return a copy of an Observation with pB and its noise weights scaled consistently."""
-    scale = float(scale)
-    if not np.isfinite(scale) or scale <= 0:
-        raise ValueError(f"pB scale must be positive finite, got {scale}")
-    return Observation(
-        pb=np.asarray(obs.pb, dtype=np.float64) * scale,
-        hdr=obs.hdr,
-        x=obs.x,
-        y=obs.y,
-        mask=obs.mask,
-        w=np.asarray(obs.w, dtype=np.float64) / scale,
-        idx_map=obs.idx_map,
-        cam_x=obs.cam_x,
-        cam_y=obs.cam_y,
-        cam_z=obs.cam_z,
-        lonlat_deg=obs.lonlat_deg,
-    )
-
-
-def _saito_equatorial_ne_cm3(r_rsun: np.ndarray) -> np.ndarray:
-    """Saito-like equatorial density model in cm^-3."""
     r = np.asarray(r_rsun, dtype=np.float64)
-    r = np.maximum(r, 1.0001)
-    return 1.0e8 * (3.09 * r**(-16.0) + 1.58 * r**(-6.0) + 0.0251 * r**(-2.5))
-
-
-def density_basis_from_grid(
-    grid: "SphericalGrid",
-    model: str = "none",
-    scale: float = 1.0,
-) -> Optional[np.ndarray]:
-    """
-    Build a positive density prior/basis for solving ne = basis * q.
-
-    model='none' disables this behavior and solves absolute electron density ne.
-    model='saito_equatorial' uses a Saito-like radial density profile.
-    """
-    model = str(model or "none").strip().lower()
-    if model in ("", "none", "off", "false", "0"):
-        return None
-    rr, _, _ = grid.voxel_centers_sph()
-    if model in ("saito", "saito_equatorial", "saito-equatorial"):
-        basis = float(scale) * _saito_equatorial_ne_cm3(rr)
-    else:
-        raise ValueError(f"Unknown density prior model: {model!r}")
-    basis = np.asarray(basis, dtype=np.float64).ravel(order="C")
-    basis = np.where(np.isfinite(basis) & (basis > 0), basis, 1.0)
-    return basis
-
-
-def weighted_projection_scale(y_obs, y_pred, W, min_count: int = 100) -> float:
-    """Weighted least-squares scalar s minimizing ||W*(s*y_pred-y_obs)||."""
-    y_obs = np.asarray(y_obs, dtype=np.float64).ravel()
-    y_pred = np.asarray(y_pred, dtype=np.float64).ravel()
-    W = np.asarray(W, dtype=np.float64).ravel()
-    m = np.isfinite(y_obs) & np.isfinite(y_pred) & np.isfinite(W) & (y_pred != 0)
-    if np.count_nonzero(m) < int(min_count):
-        return 1.0
-    w2 = W[m] * W[m]
-    den = float(np.sum(w2 * y_pred[m] * y_pred[m]))
-    if den <= 0 or not np.isfinite(den):
-        return 1.0
-    num = float(np.sum(w2 * y_pred[m] * y_obs[m]))
-    s = num / den
-    if not np.isfinite(s) or s <= 0:
-        return 1.0
-    return float(s)
-
-
-def _weighted_projection_stats(y_obs, y_pred, W, scale_for_residual: float = 1.0):
-    y_obs = np.asarray(y_obs, dtype=np.float64).ravel()
-    y_pred = np.asarray(y_pred, dtype=np.float64).ravel() * float(scale_for_residual)
-    W = np.asarray(W, dtype=np.float64).ravel()
-    m = np.isfinite(y_obs) & np.isfinite(y_pred) & np.isfinite(W)
-    if not np.any(m):
-        return None
-    yo = y_obs[m]
-    yp = y_pred[m]
-    ww = W[m]
-    denom = np.maximum(np.abs(yo), 1e-30)
-    rms_rel = float(np.sqrt(np.sum((ww * (yp - yo) / denom) ** 2) / max(1, np.sum(ww > 0))))
-    good_ratio = np.isfinite(yo) & np.isfinite(yp) & (np.abs(yp) > 0)
-    med_ratio = float(np.nanmedian(yo[good_ratio] / yp[good_ratio])) if np.any(good_ratio) else np.nan
-    med_obs = float(np.nanmedian(yo)) if yo.size else np.nan
-    return {"n": int(yo.size), "weighted_rms_rel": rms_rel, "median_obs_over_pred": med_ratio, "median_obs": med_obs}
-
-
-def print_projection_fit_diagnostic(label: str, y_obs, y_pred, W, scale_for_residual: float = 1.0):
-    stats = _weighted_projection_stats(y_obs, y_pred, W, scale_for_residual=scale_for_residual)
-    fit_scale = weighted_projection_scale(y_obs, y_pred, W, min_count=100)
-    if stats is None:
-        print(f"[DIAG] projection_fit {label}: no usable points")
-        return
-    print(
-        f"[DIAG] projection_fit {label}: "
-        f"n={stats['n']}, fit_scale={fit_scale:.6g}, eval_scale={float(scale_for_residual):.6g}, "
-        f"weighted_rms_rel={stats['weighted_rms_rel']:.4g}, "
-        f"median_obs/eval_pred={stats['median_obs_over_pred']:.6g}, "
-        f"median_obs={stats['median_obs']:.3e}"
+    out = np.full_like(r, np.nan, dtype=np.float64)
+    good = np.isfinite(r) & (r > 0)
+    out[good] = 1.0e8 * (
+        3.09 * r[good] ** (-16.0)
+        + 1.58 * r[good] ** (-6.0)
+        + 0.0251 * r[good] ** (-2.5)
     )
-
-
-def print_projection_fit_diagnostics_by_group(
-    label: str,
-    pb_paths: List[Path],
-    tomo: "RegularizedTomography",
-    y_obs,
-    y_pred,
-    W,
-    scale_for_residual: float = 1.0,
-):
-    groups: dict[str, List[int]] = {}
-    for i, p in enumerate(pb_paths):
-        groups.setdefault(tomography_observation_group_key(Path(p)), []).append(i)
-    for key, indices in groups.items():
-        chunks_obs = []
-        chunks_pred = []
-        chunks_w = []
-        for i in indices:
-            sl = tomo.slices[i]
-            chunks_obs.append(np.asarray(y_obs)[sl])
-            chunks_pred.append(np.asarray(y_pred)[sl])
-            chunks_w.append(np.asarray(W)[sl])
-        if not chunks_obs:
-            continue
-        print_projection_fit_diagnostic(
-            f"{label}/{key}",
-            np.concatenate(chunks_obs),
-            np.concatenate(chunks_pred),
-            np.concatenate(chunks_w),
-            scale_for_residual=scale_for_residual,
-        )
-
-
-def print_group_calibration_hints(
-    label: str,
-    pb_paths: List[Path],
-    tomo: "RegularizedTomography",
-    y_obs,
-    y_pred,
-    W,
-    reference_group: str = "earth_merged",
-):
-    groups: dict[str, List[int]] = {}
-    scales: dict[str, float] = {}
-    for i, p in enumerate(pb_paths):
-        groups.setdefault(tomography_observation_group_key(Path(p)), []).append(i)
-    for key, indices in groups.items():
-        yo = []
-        yp = []
-        ww = []
-        for i in indices:
-            sl = tomo.slices[i]
-            yo.append(np.asarray(y_obs)[sl])
-            yp.append(np.asarray(y_pred)[sl])
-            ww.append(np.asarray(W)[sl])
-        if yo:
-            scales[key] = weighted_projection_scale(np.concatenate(yo), np.concatenate(yp), np.concatenate(ww), min_count=100)
-    if not scales:
-        return
-    ref = scales.get(str(reference_group), None)
-    print(f"[DIAG] calibration_hint {label}: group fit scales = {scales}")
-    if ref is not None and ref > 0:
-        rel = {k: v / ref for k, v in scales.items()}
-        print(f"[DIAG] calibration_hint {label}: relative to {reference_group!r} = {rel}")
+    return out
 
 
 # ----------------------------
@@ -732,21 +549,34 @@ def _rsun_arcsec_from_header(hdr: fits.Header) -> float:
     raise ValueError("RSUN/RSUN_OBS not found in FITS header.")
 
 
+def _wcs_axis_unit_is_deg(w: WCS, axis: int) -> bool:
+    try:
+        return "deg" in str(getattr(w.wcs, "cunit", [None, None])[axis]).lower()
+    except Exception:
+        return False
+
+
+def _wcs_axis_is_hpln(hdr: fits.Header, w: WCS, axis: int = 0) -> bool:
+    ctype = str(hdr.get(f"CTYPE{axis + 1}", ""))
+    if not ctype:
+        try:
+            ctype = str(getattr(w.wcs, "ctype", ["", ""])[axis])
+        except Exception:
+            ctype = ""
+    return "HPLN" in ctype.upper()
+
+
+def _wrap_hpc_lon_deg_to_signed(lon_deg: np.ndarray) -> np.ndarray:
+    lon = np.asarray(lon_deg, dtype=np.float64)
+    return ((lon + 180.0) % 360.0) - 180.0
+
+
 def xy_rsun_for_rebinned_image(hdr, orig_n: int, out_n: int) -> Tuple[np.ndarray, np.ndarray, float]:
     """
     Return helioprojective x/y coordinate maps for the *rebinned* image in **Rsun units**.
 
     This codebase frequently uses r_use_min/r_use_max in Rsun. Therefore x_map and y_map must be
     expressed as x/RSUN_OBS and y/RSUN_OBS (dimensionless solar radii), not in arcsec.
-
-    Important
-    ---------
-    For COR1A HPLN-TAN/HPLT-TAN headers, astropy.wcs.pixel_to_world_values can return
-    negative helioprojective longitudes as wrapped values near 360 deg.  If those values are
-    converted directly to arcsec, a normal COR1A field of view can appear to extend to
-    ~10^3 Rsun.  For tomography, the required coordinates are local image-plane offsets from
-    Sun center, so this routine uses the FITS linear image-plane transformation
-    (CRPIX/CRVAL/CDELT with PC or CD matrix) and avoids longitude wrapping.
 
     Returns
     -------
@@ -760,57 +590,43 @@ def xy_rsun_for_rebinned_image(hdr, orig_n: int, out_n: int) -> Tuple[np.ndarray
     # scale factor from original -> rebinned pixels
     s = float(orig_n) / float(out_n)
 
-    # Pixel centers on rebinned grid, expressed in the original FITS pixel system.
+    # Pixel centers on rebinned grid
     yy, xx = np.mgrid[0:out_n, 0:out_n]
     xpix = (xx + 0.5) * s - 0.5
     ypix = (yy + 0.5) * s - 0.5
 
-    def _cd_matrix_from_header(h: fits.Header) -> np.ndarray:
-        if all(k in h for k in ("CD1_1", "CD1_2", "CD2_1", "CD2_2")):
-            return np.array(
-                [[float(h["CD1_1"]), float(h["CD1_2"])],
-                 [float(h["CD2_1"]), float(h["CD2_2"])]],
-                dtype=np.float64,
-            )
-        if all(k in h for k in ("PC1_1", "PC1_2", "PC2_1", "PC2_2")):
-            pc = np.array(
-                [[float(h["PC1_1"]), float(h["PC1_2"])],
-                 [float(h["PC2_1"]), float(h["PC2_2"])]],
-                dtype=np.float64,
-            )
-            cdelt1 = float(h.get("CDELT1", 1.0))
-            cdelt2 = float(h.get("CDELT2", 1.0))
-            return np.diag([cdelt1, cdelt2]) @ pc
+    # Preferred: WCS
+    try:
+        w = WCS(hdr)
+        xw, yw = w.pixel_to_world_values(xpix, ypix)
 
-        crota = float(h.get("CROTA2", h.get("CROTA", 0.0)))
-        cdelt1 = float(h.get("CDELT1", 1.0))
-        cdelt2 = float(h.get("CDELT2", 1.0))
-        th = np.deg2rad(crota)
-        rot = np.array([[np.cos(th), -np.sin(th)],
-                        [np.sin(th),  np.cos(th)]], dtype=np.float64)
-        return np.diag([cdelt1, cdelt2]) @ rot
+        x_map = np.array(xw, dtype=np.float64, copy=False)
+        y_map = np.array(yw, dtype=np.float64, copy=False)
 
-    cd = _cd_matrix_from_header(hdr)
+        # Convert deg -> arcsec if needed
+        if _wcs_axis_unit_is_deg(w, 0):
+            if _wcs_axis_is_hpln(hdr, w, axis=0):
+                x_map = _wrap_hpc_lon_deg_to_signed(x_map)
+            x_map *= 3600.0
+        if _wcs_axis_unit_is_deg(w, 1):
+            y_map *= 3600.0
 
-    # FITS CRPIX is 1-based.  xpix/ypix are 0-based pixel coordinates in the original image.
-    crpix1 = float(hdr.get("CRPIX1", (orig_n + 1) / 2.0))
-    crpix2 = float(hdr.get("CRPIX2", (orig_n + 1) / 2.0))
-    crval1 = float(hdr.get("CRVAL1", 0.0))
-    crval2 = float(hdr.get("CRVAL2", 0.0))
+    except Exception:
+        # Fallback: linear mapping using CRPIX/CDELT in arcsec
+        cdelt1 = float(hdr.get("CDELT1", 1.0))
+        cdelt2 = float(hdr.get("CDELT2", 1.0))
+        crpix1 = float(hdr.get("CRPIX1", (orig_n + 1) / 2.0)) - 1.0
+        crpix2 = float(hdr.get("CRPIX2", (orig_n + 1) / 2.0)) - 1.0
+        crval1 = float(hdr.get("CRVAL1", 0.0))
+        crval2 = float(hdr.get("CRVAL2", 0.0))
 
-    dx = xpix + 1.0 - crpix1
-    dy = ypix + 1.0 - crpix2
+        x_map = (xpix - crpix1) * cdelt1 + crval1
+        y_map = (ypix - crpix2) * cdelt2 + crval2
 
-    x_map = crval1 + cd[0, 0] * dx + cd[0, 1] * dy
-    y_map = crval2 + cd[1, 0] * dx + cd[1, 1] * dy
-
-    cunit1 = str(hdr.get("CUNIT1", "")).lower()
-    if "deg" in cunit1:
-        x_map *= 3600.0
-        y_map *= 3600.0
-    elif "arcmin" in cunit1:
-        x_map *= 60.0
-        y_map *= 60.0
+        cunit1 = str(hdr.get("CUNIT1", "")).lower()
+        if "deg" in cunit1:
+            x_map *= 3600.0
+            y_map *= 3600.0
 
     # ---- convert arcsec -> Rsun ----
     if not np.isfinite(rsun_arcsec) or rsun_arcsec <= 0:
@@ -820,12 +636,14 @@ def xy_rsun_for_rebinned_image(hdr, orig_n: int, out_n: int) -> Tuple[np.ndarray
 
     return x_map_rsun.astype(np.float64), y_map_rsun.astype(np.float64), rsun_arcsec
 
+
 def infer_carrington_lonlat_deg(hdr: fits.Header) -> Optional[Tuple[float, float]]:
     """
     Prefer Carrington observer longitude/latitude from header (CRLN_OBS/CRLT_OBS).
-    As a fallback, use HGLN_OBS/HGLT_OBS if present (often Stonyhurst/heliographic).
+    If only Stonyhurst observer coordinates are available, convert them to
+    Carrington coordinates using the observation time when SunPy is available.
     """
-    for lon_k, lat_k in (("CRLN_OBS", "CRLT_OBS"), ("HGLN_OBS", "HGLT_OBS")):
+    for lon_k, lat_k in (("CRLN_OBS", "CRLT_OBS"), ("CRLN", "CRLT")):
         if lon_k in hdr and lat_k in hdr:
             try:
                 lon = float(hdr[lon_k])
@@ -834,6 +652,37 @@ def infer_carrington_lonlat_deg(hdr: fits.Header) -> Optional[Tuple[float, float
                     return lon, lat
             except Exception:
                 pass
+
+    for lon_k, lat_k in (("HGLN_OBS", "HGLT_OBS"), ("HGLN", "HGLT")):
+        if lon_k not in hdr or lat_k not in hdr:
+            continue
+        try:
+            lon = float(hdr[lon_k])
+            lat = float(hdr[lat_k])
+            obstime = hdr.get("DATE-OBS", hdr.get("DATE_OBS", None))
+            if not (np.isfinite(lon) and np.isfinite(lat) and obstime):
+                continue
+
+            import astropy.units as u
+            from astropy.coordinates import SkyCoord
+            from sunpy.coordinates import frames
+
+            hgs = SkyCoord(
+                lon * u.deg,
+                lat * u.deg,
+                radius=1.0 * u.R_sun,
+                frame=frames.HeliographicStonyhurst,
+                obstime=str(obstime),
+            )
+            hgc = hgs.transform_to(
+                frames.HeliographicCarrington(obstime=str(obstime), observer="earth")
+            )
+            return float(hgc.lon.to_value(u.deg)), float(hgc.lat.to_value(u.deg))
+        except Exception as exc:
+            print(
+                "[WARN] HGLN/HGLT observer coordinates are Stonyhurst, but they "
+                f"could not be converted to Carrington ({exc})."
+            )
     return None
 
 
@@ -1201,15 +1050,33 @@ def _world_to_pixel_for_hpc_offsets(
     out_n: int,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Convert helioprojective offsets in arcsec to rebinned image pixel coordinates.
+    Convert helioprojective offsets in arcsec to image pixel coordinates.
 
     The IDL routines use map_get_pixel(pmap, pxy), where pxy contains map-plane
-    coordinates in arcsec.  For the same reason as xy_rsun_for_rebinned_image(),
-    this helper uses the local linear image-plane WCS rather than full spherical
-    HPLN/HPLT longitude coordinates.  This avoids 0/360 deg wrapping for COR1A.
+    coordinates in arcsec. This helper reproduces that role using WCS when
+    available and a linear CRPIX/CDELT/CD/PC fallback otherwise.
     """
     x_arc = np.asarray(x_arc, dtype=np.float64)
     y_arc = np.asarray(y_arc, dtype=np.float64)
+
+    try:
+        w = WCS(hdr)
+        if _wcs_axis_unit_is_deg(w, 0):
+            xw = x_arc / 3600.0
+            if _wcs_axis_is_hpln(hdr, w, axis=0):
+                xw = _wrap_hpc_lon_deg_to_signed(xw)
+        else:
+            xw = x_arc
+
+        if _wcs_axis_unit_is_deg(w, 1):
+            yw = y_arc / 3600.0
+        else:
+            yw = y_arc
+
+        xpix, ypix = w.world_to_pixel_values(xw, yw)
+        return np.asarray(xpix, dtype=np.float64), np.asarray(ypix, dtype=np.float64)
+    except Exception:
+        pass
 
     def _cd_matrix_from_header(h: fits.Header) -> np.ndarray:
         if all(k in h for k in ("CD1_1", "CD1_2", "CD2_1", "CD2_2")):
@@ -1226,7 +1093,7 @@ def _world_to_pixel_for_hpc_offsets(
             )
             cdelt1 = float(h.get("CDELT1", 1.0))
             cdelt2 = float(h.get("CDELT2", 1.0))
-            return np.diag([cdelt1, cdelt2]) @ pc
+            return pc @ np.diag([cdelt1, cdelt2])
 
         crota = float(h.get("CROTA2", h.get("CROTA", 0.0)))
         cdelt1 = float(h.get("CDELT1", 1.0))
@@ -1234,18 +1101,13 @@ def _world_to_pixel_for_hpc_offsets(
         th = np.deg2rad(crota)
         rot = np.array([[np.cos(th), -np.sin(th)],
                         [np.sin(th),  np.cos(th)]], dtype=np.float64)
-        return np.diag([cdelt1, cdelt2]) @ rot
+        return rot @ np.diag([cdelt1, cdelt2])
 
     cd = _cd_matrix_from_header(hdr)
     inv = np.linalg.pinv(cd)
 
-    orig_n = int(hdr.get("NAXIS1", out_n))
-    if orig_n <= 0:
-        orig_n = int(out_n)
-    scale = float(orig_n) / float(out_n)
-
-    crpix1 = float(hdr.get("CRPIX1", (orig_n + 1) / 2.0))
-    crpix2 = float(hdr.get("CRPIX2", (orig_n + 1) / 2.0))
+    crpix1 = float(hdr.get("CRPIX1", out_n / 2.0))
+    crpix2 = float(hdr.get("CRPIX2", out_n / 2.0))
     crval1 = float(hdr.get("CRVAL1", 0.0))
     crval2 = float(hdr.get("CRVAL2", 0.0))
 
@@ -1253,9 +1115,6 @@ def _world_to_pixel_for_hpc_offsets(
     if "deg" in cunit1:
         xw = x_arc / 3600.0
         yw = y_arc / 3600.0
-    elif "arcmin" in cunit1:
-        xw = x_arc / 60.0
-        yw = y_arc / 60.0
     else:
         xw = x_arc
         yw = y_arc
@@ -1265,13 +1124,10 @@ def _world_to_pixel_for_hpc_offsets(
 
     dpx = inv[0, 0] * dxw + inv[0, 1] * dyw
     dpy = inv[1, 0] * dxw + inv[1, 1] * dyw
-
-    # Convert original FITS pixel coordinates to the rebinned image coordinates.
-    xpix_orig = (dpx + crpix1) - 1.0
-    ypix_orig = (dpy + crpix2) - 1.0
-    xpix = (xpix_orig + 0.5) / scale - 0.5
-    ypix = (ypix_orig + 0.5) / scale - 0.5
+    xpix = (dpx + crpix1) - 1.0
+    ypix = (dpy + crpix2) - 1.0
     return xpix, ypix
+
 
 def _clean_pbr_profiles_like_get_pbrlc(
     pbr_r_pa: np.ndarray,
@@ -1414,10 +1270,6 @@ def polar_sample_pb(
         y = _sample_pb_bilinear(pb, xpix_center, ypix_center)
         err = 0.1 * np.abs(y)
 
-    # Remove points inside the nominal COR1 occulter radius in the same spirit as
-    # get_pbrlc.pro's pmap.data[wct] = -100. This remains harmless for K-Cor/LASCO
-    # maps because rgrid is explicitly controlled by r_use_min/r_use_max.
-    y = np.where(rr <= 1.5, np.nan, y)
     y = _clean_pbr_profiles_like_get_pbrlc(y.T, err.T, rgrid).T  # clean expects (nr,npa)
 
     if q_low is not None and q_low > 0:
@@ -1804,6 +1656,53 @@ def tomography_observation_group_key(path: Path) -> str:
     return "other"
 
 
+def normalize_group_float_map(value, arg_name: str) -> dict[str, float]:
+    """
+    Normalize optional observation-group parameter maps.
+
+    Accepted forms:
+      - None or "" for no group-specific override
+      - {"cor1a": 1.4, "earth_merged": 1.2}
+      - "cor1a:1.4,earth_merged:1.2"
+    """
+    if value is None:
+        return {}
+
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return {}
+        out: dict[str, float] = {}
+        for item in text.split(","):
+            if ":" not in item:
+                raise ValueError(
+                    f"{arg_name} must use 'group:value' entries, got {item!r}"
+                )
+            key, raw = item.split(":", 1)
+            key = key.strip()
+            if not key:
+                raise ValueError(f"{arg_name} contains an empty group name")
+            val = float(raw)
+            if not np.isfinite(val) or val <= 0:
+                raise ValueError(f"{arg_name}[{key!r}] must be a positive finite float")
+            out[key] = val
+        return out
+
+    if isinstance(value, dict):
+        out: dict[str, float] = {}
+        for key, raw in value.items():
+            key_s = str(key).strip()
+            if not key_s:
+                raise ValueError(f"{arg_name} contains an empty group name")
+            val = float(raw)
+            if not np.isfinite(val) or val <= 0:
+                raise ValueError(f"{arg_name}[{key_s!r}] must be a positive finite float")
+            out[key_s] = val
+        return out
+
+    raise TypeError(f"{arg_name} must be None, a dict, or a 'group:value' string")
+
+
 def build_ne3dtomo_temporal_despike_overrides(
     pb_paths: List[Path],
     out_n: int,
@@ -1869,6 +1768,33 @@ class Observation:
     lonlat_deg: Optional[Tuple[float, float]] = None
 
 
+def scale_observation_pb(obs: Observation, scale: float) -> Observation:
+    """
+    Apply an explicit photometric calibration factor to one observation.
+
+    If physical pB = scale * file pB, the pB image and its ybk-derived noise
+    proxy scale by `scale`, so inverse-brightness weights scale as 1/scale.
+    """
+    scale = float(scale)
+    if not np.isfinite(scale) or scale <= 0:
+        raise ValueError(f"Observation pB scale must be positive and finite, got {scale}")
+    if abs(scale - 1.0) <= 1e-12:
+        return obs
+    return Observation(
+        pb=obs.pb * scale,
+        hdr=obs.hdr,
+        x=obs.x,
+        y=obs.y,
+        mask=obs.mask,
+        w=obs.w / scale,
+        idx_map=obs.idx_map,
+        cam_x=obs.cam_x,
+        cam_y=obs.cam_y,
+        cam_z=obs.cam_z,
+        lonlat_deg=obs.lonlat_deg,
+    )
+
+
 @dataclass
 class SphericalGrid:
     r_edges: np.ndarray
@@ -1907,6 +1833,42 @@ class SphericalGrid:
 
     def flat_index(self, ir: int, ith: int, iph: int) -> int:
         return (ir * self.nth + ith) * self.nph + iph
+
+
+def density_basis_from_grid(
+    grid: SphericalGrid,
+    model: str = "none",
+    scale: float = 1.0,
+) -> Optional[np.ndarray]:
+    """
+    Return a multiplicative density basis for solving ne = basis * q.
+
+    The forward operator remains the Thomson-scattering operator A.  With a
+    nontrivial basis, A_times(q) evaluates A(basis*q), and regularization acts
+    on q, the dimensionless correction to the radial prior.
+    """
+    model_s = str(model or "none").strip().lower()
+    if model_s in ("", "none", "flat", "absolute"):
+        return None
+
+    scale_f = float(scale)
+    if not np.isfinite(scale_f) or scale_f <= 0:
+        raise ValueError(f"density_prior_scale must be positive and finite, got {scale}")
+
+    rr, _, _ = grid.voxel_centers_sph()
+    if model_s in ("saito", "saito_equatorial", "saito1970", "saito1970_equatorial"):
+        basis = scale_f * saito_equatorial_ne_cm3(rr)
+    else:
+        raise ValueError(
+            "Unknown density_prior_model="
+            f"{model!r}. Use 'none' or 'saito_equatorial'."
+        )
+
+    basis = np.asarray(basis, dtype=np.float64).ravel(order="C")
+    good = np.isfinite(basis) & (basis > 0)
+    if not np.all(good):
+        raise ValueError(f"density prior {model!r} produced non-positive or non-finite values")
+    return basis
 
 
 @dataclass
@@ -2098,25 +2060,22 @@ class RegularizedTomography:
         self.rays = rays
         self.lam = float(lam)
         self.wt_r = wt_r
-        self.density_basis = None
-        if density_basis is not None:
-            db = np.asarray(density_basis, dtype=np.float64).ravel()
-            if db.size != grid.nvox:
-                raise ValueError(f"density_basis must have size {grid.nvox}, got {db.size}")
-            db = np.where(np.isfinite(db) & (db > 0), db, 1.0)
-            self.density_basis = db
         self.W = np.concatenate([o.w for o in observations]).astype(np.float64)
+        if density_basis is None:
+            self.density_basis = np.ones(self.grid.nvox, dtype=np.float64)
+            self.uses_density_basis = False
+        else:
+            basis = np.asarray(density_basis, dtype=np.float64).ravel(order="C")
+            if basis.size != self.grid.nvox:
+                raise ValueError(
+                    f"density_basis must have length {self.grid.nvox}, got {basis.size}"
+                )
+            if np.any(~np.isfinite(basis)) or np.any(basis <= 0):
+                raise ValueError("density_basis must be positive and finite everywhere")
+            self.density_basis = basis
+            self.uses_density_basis = True
         self._build_slices()
         self._build_sparse_forward_matrix()
-
-    def solution_to_density(self, x: np.ndarray) -> np.ndarray:
-        """Convert the solver variable to physical electron density [cm^-3]."""
-        x = np.asarray(x, dtype=np.float64).ravel()
-        if x.size != self.grid.nvox:
-            raise ValueError(f"solution_to_density expected x.size={self.grid.nvox}, got {x.size}")
-        if self.density_basis is None:
-            return x
-        return self.density_basis * x
 
     def _build_slices(self):
         self.slices: List[slice] = []
@@ -2192,37 +2151,44 @@ class RegularizedTomography:
 
     def A_times(self, x: np.ndarray) -> np.ndarray:
         """
-        Forward projection y = A x, concatenated over observations.
+        Forward projection y = A ne, concatenated over observations.
 
         The previous implementation looped over rays in Python.  This version uses
         the prebuilt CSR sparse matrix, which is mathematically identical but much
         faster because the sparse matrix-vector multiplication is executed in
         compiled SciPy code.
+
+        If a density basis is used, the solver variable is q and ne=basis*q.
         """
         x = np.asarray(x, dtype=np.float64)
         if x.size != self.grid.nvox:
             raise ValueError(f"A_times expected x.size={self.grid.nvox}, got {x.size}")
-        ne = self.solution_to_density(x)
-        return np.asarray(self.A_csr.dot(ne), dtype=np.float64).ravel()
+        return np.asarray(self.A_csr.dot(self.density_basis * x), dtype=np.float64).ravel()
 
     def AT_times(self, y: np.ndarray) -> np.ndarray:
         """
         Backprojection x = A^T y.
 
-        This uses the transpose of the same CSR forward matrix.  It is equivalent
-        to accumulating ww * y_i into each voxel for every ray contribution.
+        This uses the transpose of the same CSR forward matrix.  If a density
+        basis is used, this returns the gradient with respect to q in ne=basis*q.
         """
         y = np.asarray(y, dtype=np.float64)
         if y.size != self.n_meas:
             raise ValueError(f"AT_times expected y.size={self.n_meas}, got {y.size}")
-        out = np.asarray(self.A_csr.T.dot(y), dtype=np.float64).ravel()
-        if self.density_basis is not None:
-            out = self.density_basis * out
-        return out
+        return self.density_basis * np.asarray(self.A_csr.T.dot(y), dtype=np.float64).ravel()
+
+    def solution_to_density(self, x: np.ndarray) -> np.ndarray:
+        x = np.asarray(x, dtype=np.float64)
+        if x.size != self.grid.nvox:
+            raise ValueError(f"solution_to_density expected x.size={self.grid.nvox}, got {x.size}")
+        return self.density_basis * x
 
     def solve(self, y_obs: np.ndarray, maxiter: int = 50, tol: float = 1e-4, positivity: bool = True) -> Tuple[np.ndarray, int]:
         """
         Solve (A^T W^2 A + lam L^T L) x = A^T W^2 y.
+
+        If density_basis is active, x is the dimensionless correction q and
+        the physical density is ne=density_basis*q. Otherwise x is ne directly.
         """
         W = self.W
 
@@ -2250,6 +2216,173 @@ class RegularizedTomography:
             x = np.maximum(x, 0.0)
 
         return x, info
+
+
+def weighted_projection_scale(
+    y_obs: np.ndarray,
+    y_pred: np.ndarray,
+    weights: np.ndarray,
+    min_count: int = 100,
+) -> float:
+    """Return the weighted least-squares scalar matching A ne to observed pB."""
+    y_obs = np.asarray(y_obs, dtype=np.float64)
+    y_pred = np.asarray(y_pred, dtype=np.float64)
+    weights = np.asarray(weights, dtype=np.float64)
+    m = (
+        np.isfinite(y_obs)
+        & np.isfinite(y_pred)
+        & np.isfinite(weights)
+        & (y_pred != 0)
+        & (weights > 0)
+    )
+    if np.count_nonzero(m) < int(min_count):
+        return 1.0
+
+    w2 = weights[m] * weights[m]
+    num = float(np.sum(w2 * y_pred[m] * y_obs[m]))
+    den = float(np.sum(w2 * y_pred[m] * y_pred[m]))
+    scale = num / den if den > 0 else 1.0
+    if not np.isfinite(scale) or scale <= 0:
+        return 1.0
+    return float(scale)
+
+
+def print_projection_fit_diagnostic(
+    label: str,
+    y_obs: np.ndarray,
+    y_pred: np.ndarray,
+    weights: np.ndarray,
+    scale_for_residual: Optional[float] = None,
+) -> None:
+    """
+    Print objective forward-model diagnostics.
+
+    The fitted scale is not a new calibration constant; it is the scalar that best
+    maps the reconstructed forward projection to the measured pB in weighted least
+    squares.  Large group-to-group differences point to calibration, masking, or
+    geometry mismatches between instruments/viewpoints.
+    """
+    y_obs = np.asarray(y_obs, dtype=np.float64)
+    y_pred = np.asarray(y_pred, dtype=np.float64)
+    weights = np.asarray(weights, dtype=np.float64)
+    m = (
+        np.isfinite(y_obs)
+        & np.isfinite(y_pred)
+        & np.isfinite(weights)
+        & (y_pred != 0)
+        & (weights > 0)
+    )
+    n = int(np.count_nonzero(m))
+    if n == 0:
+        print(f"[DIAG] projection_fit {label}: no finite weighted rays.")
+        return
+
+    fitted_scale = weighted_projection_scale(y_obs[m], y_pred[m], weights[m], min_count=1)
+    eval_scale = fitted_scale if scale_for_residual is None else float(scale_for_residual)
+    if not np.isfinite(eval_scale) or eval_scale <= 0:
+        eval_scale = 1.0
+
+    yy = y_obs[m]
+    pp = y_pred[m]
+    ww = weights[m]
+    pp_eval = eval_scale * pp
+    resid = yy - pp_eval
+    w2 = ww * ww
+    den_obs = float(np.sum(w2 * yy * yy))
+    wrms_rel = np.sqrt(float(np.sum(w2 * resid * resid)) / den_obs) if den_obs > 0 else np.nan
+
+    pos = (yy > 0) & (pp_eval > 0)
+    med_ratio = float(np.nanmedian(yy[pos] / pp_eval[pos])) if np.any(pos) else np.nan
+    obs_med = float(np.nanmedian(yy))
+    pred_med = float(np.nanmedian(pp_eval))
+
+    print(
+        f"[DIAG] projection_fit {label}: n={n}, "
+        f"fit_scale={fitted_scale:.6g}, eval_scale={eval_scale:.6g}, "
+        f"weighted_rms_rel={wrms_rel:.4g}, "
+        f"median_obs/eval_pred={med_ratio:.6g}, "
+        f"median_obs={obs_med:.3e}, median_eval_pred={pred_med:.3e}"
+    )
+
+
+def print_projection_fit_diagnostics_by_group(
+    label_prefix: str,
+    pb_paths: List[Path],
+    tomo: "RegularizedTomography",
+    y_obs: np.ndarray,
+    y_pred: np.ndarray,
+    weights: np.ndarray,
+    scale_for_residual: Optional[float] = None,
+) -> None:
+    grouped: dict[str, List[slice]] = {}
+    for p, sl in zip(pb_paths, tomo.slices):
+        grouped.setdefault(tomography_observation_group_key(p), []).append(sl)
+
+    for key, slices in grouped.items():
+        yy = np.concatenate([y_obs[sl] for sl in slices])
+        pp = np.concatenate([y_pred[sl] for sl in slices])
+        ww = np.concatenate([weights[sl] for sl in slices])
+        print_projection_fit_diagnostic(
+            f"{label_prefix}/{key}",
+            yy,
+            pp,
+            ww,
+            scale_for_residual=scale_for_residual,
+        )
+
+
+def print_group_calibration_hints(
+    label: str,
+    pb_paths: List[Path],
+    tomo: "RegularizedTomography",
+    y_obs: np.ndarray,
+    y_pred: np.ndarray,
+    weights: np.ndarray,
+    reference_group: str = "earth_merged",
+) -> None:
+    """
+    Print multiplicative pB scale hints from group-wise projection scales.
+
+    These values are diagnostics, not automatic corrections.  If a group has
+    fitted scale S_group and the reference has S_ref, multiplying that group's
+    observed pB by S_ref/S_group would align the scalar fit in the same weighted
+    least-squares sense, assuming the discrepancy is purely photometric.
+    """
+    grouped: dict[str, List[slice]] = {}
+    for p, sl in zip(pb_paths, tomo.slices):
+        grouped.setdefault(tomography_observation_group_key(p), []).append(sl)
+
+    fit_scales: dict[str, float] = {}
+    for key, slices in grouped.items():
+        yy = np.concatenate([y_obs[sl] for sl in slices])
+        pp = np.concatenate([y_pred[sl] for sl in slices])
+        ww = np.concatenate([weights[sl] for sl in slices])
+        fit_scales[key] = weighted_projection_scale(yy, pp, ww, min_count=10)
+
+    if reference_group not in fit_scales:
+        print(
+            f"[DIAG] calibration_hint {label}: reference group "
+            f"{reference_group!r} is not present."
+        )
+        return
+
+    ref_scale = fit_scales[reference_group]
+    if not np.isfinite(ref_scale) or ref_scale <= 0:
+        print(f"[DIAG] calibration_hint {label}: unusable reference scale.")
+        return
+
+    for key, group_scale in fit_scales.items():
+        if key == reference_group:
+            continue
+        if not np.isfinite(group_scale) or group_scale <= 0:
+            continue
+        pb_factor = ref_scale / group_scale
+        print(
+            f"[DIAG] calibration_hint {label}: to align group '{key}' with "
+            f"'{reference_group}', try pb_scale_by_group['{key}']="
+            f"{pb_factor:.6g} only if independent photometric checks support it "
+            f"(fit_scale ratio {group_scale / ref_scale:.6g})."
+        )
 
 
 # ----------------------------
@@ -2555,51 +2688,27 @@ def build_observation(
         mask2[idx_map] = True
         mask = mask2.reshape(mask.shape)
 
-    lonlat_deg = None
     if lonlat_override is not None:
         lonlat_deg = lonlat_override
     else:
-        lon = hdr.get("CRLN_OBS", hdr.get("HGLN_OBS", hdr.get("CRLN", None)))
-        lat = hdr.get("CRLT_OBS", hdr.get("HGLT_OBS", hdr.get("CRLT", None)))
-        if lon is not None and lat is not None:
-            try:
-                lonlat_deg = (float(lon), float(lat))
-            except Exception:
-                lonlat_deg = None
+        lonlat_deg = infer_carrington_lonlat_deg(hdr)
         if lonlat_deg is None and lonlat_default is not None:
             lonlat_deg = lonlat_default
+            print(
+                f"[WARN] Using explicit default observer lon/lat={lonlat_deg} for {pb_fits.name}. "
+                "This should only be used when all pB files are known to share that viewpoint."
+            )
 
-    # Build camera basis vectors in Carrington coordinates.
-    # cam_z points from observer to Sun center; cam_y is north projected on the plane of sky;
-    # cam_x completes right-handed set (approx. solar west).
-    lonlat_for_cam = lonlat_deg if lonlat_deg is not None else (0.0, 0.0)
-    lon_rad = np.deg2rad(lonlat_for_cam[0])
-    lat_rad = np.deg2rad(lonlat_for_cam[1])
-    obs_vec = np.array([
-        np.cos(lat_rad) * np.cos(lon_rad),
-        np.cos(lat_rad) * np.sin(lon_rad),
-        np.sin(lat_rad),
-    ], dtype=float)
-    norm_obs = np.linalg.norm(obs_vec)
-    if norm_obs <= 0:
-        obs_vec = np.array([1.0, 0.0, 0.0], dtype=float)
-        norm_obs = 1.0
-    obs_vec /= norm_obs
+    if lonlat_deg is None:
+        raise ValueError(
+            f"Cannot determine Carrington observer longitude/latitude for {pb_fits.name}. "
+            "The FITS header needs CRLN_OBS/CRLT_OBS, or provide lonlat_override/lonlat_file."
+        )
 
-    cam_z = -obs_vec
-    north = np.array([0.0, 0.0, 1.0], dtype=float)
-    cam_y_tmp = north - np.dot(north, cam_z) * cam_z
-    norm_y = np.linalg.norm(cam_y_tmp)
-    if norm_y <= 0:
-        cam_y = np.array([0.0, 1.0, 0.0], dtype=float)
-    else:
-        cam_y = cam_y_tmp / norm_y
-    cam_x = np.cross(cam_y, cam_z)
-    norm_x = np.linalg.norm(cam_x)
-    if norm_x <= 0:
-        cam_x = np.array([1.0, 0.0, 0.0], dtype=float)
-    else:
-        cam_x = cam_x / norm_x
+    # Helioprojective Tx is positive toward the solar west limb.  In Carrington
+    # Cartesian coordinates this requires cam_z to point from Sun to observer;
+    # using the opposite sign mirrors each pB image in longitude.
+    cam_x, cam_y, cam_z = camera_basis_from_lonlat(lonlat_deg[0], lonlat_deg[1])
 
     if save_prepped_dir is not None:
         save_prepped_dir.mkdir(parents=True, exist_ok=True)
@@ -2629,7 +2738,7 @@ def build_observation(
 def main(args):
     """
     Run SSC/Ne3dTomo-like preprocessing + regularized tomography WITHOUT argparse.
-    Edit the parameters in the `if __name__ == "__main__"` block at the bottom.
+    Edit the parameters in the `if __name__ == "__main__":` block at the bottom.
     """
 
     defaults = dict(
@@ -2640,7 +2749,7 @@ def main(args):
         lonlat_file="",
 
         r_min=1.5,
-        r_max=4.0,
+        r_max=6.0,
         nr=40,
         nth=60,
         nph=120,
@@ -2655,15 +2764,15 @@ def main(args):
         dpa_deg=1.0,
         r_use_min=1.5,
         r_use_max=4.0,
-        r_use_min_by_group={},
-        r_use_max_by_group={},
-        pb_scale_by_group={},
+        r_use_min_by_group=None,
+        r_use_max_by_group=None,
+        pb_scale_by_group=None,
         hm=6,
         wt_nr=1,
 
         lam=1.0,
         q_low=0.0,
-        width_pix=2.0,
+        width_pix=10.0,
         maxiter=10000,
         tol=1e-3,
         apply_brightness_scale=False,
@@ -2681,7 +2790,7 @@ def main(args):
         include_lasco_only=True,
         deduplicate_pb_fits=True,
         use_temporal_despike=False,
-        ne3dtomo_global_ybk=False,
+        ne3dtomo_global_ybk=True,
         show_ray_progress=True,
 
         save_prepped_dir="",
@@ -2751,9 +2860,18 @@ def main(args):
         if not p.exists():
             raise FileNotFoundError(p)
 
-    r_use_min_by_group = normalize_group_float_map(args.r_use_min_by_group, "r_use_min_by_group")
-    r_use_max_by_group = normalize_group_float_map(args.r_use_max_by_group, "r_use_max_by_group")
-    pb_scale_by_group = normalize_group_float_map(args.pb_scale_by_group, "pb_scale_by_group")
+    r_use_min_by_group = normalize_group_float_map(
+        getattr(args, "r_use_min_by_group", None),
+        "r_use_min_by_group",
+    )
+    r_use_max_by_group = normalize_group_float_map(
+        getattr(args, "r_use_max_by_group", None),
+        "r_use_max_by_group",
+    )
+    pb_scale_by_group = normalize_group_float_map(
+        getattr(args, "pb_scale_by_group", None),
+        "pb_scale_by_group",
+    )
 
     pb_overrides = {}
     if args.filt and len(pb_paths) >= 2 and bool(args.use_temporal_despike):
@@ -2763,32 +2881,34 @@ def main(args):
             nsig=float(args.despike_nsig),
         )
         if not pb_overrides:
-            print("[INFO] Temporal despike requested, but no homogeneous group was usable; applying spatial despike per image only.")
+            print("[INFO] Temporal despike requested, but no homogeneous group had >=2 files; applying spatial despike per image only.")
     elif args.filt and len(pb_paths) >= 2:
         print("[INFO] Global temporal despike disabled; applying spatial despike per image only.")
-
+            
+            
     r_edges = np.linspace(args.r_min, args.r_max, args.nr + 1)
     th_edges = np.linspace(0.0, np.pi, args.nth + 1)
     ph_edges = np.linspace(0.0, 2.0 * np.pi, args.nph + 1)
     grid = SphericalGrid(r_edges=r_edges, th_edges=th_edges, ph_edges=ph_edges)
-
     density_basis = density_basis_from_grid(
         grid,
-        model=str(args.density_prior_model),
-        scale=float(args.density_prior_scale),
+        model=getattr(args, "density_prior_model", "none"),
+        scale=float(getattr(args, "density_prior_scale", 1.0)),
     )
     if density_basis is not None:
-        basis_range = frequency_range_mhz_from_ne(density_basis, harmonic=int(args.harmonic))
-        print(
-            "[INFO] Density prior enabled: "
-            f"model={str(args.density_prior_model)!r}, "
-            f"scale={float(args.density_prior_scale):.6g}, solving ne = prior * q."
-        )
+        basis_range = frequency_range_mhz_from_ne(density_basis, harmonic=args.harmonic)
         if basis_range is not None:
             b_ne_min, b_ne_max, b_fmin, b_fmax = basis_range
             print(
+                "[INFO] Density prior enabled: "
+                f"model={args.density_prior_model!r}, "
+                f"scale={float(args.density_prior_scale):.6g}, "
+                "solving ne = prior * q."
+            )
+            print(
                 f"[INFO] Prior density range: {b_ne_min:.3e} .. {b_ne_max:.3e} cm^-3; "
-                f"plasma-frequency range (harm={int(args.harmonic)}) {b_fmin:.3f} .. {b_fmax:.3f} MHz"
+                f"plasma-frequency range (harm={args.harmonic}) "
+                f"{b_fmin:.3f} .. {b_fmax:.3f} MHz"
             )
     else:
         print("[INFO] Density prior disabled: solving absolute electron density ne.")
@@ -2804,16 +2924,21 @@ def main(args):
         obs_r_use_min = float(r_use_min_by_group.get(group_key, args.r_use_min))
         obs_r_use_max = float(r_use_max_by_group.get(group_key, args.r_use_max))
         if obs_r_use_min >= obs_r_use_max:
-            raise ValueError(f"Invalid r_use bounds for {p.name}: {obs_r_use_min} >= {obs_r_use_max} Rsun.")
+            raise ValueError(
+                f"Invalid r_use bounds for {p.name}: "
+                f"{obs_r_use_min} >= {obs_r_use_max} Rsun."
+            )
         if obs_r_use_min < float(args.r_min) - 1e-8:
             raise ValueError(
                 f"{p.name} uses r_use_min={obs_r_use_min} Rsun, smaller than "
-                f"the reconstruction r_min={args.r_min} Rsun. Lower r_min or raise the observation cut."
+                f"the reconstruction r_min={args.r_min} Rsun.  Lower r_min or "
+                "raise the observation cut so the forward model covers every used ray."
             )
         if obs_r_use_max > float(args.r_max) + 1e-8:
             raise ValueError(
                 f"{p.name} uses r_use_max={obs_r_use_max} Rsun, larger than "
-                f"the reconstruction r_max={args.r_max} Rsun. Raise r_max or lower the observation cut."
+                f"the reconstruction r_max={args.r_max} Rsun.  Raise r_max or "
+                "lower the observation cut so the forward model covers every used ray."
             )
 
         obs = build_observation(
@@ -2836,7 +2961,6 @@ def main(args):
             lonlat_default=default_lonlat,
             save_prepped_dir=save_prepped_dir,
         )
-
         pb_scale = float(pb_scale_by_group.get(group_key, 1.0))
         if abs(pb_scale - 1.0) > 1e-12:
             obs = scale_observation_pb(obs, pb_scale)
@@ -2844,31 +2968,29 @@ def main(args):
                 f"[INFO] Applied explicit pB calibration scale to {p.name}: "
                 f"group={group_key}, scale={pb_scale:.6g}"
             )
-
         obs_list.append(obs)
         obs_r_bounds.append((obs_r_use_min, obs_r_use_max))
 
         rho = np.hypot(obs.x, obs.y)
         print(
-            f"[GEOM] {p.name}: group={group_key}, lonlat={obs.lonlat_deg}, "
-            f"used_pixels={obs.idx_map.size}, r_use={obs_r_use_min:.3f}..{obs_r_use_max:.3f} Rs, "
-            f"pb_scale={pb_scale:.6g}, rho={np.nanmin(rho):.3f}..{np.nanmax(rho):.3f} Rs"
+            f"[GEOM] {p.name}: "
+            f"group={group_key}, "
+            f"lonlat={obs.lonlat_deg}, "
+            f"used_pixels={obs.idx_map.size}, "
+            f"r_use={obs_r_use_min:.3f}..{obs_r_use_max:.3f} Rs, "
+            f"pb_scale={pb_scale:.6g}, "
+            f"rho={np.nanmin(rho):.3f}..{np.nanmax(rho):.3f} Rs"
         )
 
         rgrid, ybk, _ = ybk_profile_fft(
-            pb=obs.pb,
-            hdr=obs.hdr,
-            rmin=obs_r_use_min,
-            rmax=obs_r_use_max,
-            dpa_deg=args.dpa_deg,
-            nr=240,
-            hm=args.hm,
-            width_pix=args.width_pix,
-            q_low=args.q_low,
+            pb=obs.pb, hdr=obs.hdr,
+            rmin=obs_r_use_min, rmax=obs_r_use_max,
+            dpa_deg=args.dpa_deg, nr=240, hm=args.hm,
+            width_pix=args.width_pix, q_low=args.q_low
         )
         local_ybk_list.append((rgrid, ybk))
 
-    if bool(getattr(args, "ne3dtomo_global_ybk", False)):
+    if bool(getattr(args, "ne3dtomo_global_ybk", True)):
         grouped_indices: dict[str, List[int]] = {}
         for i, p in enumerate(pb_paths):
             grouped_indices.setdefault(tomography_observation_group_key(p), []).append(i)
@@ -2881,7 +3003,8 @@ def main(args):
             group_rmax = group_bounds[0][1]
             if any((abs(b0 - group_rmin) > 1e-8 or abs(b1 - group_rmax) > 1e-8) for b0, b1 in group_bounds):
                 raise ValueError(
-                    f"Group {key!r} has mixed r_use bounds; global ybk requires one radial range per homogeneous observation group."
+                    f"Group '{key}' has mixed r_use bounds; global ybk requires one "
+                    "radial range per homogeneous observation group."
                 )
             rgrid_g, ybk_g, pb_noise_g = ybk_profile_fft_stack(
                 observations=group_obs,
@@ -2902,7 +3025,7 @@ def main(args):
                     pb_floor=args.pb_floor,
                 )
                 ybk_list[i] = (rgrid_g, ybk_g)
-            print(f"[INFO] Ne3dTomo-style global ybk(r) applied for group {key!r} (n={len(indices)}).")
+            print(f"[INFO] Ne3dTomo-style global ybk(r) applied for group '{key}' (n={len(indices)}).")
     else:
         ybk_list = local_ybk_list
 
@@ -2912,10 +3035,7 @@ def main(args):
         y_list.append(y_vec)
         vv = y_vec[np.isfinite(y_vec)]
         if vv.size:
-            print(
-                f"[INFO] {p.name}: pB (used pixels) min/med/max = "
-                f"{np.min(vv):.3e} / {np.median(vv):.3e} / {np.max(vv):.3e}"
-            )
+            print(f"[INFO] {p.name}: pB (used pixels) min/med/max = {np.min(vv):.3e} / {np.median(vv):.3e} / {np.max(vv):.3e}")
 
     y_obs = np.concatenate(y_list) if y_list else np.array([], dtype=float)
     if y_obs.size == 0 or (not np.any(np.isfinite(y_obs))):
@@ -2923,15 +3043,15 @@ def main(args):
 
     rays: List[RayBundle] = []
     n_obs = len(obs_list)
-    for i, (obs, p) in enumerate(zip(obs_list, pb_paths), start=1):
+    for i, (o, p) in enumerate(zip(obs_list, pb_paths), start=1):
         if bool(getattr(args, "show_ray_progress", True)):
             print(
                 f"[INFO] Building rays {i}/{n_obs}: {Path(p).name} "
-                f"(used pixels={obs.idx_map.size})",
+                f"(used pixels={o.idx_map.size})",
                 flush=True,
             )
         ray = build_rays_for_observation(
-            obs=obs,
+            obs=o,
             grid=grid,
             ds_rsun=args.ds,
             r_min=args.r_min,
@@ -2961,6 +3081,15 @@ def main(args):
             ybk_clean = ybk_mean.copy()
             if not np.all(good):
                 ybk_clean[~good] = np.interp(r_cent[~good], r_cent[good], ybk_mean[good])
+
+            floor = float(np.nanpercentile(ybk_clean[good], 5))
+            if not np.isfinite(floor) or floor <= 0:
+                floor = float(np.nanmin(ybk_clean[good]))
+            floor = max(floor, 1e-30)
+
+            # tomo_sph_omp.f90 reads ybk(r), normalizes it by max(ybk), and then
+            # divides each regularization row by this normalized N(r).  Therefore
+            # wt_r stores N(r)/max(N), not 1/N(r); apply_LTL performs the division.
             ymax = float(np.nanmax(ybk_clean[good]))
             if not np.isfinite(ymax) or ymax <= 0:
                 ymax = 1.0
@@ -2993,14 +3122,20 @@ def main(args):
         y_obs,
         y_pred,
         W,
-        reference_group=str(args.calibration_reference_group),
+        reference_group=str(getattr(args, "calibration_reference_group", "earth_merged")),
     )
 
     raw_range = frequency_range_mhz_from_ne(ne_raw, harmonic=args.harmonic)
     if raw_range is not None:
         raw_ne_min, raw_ne_max, raw_fmin, raw_fmax = raw_range
-        print(f"[INFO] Raw reconstructed density range: {raw_ne_min:.3e} .. {raw_ne_max:.3e} cm^-3")
-        print(f"[INFO] Raw reconstructed plasma-frequency range (harm={args.harmonic}): {raw_fmin:.3f} .. {raw_fmax:.3f} MHz")
+        print(
+            f"[INFO] Raw reconstructed density range: "
+            f"{raw_ne_min:.3e} .. {raw_ne_max:.3e} cm^-3"
+        )
+        print(
+            f"[INFO] Raw reconstructed plasma-frequency range "
+            f"(harm={args.harmonic}): {raw_fmin:.3f} .. {raw_fmax:.3f} MHz"
+        )
     else:
         print("[WARN] ne_raw has no positive finite values before scaling.")
 
@@ -3008,7 +3143,8 @@ def main(args):
     if bool(args.apply_brightness_scale):
         print(
             f"[INFO] Applied global brightness-scale correction: scale={scale:.6g}. "
-            "This is an explicit post-fit scalar calibration; the Thomson A matrix itself is unchanged."
+            "This is an explicit post-fit scalar calibration; the Thomson A matrix "
+            "itself is unchanged."
         )
     else:
         print(f"[INFO] Brightness-scale correction disabled; suggested scale={suggested_scale:.6g}")
@@ -3016,13 +3152,27 @@ def main(args):
             expected_factor = np.sqrt(suggested_scale)
             print(
                 f"[WARN] Frequency range will be smaller by about sqrt(suggested_scale)="
-                f"{expected_factor:.3g}. Set APPLY_BRIGHTNESS_SCALE=True to use the fitted pB scale."
+                f"{expected_factor:.3g}.  Set APPLY_BRIGHTNESS_SCALE=True to use the fitted pB scale."
             )
 
     ne = ne_raw * scale
     if bool(args.apply_brightness_scale):
-        print_projection_fit_diagnostic("scaled/global", y_obs, y_pred, W, scale_for_residual=scale)
-        print_projection_fit_diagnostics_by_group("scaled", pb_paths, tomo, y_obs, y_pred, W, scale_for_residual=scale)
+        print_projection_fit_diagnostic(
+            "scaled/global",
+            y_obs,
+            y_pred,
+            W,
+            scale_for_residual=scale,
+        )
+        print_projection_fit_diagnostics_by_group(
+            "scaled",
+            pb_paths,
+            tomo,
+            y_obs,
+            y_pred,
+            W,
+            scale_for_residual=scale,
+        )
 
     scaled_range = frequency_range_mhz_from_ne(ne, harmonic=args.harmonic)
     if scaled_range is not None:
@@ -3048,85 +3198,23 @@ def main(args):
     if args.save_ne_npz:
         out = Path(args.save_ne_npz)
         out.parent.mkdir(parents=True, exist_ok=True)
-
-        # Save enough metadata to reproduce which observations and settings were used
-        # for this tomography solution.  These arrays are intentionally saved as simple
-        # numeric/string arrays so the NPZ remains easy to inspect with numpy alone.
-        obs_lonlat_deg = np.array(
-            [
-                (obs.lonlat_deg if obs.lonlat_deg is not None else (np.nan, np.nan))
-                for obs in obs_list
-            ],
-            dtype=np.float64,
-        )
-        obs_group_keys = np.array(
-            [tomography_observation_group_key(p) for p in pb_paths],
-            dtype="U64",
-        )
-        obs_r_use_min = np.array([b[0] for b in obs_r_bounds], dtype=np.float64)
-        obs_r_use_max = np.array([b[1] for b in obs_r_bounds], dtype=np.float64)
-        obs_used_pixels = np.array([obs.idx_map.size for obs in obs_list], dtype=np.int64)
-        freq_list_to_save = np.array(diagnostic_freqs, dtype=np.float64)
-
         np.savez_compressed(
             out,
             ne=ne.astype(np.float32),
             ne_raw=ne_raw.astype(np.float32),
             solution_raw=solution_raw.astype(np.float32),
-            density_basis=(density_basis.astype(np.float32) if density_basis is not None else np.ones_like(ne_raw, dtype=np.float32)),
+            density_basis=(
+                density_basis.astype(np.float32)
+                if density_basis is not None
+                else np.ones_like(ne_raw, dtype=np.float32)
+            ),
             scale_brightness=float(scale),
             suggested_scale_brightness=float(suggested_scale),
             apply_brightness_scale=bool(args.apply_brightness_scale),
-            density_prior_model=str(args.density_prior_model),
-            density_prior_scale=float(args.density_prior_scale),
+            density_prior_model=str(getattr(args, "density_prior_model", "none")),
+            density_prior_scale=float(getattr(args, "density_prior_scale", 1.0)),
             pb_scale_group_keys=np.array(list(pb_scale_by_group.keys()), dtype="U64"),
             pb_scale_group_values=np.array(list(pb_scale_by_group.values()), dtype=np.float64),
-            r_use_min_group_keys=np.array(list(r_use_min_by_group.keys()), dtype="U64"),
-            r_use_min_group_values=np.array(list(r_use_min_by_group.values()), dtype=np.float64),
-            r_use_max_group_keys=np.array(list(r_use_max_by_group.keys()), dtype="U64"),
-            r_use_max_group_values=np.array(list(r_use_max_by_group.values()), dtype=np.float64),
-            pb_paths=np.array([str(p) for p in pb_paths], dtype="U2048"),
-            pb_names=np.array([p.name for p in pb_paths], dtype="U256"),
-            obs_group_keys=obs_group_keys,
-            obs_lonlat_deg=obs_lonlat_deg,
-            obs_r_use_min=obs_r_use_min.astype(np.float32),
-            obs_r_use_max=obs_r_use_max.astype(np.float32),
-            obs_used_pixels=obs_used_pixels,
-            data_dir=str(args.data_dir),
-            cor1a_data_dir=str(args.cor1a_data_dir),
-            target_time=str(args.target_time),
-            search_window_days=float(args.search_window_days),
-            include_kcor_lasco=bool(args.include_kcor_lasco),
-            include_cor1a=bool(args.include_cor1a),
-            include_lasco_only=bool(args.include_lasco_only),
-            deduplicate_pb_fits=bool(args.deduplicate_pb_fits),
-            out_n=int(args.out_n),
-            r_min=float(args.r_min),
-            r_max=float(args.r_max),
-            nr=int(args.nr),
-            nth=int(args.nth),
-            nph=int(args.nph),
-            ds=float(args.ds),
-            limb_u=float(args.limb_u),
-            filt=bool(args.filt),
-            despike_nsig=float(args.despike_nsig),
-            despike_med=int(args.despike_med),
-            pb_floor=str(args.pb_floor),
-            dpa_deg=float(args.dpa_deg),
-            r_use_min=float(args.r_use_min),
-            r_use_max=float(args.r_use_max),
-            hm=int(args.hm),
-            wt_nr=bool(args.wt_nr),
-            lam=float(args.lam),
-            q_low=float(args.q_low),
-            width_pix=float(args.width_pix),
-            maxiter=int(args.maxiter),
-            tol=float(args.tol),
-            use_temporal_despike=bool(args.use_temporal_despike),
-            ne3dtomo_global_ybk=bool(args.ne3dtomo_global_ybk),
-            calibration_reference_group=str(args.calibration_reference_group),
-            harmonic=int(args.harmonic),
-            freq_mhz_list=freq_list_to_save,
             r_edges=r_edges.astype(np.float32),
             th_edges=th_edges.astype(np.float32),
             ph_edges=ph_edges.astype(np.float32),
@@ -3142,7 +3230,10 @@ def main(args):
         tag = "_".join([f"{float(f):.2f}" for f in freq_list])
         png_path = base.parent / f"{base.name}_iso_{tag}MHz_h{int(args.harmonic)}.png"
 
-    print("Save png to", png_path)
+    if bool(args.save_png):
+        print("Save png to", png_path)
+    else:
+        print(f"[INFO] PNG output disabled; target path would be {png_path}")
 
     if getattr(args, "target_time", ""):
         cam_ll = choose_camera_lonlat_near_target(obs_list, pb_paths, args.target_time)
@@ -3168,7 +3259,9 @@ if __name__ == "__main__":
     from types import SimpleNamespace
 
     # ------------------------------------------------------------------
-    # Latest tomography settings used in this conversation.
+    # Tomography input settings.
+    # Run prepare_kcor_lasco_pb.py beforehand when pB_Kcor_LASCO_axi_*.fits
+    # products need to be created or refreshed.
     # ------------------------------------------------------------------
     PB_FITS = []
 
@@ -3177,86 +3270,97 @@ if __name__ == "__main__":
     TARGET_TIME = "20220613_030000"
     SEARCH_WINDOW_DAYS = 7.0
 
+    # AUTO_FIND_PB_FITS = True
     AUTO_FIND_PB_FITS = True
+
+    # PB_FITS = [
+    #     "/mnt/d/wsl/home/kinno-7010/Research_data/Tomography/Rawdata/pB_Kcor_LASCO_axi_20220613_0300.fits",
+    #     "/mnt/d/wsl/home/kinno-7010/Research_data/STEREO-A/SECCHI/COR1/pB/Rawdata/COR1A_pb_pre_20220613_030100.fits",
+    # ]
     INCLUDE_KCOR_LASCO = True
     INCLUDE_COR1A = True
     INCLUDE_LASCO_ONLY = False
+    # If both merged K-Cor/LASCO and LASCO-only files exist at the same Earth-view time,
+    # use only the merged file to avoid double-counting the same LASCO constraint.
     DEDUPLICATE_PB_FITS = True
 
-    # Empty string is intentional.  The updated K-Cor/LASCO FITS files now carry
-    # CRLN_OBS/CRLT_OBS, so the code should not fall back to (0,0).
     DEFAULT_LONLAT = ""
     LONLAT_FILE = ""
 
-    # ====================
-    OUT_N = 256
-    
+    OUT_N = 128
+
+    # Reconstruction grid
+    # Ne3dTomo F90 reference: grid_Rin=1.5, grid_Rout=4.0, sz_r=51, sz_th=181, sz_ph=361.
+    # This Python version keeps a reduced angular grid by default for memory/runtime practicality.
+    # Include the K-Cor/COR1 inner-corona domain in the reconstruction grid.
+    # If R_MIN is left at 2.2 Rs, the inversion cannot place high-density plasma
+    # below the LASCO-C2 inner FOV, even when K-Cor pixels at smaller heights are used.
     R_MIN, R_MAX = 1.5, 4.0
-    NR, NTH, NPH = 48,48,96
+    NR, NTH, NPH = 30, 40, 80
+    # NR, NTH, NPH = 40, 60, 120
+    # NR, NTH, NPH = 20, 30, 60
 
     DS = 0.01
-    
-    HM = 5
-
-    WT_NR = 1
-    LAM = 40.0
-    Q_LOW = 0.0
-    WIDTH_PIX = 1.0
-
-    MAXITER = 10000
-    TOL = 1e-5
-    
-    DESPIKE_NSIG = 6.0
-    DESPIKE_MED = 5
-    
-    # ====================
-    
     LIMB_U = DEFAULT_LIMB_U
 
-    FILT = 1
+    FILT = 1 #pB画像のフィルタ処理を有効にするかどうか 1:有効 0:無効
+    DESPIKE_NSIG = 6.0 #局所的な中央値や周囲の値と比べて、どの程度外れたピクセルをspikeとみなすか
+    DESPIKE_MED = 5 # spike検出に使う中央値フィルタの窓サイズ。n×nピクセル程度の近傍を見て、周囲と比べて異常に明るい点を検出
 
-    PB_FLOOR = ""
+    PB_FLOOR = 1e-12 #pBの下限値、つまりnoise floorを手動指定するパラメータ。""の場合は自動で決定される
 
-    DPA_DEG = 1.0
+    DPA_DEG = 2.0 # polar samplingで使うPosition Angle方向の角度刻み
     R_USE_MIN, R_USE_MAX = 1.5, 4.0
-    # Since R_MIN=1.8, COR1A cannot use r_use_min=1.4 unless R_MIN is also lowered.
+    # COR1A has an inner occulter near this height; keep K-Cor/LASCO free to use
+    # the lower r_use_min while clipping COR1A through the same configurable path.
     R_USE_MIN_BY_GROUP = {"cor1a": 1.5}
     R_USE_MAX_BY_GROUP = {}
     PB_SCALE_BY_GROUP = {}
+    HM = 4 # ybk(r) を作るときのPA方向の低次フーリエモード数。ybk(r)：背景pBの半径プロファイル。画像をPA方向に展開し、低次成分だけを残すことで、大局的な背景構造を推定
 
+    WT_NR = 1 # radial regularization weightを使うかどうか
+    LAM = 5 #Tomography反転の正則化強度 λ。小さいほど、観測pBにより忠実になりますが、ノイズやartifactも拾いやすくなります
+    Q_LOW = 0.0 # 追加の低周波・大規模背景成分除去を行うかどうか
+    WIDTH_PIX = 5.0 #pBのpolar sampling時に、半径方向カットの横幅を何ピクセル平均するか
 
-    # With density prior enabled, we solve ne = prior*q.  Do not apply an additional
-    # global brightness scale unless you intentionally want a post-fit scalar calibration.
+    # The inverse problem is strongly regularized; too few CG iterations can leave
+    # the density amplitude severely underestimated.
+    MAXITER = 5000
+    TOL = 1e-3
+
+    # The global brightness scale printed by the diagnostics is not part of the
+    # Thomson forward model.  Keep it disabled by default and use it only after
+    # an explicit photometric calibration decision.
     APPLY_BRIGHTNESS_SCALE = False
     DENSITY_PRIOR_MODEL = "saito_equatorial"
     DENSITY_PRIOR_SCALE = 2.8
     CALIBRATION_REFERENCE_GROUP = "earth_merged"
-
+    # Ne3dTomo preview_data.pro applies ssw_unspike_cube when /filt is used.
+    # Here it is applied group-wise, so COR1A and Earth-view pB are not mixed in one cube.
     USE_TEMPORAL_DESPIKE = False
-    NE3DTOMO_GLOBAL_YBK = False
+    NE3DTOMO_GLOBAL_YBK = True
     SHOW_RAY_PROGRESS = True
-
+    
+    # Visualization (isosurfaces specified by plasma frequency)
     SHOW_GUI = True
     HARMONIC = 2
-    FREQ_MHZ_LIST = [33.8]
-    ISO_COLORS = ["yellow"]
+
+    FREQ_MHZ_LIST = [33] #, 31.0, 40.0]
+    ISO_COLORS = ["tomato"]
+    #ISO_COLORS = ["deepskyblue"]
+    # ISO_COLORS = ["gold"]
+    
 
     TARGET_TAG = parse_target_datetime(TARGET_TIME).strftime("%Y%m%d_%H%M%S")
     WINDOW_TAG = f"pm{int(SEARCH_WINDOW_DAYS)}d"
-    FREQ_TAG = "-".join(str(float(f)).rstrip("0").rstrip(".") for f in FREQ_MHZ_LIST)
+    FREQ_TAG = "-".join(str(f) for f in FREQ_MHZ_LIST)
 
-    SAVE_PREPPED_DIR = (
-        f"/mnt/d/wsl/home/kinno-7010/Research_data/Tomography/Rawdata/"
-        f"tomo_prepped_{TARGET_TAG}_{WINDOW_TAG}"
-    )
-    SAVE_NE_NPZ = (
-        f"/mnt/d/wsl/home/kinno-7010/Research_data/Tomography/Rawdata/ne_npz/"
-        f"ne3d_solution_{TARGET_TAG}_{WINDOW_TAG}_{FREQ_TAG}MHz_6.npz"
-    )
-    SAVE_PNG_PATH = (
-        f"/mnt/d/wsl/home/kinno-7010/Research_data/Tomography/output/multi-tomo/"
-        f"tomo_{TARGET_TAG}_{WINDOW_TAG}_{FREQ_TAG}MHz_6.png"
-    )
+    SAVE_PREPPED_DIR = f"/mnt/d/wsl/home/kinno-7010/Research_data/Tomography/Rawdata/tomo_prepped_{TARGET_TAG}_{WINDOW_TAG}"
+    SAVE_NE_NPZ = f"/mnt/d/wsl/home/kinno-7010/Research_data/Tomography/Rawdata/ne_npz/ne3d_{TARGET_TAG}_{WINDOW_TAG}_{FREQ_TAG}MHz_h{int(HARMONIC)}.npz"
+
+
+
+    SAVE_PNG_PATH = f"/mnt/d/wsl/home/kinno-7010/Research_data/Tomography/output/tomo_{TARGET_TAG}_{WINDOW_TAG}_{FREQ_TAG}MHz_h{int(HARMONIC)}.png"
 
     args = SimpleNamespace(
         pb_fits=PB_FITS,
@@ -3274,13 +3378,8 @@ if __name__ == "__main__":
         default_lonlat=DEFAULT_LONLAT,
         lonlat_file=LONLAT_FILE,
 
-        r_min=R_MIN,
-        r_max=R_MAX,
-        nr=NR,
-        nth=NTH,
-        nph=NPH,
-        ds=DS,
-        limb_u=LIMB_U,
+        r_min=R_MIN, r_max=R_MAX, nr=NR, nth=NTH, nph=NPH,
+        ds=DS, limb_u=LIMB_U,
 
         filt=FILT,
         despike_nsig=DESPIKE_NSIG,
@@ -3304,7 +3403,6 @@ if __name__ == "__main__":
         density_prior_model=DENSITY_PRIOR_MODEL,
         density_prior_scale=DENSITY_PRIOR_SCALE,
         calibration_reference_group=CALIBRATION_REFERENCE_GROUP,
-
         use_temporal_despike=USE_TEMPORAL_DESPIKE,
         ne3dtomo_global_ybk=NE3DTOMO_GLOBAL_YBK,
         show_ray_progress=SHOW_RAY_PROGRESS,

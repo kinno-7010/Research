@@ -739,6 +739,15 @@ def xy_rsun_for_rebinned_image(hdr, orig_n: int, out_n: int) -> Tuple[np.ndarray
     This codebase frequently uses r_use_min/r_use_max in Rsun. Therefore x_map and y_map must be
     expressed as x/RSUN_OBS and y/RSUN_OBS (dimensionless solar radii), not in arcsec.
 
+    Important
+    ---------
+    For COR1A HPLN-TAN/HPLT-TAN headers, astropy.wcs.pixel_to_world_values can return
+    negative helioprojective longitudes as wrapped values near 360 deg.  If those values are
+    converted directly to arcsec, a normal COR1A field of view can appear to extend to
+    ~10^3 Rsun.  For tomography, the required coordinates are local image-plane offsets from
+    Sun center, so this routine uses the FITS linear image-plane transformation
+    (CRPIX/CRVAL/CDELT with PC or CD matrix) and avoids longitude wrapping.
+
     Returns
     -------
     x_map_rsun, y_map_rsun : (out_n,out_n)
@@ -751,44 +760,57 @@ def xy_rsun_for_rebinned_image(hdr, orig_n: int, out_n: int) -> Tuple[np.ndarray
     # scale factor from original -> rebinned pixels
     s = float(orig_n) / float(out_n)
 
-    # Pixel centers on rebinned grid
+    # Pixel centers on rebinned grid, expressed in the original FITS pixel system.
     yy, xx = np.mgrid[0:out_n, 0:out_n]
     xpix = (xx + 0.5) * s - 0.5
     ypix = (yy + 0.5) * s - 0.5
 
-    # Preferred: WCS
-    try:
-        w = WCS(hdr)
-        xw, yw = w.pixel_to_world_values(xpix, ypix)
+    def _cd_matrix_from_header(h: fits.Header) -> np.ndarray:
+        if all(k in h for k in ("CD1_1", "CD1_2", "CD2_1", "CD2_2")):
+            return np.array(
+                [[float(h["CD1_1"]), float(h["CD1_2"])],
+                 [float(h["CD2_1"]), float(h["CD2_2"])]],
+                dtype=np.float64,
+            )
+        if all(k in h for k in ("PC1_1", "PC1_2", "PC2_1", "PC2_2")):
+            pc = np.array(
+                [[float(h["PC1_1"]), float(h["PC1_2"])],
+                 [float(h["PC2_1"]), float(h["PC2_2"])]],
+                dtype=np.float64,
+            )
+            cdelt1 = float(h.get("CDELT1", 1.0))
+            cdelt2 = float(h.get("CDELT2", 1.0))
+            return np.diag([cdelt1, cdelt2]) @ pc
 
-        x_map = np.array(xw, dtype=np.float64, copy=False)
-        y_map = np.array(yw, dtype=np.float64, copy=False)
+        crota = float(h.get("CROTA2", h.get("CROTA", 0.0)))
+        cdelt1 = float(h.get("CDELT1", 1.0))
+        cdelt2 = float(h.get("CDELT2", 1.0))
+        th = np.deg2rad(crota)
+        rot = np.array([[np.cos(th), -np.sin(th)],
+                        [np.sin(th),  np.cos(th)]], dtype=np.float64)
+        return np.diag([cdelt1, cdelt2]) @ rot
 
-        # Convert deg -> arcsec if needed
-        try:
-            cu1 = str(getattr(w.wcs, "cunit", [None, None])[0]).lower()
-            if "deg" in cu1:
-                x_map *= 3600.0
-                y_map *= 3600.0
-        except Exception:
-            pass
+    cd = _cd_matrix_from_header(hdr)
 
-    except Exception:
-        # Fallback: linear mapping using CRPIX/CDELT in arcsec
-        cdelt1 = float(hdr.get("CDELT1", 1.0))
-        cdelt2 = float(hdr.get("CDELT2", 1.0))
-        crpix1 = float(hdr.get("CRPIX1", (orig_n + 1) / 2.0)) - 1.0
-        crpix2 = float(hdr.get("CRPIX2", (orig_n + 1) / 2.0)) - 1.0
-        crval1 = float(hdr.get("CRVAL1", 0.0))
-        crval2 = float(hdr.get("CRVAL2", 0.0))
+    # FITS CRPIX is 1-based.  xpix/ypix are 0-based pixel coordinates in the original image.
+    crpix1 = float(hdr.get("CRPIX1", (orig_n + 1) / 2.0))
+    crpix2 = float(hdr.get("CRPIX2", (orig_n + 1) / 2.0))
+    crval1 = float(hdr.get("CRVAL1", 0.0))
+    crval2 = float(hdr.get("CRVAL2", 0.0))
 
-        x_map = (xpix - crpix1) * cdelt1 + crval1
-        y_map = (ypix - crpix2) * cdelt2 + crval2
+    dx = xpix + 1.0 - crpix1
+    dy = ypix + 1.0 - crpix2
 
-        cunit1 = str(hdr.get("CUNIT1", "")).lower()
-        if "deg" in cunit1:
-            x_map *= 3600.0
-            y_map *= 3600.0
+    x_map = crval1 + cd[0, 0] * dx + cd[0, 1] * dy
+    y_map = crval2 + cd[1, 0] * dx + cd[1, 1] * dy
+
+    cunit1 = str(hdr.get("CUNIT1", "")).lower()
+    if "deg" in cunit1:
+        x_map *= 3600.0
+        y_map *= 3600.0
+    elif "arcmin" in cunit1:
+        x_map *= 60.0
+        y_map *= 60.0
 
     # ---- convert arcsec -> Rsun ----
     if not np.isfinite(rsun_arcsec) or rsun_arcsec <= 0:
@@ -797,7 +819,6 @@ def xy_rsun_for_rebinned_image(hdr, orig_n: int, out_n: int) -> Tuple[np.ndarray
     y_map_rsun = y_map / rsun_arcsec
 
     return x_map_rsun.astype(np.float64), y_map_rsun.astype(np.float64), rsun_arcsec
-
 
 def infer_carrington_lonlat_deg(hdr: fits.Header) -> Optional[Tuple[float, float]]:
     """
@@ -1180,28 +1201,15 @@ def _world_to_pixel_for_hpc_offsets(
     out_n: int,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Convert helioprojective offsets in arcsec to image pixel coordinates.
+    Convert helioprojective offsets in arcsec to rebinned image pixel coordinates.
 
     The IDL routines use map_get_pixel(pmap, pxy), where pxy contains map-plane
-    coordinates in arcsec. This helper reproduces that role using WCS when
-    available and a linear CRPIX/CDELT/CD/PC fallback otherwise.
+    coordinates in arcsec.  For the same reason as xy_rsun_for_rebinned_image(),
+    this helper uses the local linear image-plane WCS rather than full spherical
+    HPLN/HPLT longitude coordinates.  This avoids 0/360 deg wrapping for COR1A.
     """
     x_arc = np.asarray(x_arc, dtype=np.float64)
     y_arc = np.asarray(y_arc, dtype=np.float64)
-
-    try:
-        w = WCS(hdr)
-        cunit1 = str(hdr.get("CUNIT1", "")).lower()
-        if "deg" in cunit1:
-            xw = x_arc / 3600.0
-            yw = y_arc / 3600.0
-        else:
-            xw = x_arc
-            yw = y_arc
-        xpix, ypix = w.world_to_pixel_values(xw, yw)
-        return np.asarray(xpix, dtype=np.float64), np.asarray(ypix, dtype=np.float64)
-    except Exception:
-        pass
 
     def _cd_matrix_from_header(h: fits.Header) -> np.ndarray:
         if all(k in h for k in ("CD1_1", "CD1_2", "CD2_1", "CD2_2")):
@@ -1218,7 +1226,7 @@ def _world_to_pixel_for_hpc_offsets(
             )
             cdelt1 = float(h.get("CDELT1", 1.0))
             cdelt2 = float(h.get("CDELT2", 1.0))
-            return pc @ np.diag([cdelt1, cdelt2])
+            return np.diag([cdelt1, cdelt2]) @ pc
 
         crota = float(h.get("CROTA2", h.get("CROTA", 0.0)))
         cdelt1 = float(h.get("CDELT1", 1.0))
@@ -1226,13 +1234,18 @@ def _world_to_pixel_for_hpc_offsets(
         th = np.deg2rad(crota)
         rot = np.array([[np.cos(th), -np.sin(th)],
                         [np.sin(th),  np.cos(th)]], dtype=np.float64)
-        return rot @ np.diag([cdelt1, cdelt2])
+        return np.diag([cdelt1, cdelt2]) @ rot
 
     cd = _cd_matrix_from_header(hdr)
     inv = np.linalg.pinv(cd)
 
-    crpix1 = float(hdr.get("CRPIX1", out_n / 2.0))
-    crpix2 = float(hdr.get("CRPIX2", out_n / 2.0))
+    orig_n = int(hdr.get("NAXIS1", out_n))
+    if orig_n <= 0:
+        orig_n = int(out_n)
+    scale = float(orig_n) / float(out_n)
+
+    crpix1 = float(hdr.get("CRPIX1", (orig_n + 1) / 2.0))
+    crpix2 = float(hdr.get("CRPIX2", (orig_n + 1) / 2.0))
     crval1 = float(hdr.get("CRVAL1", 0.0))
     crval2 = float(hdr.get("CRVAL2", 0.0))
 
@@ -1240,6 +1253,9 @@ def _world_to_pixel_for_hpc_offsets(
     if "deg" in cunit1:
         xw = x_arc / 3600.0
         yw = y_arc / 3600.0
+    elif "arcmin" in cunit1:
+        xw = x_arc / 60.0
+        yw = y_arc / 60.0
     else:
         xw = x_arc
         yw = y_arc
@@ -1249,10 +1265,13 @@ def _world_to_pixel_for_hpc_offsets(
 
     dpx = inv[0, 0] * dxw + inv[0, 1] * dyw
     dpy = inv[1, 0] * dxw + inv[1, 1] * dyw
-    xpix = (dpx + crpix1) - 1.0
-    ypix = (dpy + crpix2) - 1.0
-    return xpix, ypix
 
+    # Convert original FITS pixel coordinates to the rebinned image coordinates.
+    xpix_orig = (dpx + crpix1) - 1.0
+    ypix_orig = (dpy + crpix2) - 1.0
+    xpix = (xpix_orig + 0.5) / scale - 0.5
+    ypix = (ypix_orig + 0.5) / scale - 0.5
+    return xpix, ypix
 
 def _clean_pbr_profiles_like_get_pbrlc(
     pbr_r_pa: np.ndarray,
@@ -3204,6 +3223,11 @@ if __name__ == "__main__":
     R_USE_MIN_BY_GROUP = {"cor1a": 1.5}
     R_USE_MAX_BY_GROUP = {}
     PB_SCALE_BY_GROUP = {}
+    
+    print("[INFO] Parameter Setting")
+    print(f"OUT_N={OUT_N}, R=({R_MIN}, {R_MAX}), N=({NR}, {NTH}, {NPH}), DS={DS}, HM={HM},")
+    print(f"LAM={LAM}, MAXITER={MAXITER}, TOL={TOL}, DESPIKE_NSIG={DESPIKE_NSIG}, DESPIKE_MED={DESPIKE_MED}")
+    print(f"R_USE=({R_USE_MIN}, {R_USE_MAX}), R_USE_MIN_BY_GROUP={R_USE_MIN_BY_GROUP}")
 
 
     # With density prior enabled, we solve ne = prior*q.  Do not apply an additional

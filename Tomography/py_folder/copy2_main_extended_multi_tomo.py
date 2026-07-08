@@ -42,16 +42,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+import copy
 import csv
-import hashlib
 import importlib.util
 import json
 import math
-import pickle
 import sys
 import time
 
-# from SOHO.pB.tomo_example import f
 import numpy as np
 
 try:
@@ -174,117 +172,6 @@ def write_rows_csv(path: Path, rows: Sequence[Dict[str, object]]) -> None:
         writer.writeheader()
         for row in rows:
             writer.writerow(row)
-
-
-# ============================================================
-# Ray cache utilities
-# ============================================================
-
-RAY_CACHE_VERSION = "ray_cache_v1"
-_RAY_MEMORY_CACHE: Dict[str, object] = {}
-
-
-def _hash_update_value(h: "hashlib._Hash", value: object) -> None:
-    h.update(repr(value).encode("utf-8"))
-    h.update(b"\0")
-
-
-def _hash_update_array(h: "hashlib._Hash", arr: np.ndarray) -> None:
-    a = np.ascontiguousarray(arr)
-    _hash_update_value(h, str(a.dtype))
-    _hash_update_value(h, a.shape)
-    h.update(a.view(np.uint8))
-    h.update(b"\0")
-
-
-def ray_cache_key(
-    obs,
-    pb_path: Path,
-    grid,
-    ds_rsun: float,
-    r_min: float,
-    r_max: float,
-    limb_u: float,
-) -> str:
-    """Return a stable key for one observation/grid/ray-construction setup."""
-    h = hashlib.sha256()
-    _hash_update_value(h, RAY_CACHE_VERSION)
-
-    base_path = Path(BASE_MODULE_PATH).expanduser().resolve()
-    if base_path.exists():
-        st_base = base_path.stat()
-        _hash_update_value(h, str(base_path))
-        _hash_update_value(h, int(st_base.st_mtime_ns))
-        _hash_update_value(h, int(st_base.st_size))
-
-    p = Path(pb_path).expanduser().resolve()
-    _hash_update_value(h, str(p))
-    if p.exists():
-        st = p.stat()
-        _hash_update_value(h, int(st.st_mtime_ns))
-        _hash_update_value(h, int(st.st_size))
-
-    _hash_update_value(h, float(ds_rsun))
-    _hash_update_value(h, float(r_min))
-    _hash_update_value(h, float(r_max))
-    _hash_update_value(h, float(limb_u))
-    _hash_update_value(h, getattr(obs, "lonlat_deg", None))
-    _hash_update_array(h, np.asarray(grid.r_edges, dtype=np.float64))
-    _hash_update_array(h, np.asarray(grid.th_edges, dtype=np.float64))
-    _hash_update_array(h, np.asarray(grid.ph_edges, dtype=np.float64))
-    _hash_update_array(h, np.asarray(obs.idx_map, dtype=np.int64))
-    _hash_update_array(h, np.asarray(obs.x, dtype=np.float64))
-    _hash_update_array(h, np.asarray(obs.y, dtype=np.float64))
-    return h.hexdigest()
-
-
-def ray_cache_path(cache_dir: Path | str, key: str) -> Path:
-    return Path(cache_dir).expanduser() / f"ray_{key}.pkl"
-
-
-def load_cached_ray(key: str, cache_dir: Path | str = "") -> Optional[object]:
-    """Load one cached ray object from memory first, then from disk if available."""
-    if key in _RAY_MEMORY_CACHE:
-        return _RAY_MEMORY_CACHE[key]
-
-    if not cache_dir:
-        return None
-
-    fp = ray_cache_path(cache_dir, key)
-    if not fp.exists():
-        return None
-
-    try:
-        with fp.open("rb") as f:
-            payload = pickle.load(f)
-        if not isinstance(payload, dict) or payload.get("version") != RAY_CACHE_VERSION:
-            return None
-        ray = payload.get("ray")
-        if ray is None:
-            return None
-        _RAY_MEMORY_CACHE[key] = ray
-        return ray
-    except Exception as exc:
-        print(f"[WARN] Failed to load cached rays from {fp}: {exc}")
-        return None
-
-
-def save_cached_ray(key: str, ray: object, cache_dir: Path | str = "") -> None:
-    """Save one ray object to memory and, optionally, to disk."""
-    _RAY_MEMORY_CACHE[key] = ray
-
-    if not cache_dir:
-        return
-
-    fp = ray_cache_path(cache_dir, key)
-    try:
-        fp.parent.mkdir(parents=True, exist_ok=True)
-        tmp = fp.with_suffix(fp.suffix + ".tmp")
-        with tmp.open("wb") as f:
-            pickle.dump({"version": RAY_CACHE_VERSION, "ray": ray}, f, protocol=pickle.HIGHEST_PROTOCOL)
-        tmp.replace(fp)
-    except Exception as exc:
-        print(f"[WARN] Failed to save cached rays to {fp}: {exc}")
 
 
 def weighted_stats(y_obs: np.ndarray, y_pred: np.ndarray, W: np.ndarray) -> Dict[str, float]:
@@ -455,8 +342,6 @@ def apply_defaults(args: SimpleNamespace) -> SimpleNamespace:
         use_temporal_despike=False,
         ne3dtomo_global_ybk=False,
         show_ray_progress=True,
-        use_ray_cache=True,
-        ray_cache_dir="",
 
         save_prepped_dir="",
         save_ne_npz="",
@@ -468,19 +353,6 @@ def apply_defaults(args: SimpleNamespace) -> SimpleNamespace:
         iso_colors=None,
         save_png=False,
         png_path="",
-
-        step1_output_dir="step1_diagnostics",
-        step1_run_lambda_scan=True,
-        step1_lambda_values=[],
-        step1_final_lam_mode="default",
-        step1_save_residual_npy=True,
-        step1_save_residual_png=False,
-        step1_run_leave_one_image_out=False,
-        step1_loo_final_lambda_only=True,
-        step1_loo_max_holdouts=None,
-        step1_run_comparison_suite=False,
-        step1_comparison_output_dir="",
-        step1_comparison_scenarios=[],
     )
     for k, v in defaults.items():
         if not hasattr(args, k):
@@ -711,62 +583,27 @@ def prepare_tomography_problem(args: SimpleNamespace) -> PreparedProblem:
 
     rays: List[object] = []
     n_obs = len(obs_list)
-    use_ray_cache = bool(getattr(args, "use_ray_cache", True))
-    ray_cache_dir = str(getattr(args, "ray_cache_dir", "") or "")
-    if use_ray_cache and ray_cache_dir:
-        ensure_dir(ray_cache_dir)
-        print(f"[INFO] Ray cache enabled: {ray_cache_dir}")
-    elif use_ray_cache:
-        print("[INFO] Ray cache enabled: in-memory only.")
-
     for i, (obs, p) in enumerate(zip(obs_list, pb_paths), start=1):
-        cache_key = None
-        ray = None
-        if use_ray_cache:
-            cache_key = ray_cache_key(
-                obs=obs,
-                pb_path=p,
-                grid=grid,
-                ds_rsun=float(args.ds),
-                r_min=float(args.r_min),
-                r_max=float(args.r_max),
-                limb_u=float(args.limb_u),
-            )
-            ray = load_cached_ray(cache_key, ray_cache_dir)
+        if bool(getattr(args, "show_ray_progress", True)):
+            print(f"[INFO] Building rays {i}/{n_obs}: {Path(p).name} (used pixels={obs.idx_map.size})", flush=True)
 
-        if ray is not None:
-            if bool(getattr(args, "show_ray_progress", True)):
-                nonempty = sum(1 for idx in ray.vox_idx if idx.size > 0)
-                print(
-                    f"[INFO] Reusing cached rays {i}/{n_obs}: {Path(p).name} "
-                    f"(non-empty rays={nonempty}/{len(ray.vox_idx)})",
-                    flush=True,
-                )
-        else:
-            if bool(getattr(args, "show_ray_progress", True)):
-                print(f"[INFO] Building rays {i}/{n_obs}: {Path(p).name} (used pixels={obs.idx_map.size})", flush=True)
-
-            ray = base.build_rays_for_observation(
-                obs=obs,
-                grid=grid,
-                ds_rsun=float(args.ds),
-                r_min=float(args.r_min),
-                r_max=float(args.r_max),
-                limb_u=float(args.limb_u),
-            )
-
-            if use_ray_cache and cache_key is not None:
-                save_cached_ray(cache_key, ray, ray_cache_dir)
-
-            if bool(getattr(args, "show_ray_progress", True)):
-                nonempty = sum(1 for idx in ray.vox_idx if idx.size > 0)
-                print(
-                    f"[INFO] Finished rays {i}/{n_obs}: {Path(p).name} "
-                    f"(non-empty rays={nonempty}/{len(ray.vox_idx)})",
-                    flush=True,
-                )
-
+        ray = base.build_rays_for_observation(
+            obs=obs,
+            grid=grid,
+            ds_rsun=float(args.ds),
+            r_min=float(args.r_min),
+            r_max=float(args.r_max),
+            limb_u=float(args.limb_u),
+        )
         rays.append(ray)
+
+        if bool(getattr(args, "show_ray_progress", True)):
+            nonempty = sum(1 for idx in ray.vox_idx if idx.size > 0)
+            print(
+                f"[INFO] Finished rays {i}/{n_obs}: {Path(p).name} "
+                f"(non-empty rays={nonempty}/{len(ray.vox_idx)})",
+                flush=True,
+            )
 
     wt_r = None
     if int(args.wt_nr):
@@ -963,9 +800,15 @@ def lambda_result_to_row(result: LambdaResult) -> Dict[str, object]:
     return row
 
 
-def run_lambda_scan(prepared: PreparedProblem, lambdas: Sequence[float], output_dir: Path) -> Tuple[List[LambdaResult], Optional[float]]:
+def run_lambda_scan(
+    prepared: PreparedProblem,
+    lambdas: Sequence[float],
+    output_dir: Path,
+    keep_solution_lambdas: Optional[Sequence[float]] = None,
+) -> Tuple[List[LambdaResult], Optional[float]]:
     """Run lambda scan with one shared forward matrix."""
     output_dir = ensure_dir(output_dir)
+    keep_set = {float(v) for v in (keep_solution_lambdas or [])}
 
     print("[STEP1] Building RegularizedTomography object once for lambda scan...")
     tomo = base.RegularizedTomography(
@@ -979,8 +822,10 @@ def run_lambda_scan(prepared: PreparedProblem, lambdas: Sequence[float], output_
 
     results: List[LambdaResult] = []
     for lam in lambdas:
-        print(f"[STEP1] Solving lambda={float(lam):.6g} ...")
-        res = solve_one_lambda(tomo, prepared, float(lam), keep_solution=False)
+        lam_f = float(lam)
+        print(f"[STEP1] Solving lambda={lam_f:.6g} ...")
+        keep_solution = any(abs(lam_f - v) <= 1e-12 * max(1.0, abs(v)) for v in keep_set)
+        res = solve_one_lambda(tomo, prepared, lam_f, keep_solution=keep_solution)
         results.append(res)
         print(
             f"[STEP1] lambda={res.lam:.6g}: "
@@ -1003,6 +848,7 @@ def run_lambda_scan(prepared: PreparedProblem, lambdas: Sequence[float], output_
     summary = {
         "lambda_values": [float(r.lam) for r in results],
         "lcurve_lambda_candidate": lam_corner,
+        "kept_solution_lambdas": sorted(float(v) for v in keep_set),
         "note": (
             "The L-curve candidate is only a diagnostic. "
             "Do not adopt it automatically without checking residual maps and target-frequency stability."
@@ -1021,6 +867,60 @@ def run_lambda_scan(prepared: PreparedProblem, lambdas: Sequence[float], output_
 
     return results, lam_corner
 
+
+def save_lambda_comparison_outputs(
+    prepared: PreparedProblem,
+    scan_results: Sequence[LambdaResult],
+    output_dir: Path,
+    lambdas_to_save: Sequence[float],
+) -> None:
+    """Save target-frequency metrics and isosurface PNGs for selected lambda solutions."""
+    if not scan_results or not lambdas_to_save:
+        return
+
+    out_dir = ensure_dir(Path(output_dir) / "lambda_comparison")
+    want = {float(v) for v in lambdas_to_save}
+    rows: List[Dict[str, object]] = []
+
+    for res in scan_results:
+        if not any(abs(float(res.lam) - v) <= 1e-12 * max(1.0, abs(v)) for v in want):
+            continue
+
+        row = lambda_result_to_row(res)
+        row["has_saved_solution"] = res.ne_raw is not None
+        rows.append(row)
+
+        if res.ne_raw is None:
+            print(f"[STEP1] lambda={res.lam:.6g}: solution was not kept; PNG comparison skipped.")
+            continue
+
+        freq_list = (
+            list(prepared.args.freq_mhz_list)
+            if prepared.args.freq_mhz_list is not None
+            else [float(prepared.args.freq_mhz)]
+        )
+        freq_tag = "-".join(str(float(f)).rstrip("0").rstrip(".") for f in freq_list)
+        png_path = out_dir / f"lambda_{res.lam:g}_iso_{freq_tag}MHz_h{int(prepared.args.harmonic)}.png"
+        base.visualize_isosurface(
+            grid=prepared.grid,
+            ne=res.ne_raw,
+            iso_freqs_mhz=freq_list,
+            harmonic=int(prepared.args.harmonic),
+            show_sun=True,
+            opacity=0.5,
+            camera_lonlat=(
+                base.choose_camera_lonlat_near_target(prepared.obs_list, prepared.pb_paths, prepared.args.target_time)
+                if getattr(prepared.args, "target_time", "") else None
+            ),
+            show_gui=False,
+            save_png=True,
+            png_path=png_path,
+            colors=getattr(prepared.args, "iso_colors", None),
+        )
+        print(f"[STEP1] Saved lambda comparison PNG: {png_path}")
+
+    write_rows_csv(out_dir / "step1_lambda_comparison_metrics.csv", rows)
+    print(f"[STEP1] Saved lambda comparison metrics: {out_dir / 'step1_lambda_comparison_metrics.csv'}")
 
 def per_image_residual_rows(
     prepared: PreparedProblem,
@@ -1067,6 +967,103 @@ def group_residual_rows(image_rows: Sequence[Dict[str, object]]) -> List[Dict[st
         })
     return out
 
+
+
+def group_projection_fit_scales(
+    prepared: PreparedProblem,
+    tomo,
+    y_pred: np.ndarray,
+) -> Dict[str, float]:
+    """Return weighted projection fit scale for each observation group."""
+    groups: Dict[str, List[int]] = {}
+    for i, p in enumerate(prepared.pb_paths):
+        groups.setdefault(base.tomography_observation_group_key(Path(p)), []).append(i)
+
+    out: Dict[str, float] = {}
+    for key, indices in groups.items():
+        yo = []
+        yp = []
+        ww = []
+        for i in indices:
+            sl = tomo.slices[i]
+            yo.append(np.asarray(prepared.y_obs)[sl])
+            yp.append(np.asarray(y_pred)[sl])
+            ww.append(np.asarray(tomo.W)[sl])
+        if yo:
+            out[key] = float(base.weighted_projection_scale(
+                np.concatenate(yo),
+                np.concatenate(yp),
+                np.concatenate(ww),
+                min_count=100,
+            ))
+    return out
+
+
+def make_final_summary_row(
+    prepared: PreparedProblem,
+    tomo,
+    solution_raw: np.ndarray,
+    ne: np.ndarray,
+    y_pred: np.ndarray,
+    suggested_scale: float,
+    final_lambda: float,
+    output_dir: Path,
+    scenario_name: str = "default",
+) -> Dict[str, object]:
+    """Build one compact summary row for comparing time-window, lambda, scaling, and r_min tests."""
+    global_stats = weighted_stats(prepared.y_obs, y_pred, tomo.W)
+    fr = base.frequency_range_mhz_from_ne(ne, harmonic=int(prepared.args.harmonic))
+    if fr is None:
+        ne_min = ne_max = f_min = f_max = float("nan")
+    else:
+        ne_min, ne_max, f_min, f_max = [float(v) for v in fr]
+
+    freq_list = (
+        list(prepared.args.freq_mhz_list)
+        if prepared.args.freq_mhz_list is not None
+        else [float(prepared.args.freq_mhz)]
+    )
+
+    row: Dict[str, object] = {
+        "scenario": scenario_name,
+        "output_dir": str(output_dir),
+        "target_time": str(prepared.args.target_time),
+        "search_window_days": float(prepared.args.search_window_days),
+        "lambda": float(final_lambda),
+        "out_n": int(prepared.args.out_n),
+        "nr": int(prepared.args.nr),
+        "nth": int(prepared.args.nth),
+        "nph": int(prepared.args.nph),
+        "r_min": float(prepared.args.r_min),
+        "r_max": float(prepared.args.r_max),
+        "r_use_min": float(prepared.args.r_use_min),
+        "r_use_max": float(prepared.args.r_use_max),
+        "r_use_min_by_group": json.dumps(prepared.args.r_use_min_by_group, ensure_ascii=False),
+        "pb_scale_by_group": json.dumps(prepared.args.pb_scale_by_group, ensure_ascii=False),
+        "n_observations": len(prepared.pb_paths),
+        "n_measurements": int(prepared.y_obs.size),
+        "suggested_global_scale": float(suggested_scale),
+        "ne_min_cm3": ne_min,
+        "ne_max_cm3": ne_max,
+        "f_min_mhz": f_min,
+        "f_max_mhz": f_max,
+        **{f"global_{k}": v for k, v in global_stats.items()},
+    }
+
+    group_scales = group_projection_fit_scales(prepared, tomo, y_pred)
+    ref_key = str(prepared.args.calibration_reference_group)
+    ref_scale = group_scales.get(ref_key, np.nan)
+    for key, value in group_scales.items():
+        row[f"fit_scale_{key}"] = float(value)
+        row[f"fit_scale_rel_to_{ref_key}_{key}"] = float(value / ref_scale) if np.isfinite(ref_scale) and ref_scale > 0 else float("nan")
+
+    for f in freq_list:
+        metrics = target_frequency_metrics(prepared.grid, ne, float(f), int(prepared.args.harmonic))
+        prefix = f"f{float(f):.3f}MHz_".replace(".", "p")
+        for k, v in metrics.items():
+            row[prefix + k] = finite_or_nan(v)
+
+    return row
 
 def save_residual_maps(
     prepared: PreparedProblem,
@@ -1411,435 +1408,11 @@ def save_final_png(prepared: PreparedProblem, ne: np.ndarray, png_path: Path) ->
     )
 
 
-def group_projection_fit_scales(
-    prepared: PreparedProblem,
-    tomo,
-    y_pred: np.ndarray,
-) -> Dict[str, float]:
-    """
-    Compute weighted projection fit scales for each observing group.
-
-    For each group, this returns the scalar s that minimizes
-    || W * (s * y_pred - y_obs) ||.  It is useful for diagnosing relative
-    photometric scale offsets, especially COR1A versus Earth-view merged pB.
-    """
-    groups: Dict[str, List[int]] = {}
-    for i, path in enumerate(prepared.pb_paths):
-        groups.setdefault(base.tomography_observation_group_key(path), []).append(i)
-
-    fit_scales: Dict[str, float] = {}
-    for group_key, indices in groups.items():
-        y_obs_parts = []
-        y_pred_parts = []
-        w_parts = []
-        for i in indices:
-            sl = tomo.slices[i]
-            y_obs_parts.append(np.asarray(prepared.y_obs)[sl])
-            y_pred_parts.append(np.asarray(y_pred)[sl])
-            w_parts.append(np.asarray(tomo.W)[sl])
-
-        if y_obs_parts:
-            fit_scales[group_key] = base.weighted_projection_scale(
-                np.concatenate(y_obs_parts),
-                np.concatenate(y_pred_parts),
-                np.concatenate(w_parts),
-                min_count=100,
-            )
-
-    return fit_scales
-
-
-def clone_args_for_scenario(
-    base_args: SimpleNamespace,
-    scenario: Dict[str, object],
-    scenario_dir: Path,
-) -> SimpleNamespace:
-    """
-    Clone the base argument namespace and apply one comparison-scenario override.
-
-    Only the scenario-specific parameters and output paths are changed.  This keeps
-    each scenario isolated without modifying the original main_multi_tomo.py.
-    """
-    cloned = SimpleNamespace(**vars(base_args))
-
-    for key, value in scenario.items():
-        if key in ("name", "comparison_axis", "note"):
-            continue
-        setattr(cloned, key, value)
-
-    scenario_name = str(scenario.get("name", "scenario"))
-
-    # Keep scenario output isolated.  These are path changes only;
-    # physical/inversion parameters remain those of the scenario.
-    cloned.step1_output_dir = str(scenario_dir)
-
-    if getattr(base_args, "save_prepped_dir", ""):
-        cloned.save_prepped_dir = str(scenario_dir / "prepped")
-
-    if getattr(base_args, "save_ne_npz", ""):
-        cloned.save_ne_npz = str(scenario_dir / f"{scenario_name}_ne3d_solution.npz")
-
-    if bool(getattr(base_args, "save_png", False)):
-        cloned.png_path = str(scenario_dir / f"{scenario_name}_isosurface.png")
-
-    return apply_defaults(cloned)
-
-
-def write_comparison_key_metrics(output_root: Path, rows: Sequence[Dict[str, object]]) -> None:
-    """Write a lightweight comparison CSV with the most important scalar metrics."""
-    key_rows: List[Dict[str, object]] = []
-    wanted = [
-        "scenario",
-        "comparison_axis",
-        "lambda",
-        "search_window_days",
-        "use_density_prior",
-        "density_prior_model",
-        "density_prior_scale",
-        "wt_nr",
-        "ne3dtomo_global_ybk",
-        "misfit",
-        "fmax_mhz",
-        "volume_rsun3",
-        "components",
-        "centroid_r_rsun",
-        "largest_component_fraction",
-        "fit_scale_earth_merged",
-        "fit_scale_cor1a",
-        "cor1a_over_earth_fit_scale",
-        "regularization_norm",
-        "median_obs_over_pred",
-        "output_dir",
-    ]
-
-    for row in rows:
-        key_rows.append({key: row.get(key, np.nan) for key in wanted})
-
-    write_rows_csv(Path(output_root) / "step1_comparison_key_metrics.csv", key_rows)
-
-def make_final_summary_row(
-    prepared: PreparedProblem,
-    tomo,
-    solution_raw: np.ndarray,
-    ne: np.ndarray,
-    y_pred: np.ndarray,
-    suggested_scale: float,
-    final_lambda: float,
-    output_dir: Path,
-    scenario_name: str = "default",
-    comparison_axis: str = "single",
-    scan_results: Optional[Sequence[LambdaResult]] = None,
-    lcurve_candidate: Optional[float] = None,
-) -> Dict[str, object]:
-    """
-    Build one compact summary row for a final STEP1 solution.
-
-    The row is intended for:
-      - per-scenario step1_final_summary.csv
-      - global step1_comparison_suite_summary.csv
-
-    Required physical/comparison quantities included:
-      - misfit
-      - fmax_mhz
-      - volume_rsun3
-      - components
-      - centroid_r_rsun
-      - COR1A/Earth fit scale
-    """
-    output_dir = Path(output_dir)
-
-    stats = weighted_stats(prepared.y_obs, y_pred, tomo.W)
-    reg_norm = regularization_norm(solution_raw, prepared.grid, prepared.wt_r)
-
-    fr = base.frequency_range_mhz_from_ne(ne, harmonic=int(prepared.args.harmonic))
-    if fr is None:
-        ne_min = ne_max = f_min = f_max = float("nan")
-    else:
-        ne_min, ne_max, f_min, f_max = [float(v) for v in fr]
-
-    fit_scales = group_projection_fit_scales(prepared, tomo, y_pred)
-
-    fit_scale_earth = finite_or_nan(fit_scales.get("earth_merged", np.nan))
-    fit_scale_cor1a = finite_or_nan(fit_scales.get("cor1a", np.nan))
-    if np.isfinite(fit_scale_earth) and fit_scale_earth > 0 and np.isfinite(fit_scale_cor1a):
-        cor1a_over_earth = float(fit_scale_cor1a / fit_scale_earth)
-    else:
-        cor1a_over_earth = float("nan")
-
-    # ------------------------------------------------------------
-    # Target-frequency metrics.
-    # For this project this is usually 33.8 MHz, harmonic=2.
-    # ------------------------------------------------------------
-    freq_list = (
-        list(prepared.args.freq_mhz_list)
-        if prepared.args.freq_mhz_list is not None
-        else [float(prepared.args.freq_mhz)]
-    )
-
-    target_rows: Dict[str, float] = {}
-    first_target = None
-    for freq in freq_list:
-        m = target_frequency_metrics(
-            prepared.grid,
-            ne,
-            float(freq),
-            int(prepared.args.harmonic),
-        )
-        if first_target is None:
-            first_target = m
-
-        prefix = f"f{float(freq):.3f}MHz_".replace(".", "p")
-        for key, value in m.items():
-            target_rows[prefix + key] = finite_or_nan(value)
-
-    if first_target is None:
-        first_target = {
-            "volume_ge_target_rsun3": float("nan"),
-            "n_components": float("nan"),
-            "centroid_r_rsun": float("nan"),
-            "largest_component_fraction": float("nan"),
-        }
-
-    # ------------------------------------------------------------
-    # Lambda-scan summary, if available.
-    # ------------------------------------------------------------
-    scan_lambdas = []
-    scan_best_misfit_lambda = float("nan")
-    if scan_results:
-        scan_lambdas = [float(r.lam) for r in scan_results]
-        finite_scan = [r for r in scan_results if np.isfinite(r.data_misfit_norm)]
-        if finite_scan:
-            scan_best_misfit_lambda = float(min(finite_scan, key=lambda r: r.data_misfit_norm).lam)
-
-    row: Dict[str, object] = {
-        "scenario": str(scenario_name),
-        "comparison_axis": str(comparison_axis),
-        "output_dir": str(output_dir),
-
-        "target_time": str(getattr(prepared.args, "target_time", "")),
-        "search_window_days": finite_or_nan(getattr(prepared.args, "search_window_days", np.nan)),
-        "n_observations": int(len(prepared.pb_paths)),
-        "n_measurements": int(np.asarray(prepared.y_obs).size),
-
-        "out_n": int(getattr(prepared.args, "out_n", -1)),
-        "r_min": finite_or_nan(getattr(prepared.args, "r_min", np.nan)),
-        "r_max": finite_or_nan(getattr(prepared.args, "r_max", np.nan)),
-        "nr": int(getattr(prepared.args, "nr", -1)),
-        "nth": int(getattr(prepared.args, "nth", -1)),
-        "nph": int(getattr(prepared.args, "nph", -1)),
-
-        "lambda": float(final_lambda),
-        "lcurve_lambda_candidate": finite_or_nan(lcurve_candidate),
-        "scan_lambdas": json.dumps(scan_lambdas, ensure_ascii=False),
-        "scan_best_misfit_lambda": finite_or_nan(scan_best_misfit_lambda),
-
-        "density_prior_model": str(getattr(prepared.args, "density_prior_model", "")),
-        "density_prior_scale": finite_or_nan(getattr(prepared.args, "density_prior_scale", np.nan)),
-        "use_density_prior": str(getattr(prepared.args, "density_prior_model", "")).lower() not in ("", "none", "off", "false", "0"),
-
-        "wt_nr": int(getattr(prepared.args, "wt_nr", 0)),
-        "ne3dtomo_global_ybk": bool(getattr(prepared.args, "ne3dtomo_global_ybk", False)),
-        "r_use_min": finite_or_nan(getattr(prepared.args, "r_use_min", np.nan)),
-        "r_use_max": finite_or_nan(getattr(prepared.args, "r_use_max", np.nan)),
-        "r_use_min_by_group": json.dumps(getattr(prepared.args, "r_use_min_by_group", {}), ensure_ascii=False),
-        "pb_scale_by_group": json.dumps(getattr(prepared.args, "pb_scale_by_group", {}), ensure_ascii=False),
-
-        # Required comparison quantities.
-        "misfit": finite_or_nan(stats.get("misfit_rms")),
-        "misfit_norm": finite_or_nan(stats.get("misfit_norm")),
-        "weighted_rms_rel": finite_or_nan(stats.get("weighted_rms_rel")),
-        "regularization_norm": finite_or_nan(reg_norm),
-        "median_obs_over_pred": finite_or_nan(stats.get("median_obs_over_pred")),
-
-        "ne_min_cm3": finite_or_nan(ne_min),
-        "ne_max_cm3": finite_or_nan(ne_max),
-        "f_min_mhz": finite_or_nan(f_min),
-        "fmax_mhz": finite_or_nan(f_max),
-        "f_max_mhz": finite_or_nan(f_max),
-
-        "volume_rsun3": finite_or_nan(first_target.get("volume_ge_target_rsun3")),
-        "components": int(first_target.get("n_components", 0)),
-        "centroid_r_rsun": finite_or_nan(first_target.get("centroid_r_rsun")),
-        "largest_component_fraction": finite_or_nan(first_target.get("largest_component_fraction")),
-
-        "fit_scale_earth_merged": fit_scale_earth,
-        "fit_scale_cor1a": fit_scale_cor1a,
-        "cor1a_over_earth_fit_scale": finite_or_nan(cor1a_over_earth),
-
-        "suggested_brightness_scale": finite_or_nan(suggested_scale),
-        "apply_brightness_scale": bool(getattr(prepared.args, "apply_brightness_scale", False)),
-    }
-
-    row.update(target_rows)
-    return row
-
-
-def run_comparison_suite(args: SimpleNamespace) -> None:
-    """
-    Run a set of STEP1 comparison scenarios and save summary CSV files.
-
-    Expected args fields:
-      - step1_comparison_scenarios: list[dict]
-      - step1_comparison_output_dir: optional output root
-      - step1_output_dir: fallback output root for single-run diagnostics
-
-    Each scenario may override any args attribute, for example:
-      {"name": "lambda_10", "comparison_axis": "lambda", "lam": 10.0}
-      {"name": "time_pm3d", "comparison_axis": "time_window", "search_window_days": 3.0}
-      {"name": "density_prior_off_lambda_scan", "density_prior_model": "none", ...}
-    """
-    args = apply_defaults(args)
-
-    scenarios = list(getattr(args, "step1_comparison_scenarios", []))
-    if not scenarios:
-        raise ValueError("step1_comparison_scenarios is empty. Define scenarios before calling run_comparison_suite().")
-
-    # ------------------------------------------------------------
-    # Determine comparison-suite output root.
-    # ------------------------------------------------------------
-    if getattr(args, "step1_comparison_output_dir", ""):
-        output_root = ensure_dir(getattr(args, "step1_comparison_output_dir"))
-    else:
-        try:
-            target_tag = base.parse_target_datetime(getattr(args, "target_time", "")).strftime("%Y%m%d_%H%M%S")
-        except Exception:
-            target_tag = now_tag()
-
-        freq_list = (
-            list(args.freq_mhz_list)
-            if getattr(args, "freq_mhz_list", None) is not None
-            else [float(getattr(args, "freq_mhz", 0.0))]
-        )
-        freq_tag = "-".join(str(float(f)).rstrip("0").rstrip(".") for f in freq_list)
-
-        if getattr(args, "data_dir", ""):
-            output_root = ensure_dir(
-                Path(args.data_dir)
-                / f"step1_comparison_suite_{target_tag}_{freq_tag}MHz"
-            )
-        else:
-            output_root = ensure_dir(
-                Path(getattr(args, "step1_output_dir", "step1_diagnostics")).parent
-                / f"step1_comparison_suite_{target_tag}_{freq_tag}MHz"
-            )
-
-    print(f"[STEP1-COMP] Comparison suite output root: {output_root}")
-
-    summary_rows: List[Dict[str, object]] = []
-
-    # ------------------------------------------------------------
-    # Main scenario loop.
-    # ------------------------------------------------------------
-    for index, scenario in enumerate(scenarios, start=1):
-        scenario_name = str(scenario.get("name", f"scenario_{index:03d}"))
-        comparison_axis = str(scenario.get("comparison_axis", "unspecified"))
-        scenario_dir = ensure_dir(output_root / scenario_name)
-
-        print("=" * 80)
-        print(f"[STEP1-COMP] Scenario {index}/{len(scenarios)}: {scenario_name}")
-        print(f"[STEP1-COMP] comparison_axis={comparison_axis}")
-        print(f"[STEP1-COMP] scenario_dir={scenario_dir}")
-        print("=" * 80)
-
-        scenario_args = clone_args_for_scenario(args, scenario, scenario_dir)
-
-        lambda_values = [float(v) for v in getattr(scenario_args, "step1_lambda_values", [scenario_args.lam])]
-        if not lambda_values:
-            lambda_values = [float(scenario_args.lam)]
-
-        prepared = prepare_tomography_problem(scenario_args)
-
-        # Save selected file list for each scenario.
-        file_rows = []
-        for i, path in enumerate(prepared.pb_paths):
-            file_rows.append({
-                "index": i,
-                "name": path.name,
-                "path": str(path),
-                "group": base.tomography_observation_group_key(path),
-                "datetime": str(base.parse_pb_filename_datetime(path)),
-                "used_pixels": int(prepared.obs_list[i].idx_map.size),
-                "r_use_min": prepared.obs_r_bounds[i][0],
-                "r_use_max": prepared.obs_r_bounds[i][1],
-            })
-        write_rows_csv(scenario_dir / "step1_selected_observations.csv", file_rows)
-
-        scan_results: List[LambdaResult] = []
-        lcurve_candidate: Optional[float] = None
-
-        if bool(getattr(scenario_args, "step1_run_lambda_scan", True)):
-            scan_results, lcurve_candidate = run_lambda_scan(prepared, lambda_values, scenario_dir)
-        else:
-            print("[STEP1-COMP] Lambda scan disabled for this scenario.")
-
-        final_lam_mode = str(getattr(scenario_args, "step1_final_lam_mode", "default")).strip().lower()
-        if final_lam_mode in ("lcurve", "corner") and lcurve_candidate is not None:
-            final_lam = float(lcurve_candidate)
-        elif final_lam_mode in ("min_misfit", "min-data-misfit") and scan_results:
-            final_lam = float(min(scan_results, key=lambda r: r.data_misfit_norm).lam)
-        else:
-            final_lam = float(scenario_args.lam)
-
-        print(f"[STEP1-COMP] Final lambda mode={final_lam_mode!r}; final lambda={final_lam:.6g}")
-
-        tomo, solution_raw, ne, y_pred, suggested_scale = run_final_diagnostics(
-            prepared=prepared,
-            lam=final_lam,
-            output_dir=scenario_dir,
-            save_residual_npy=bool(getattr(scenario_args, "step1_save_residual_npy", False)),
-            save_residual_png=bool(getattr(scenario_args, "step1_save_residual_png", False)),
-        )
-
-        summary_row = make_final_summary_row(
-            prepared=prepared,
-            tomo=tomo,
-            solution_raw=solution_raw,
-            ne=ne,
-            y_pred=y_pred,
-            suggested_scale=suggested_scale,
-            final_lambda=final_lam,
-            output_dir=scenario_dir,
-            scenario_name=scenario_name,
-            comparison_axis=comparison_axis,
-            scan_results=scan_results,
-            lcurve_candidate=lcurve_candidate,
-        )
-
-        write_rows_csv(scenario_dir / "step1_final_summary.csv", [summary_row])
-        print(f"[STEP1-COMP] Saved scenario summary: {scenario_dir / 'step1_final_summary.csv'}")
-
-        if getattr(scenario_args, "save_ne_npz", ""):
-            save_final_npz(
-                prepared=prepared,
-                tomo=tomo,
-                solution_raw=solution_raw,
-                ne=ne,
-                y_pred=y_pred,
-                suggested_scale=suggested_scale,
-                final_lambda=final_lam,
-                output_path=Path(scenario_args.save_ne_npz),
-            )
-
-        if bool(getattr(scenario_args, "save_png", False)):
-            save_final_png(prepared, ne, Path(scenario_args.png_path))
-
-        summary_rows.append(summary_row)
-
-        # Save after every scenario to preserve partial progress if a later run fails.
-        write_rows_csv(output_root / "step1_comparison_suite_summary.csv", summary_rows)
-        write_comparison_key_metrics(output_root, summary_rows)
-        print(f"[STEP1-COMP] Updated: {output_root / 'step1_comparison_suite_summary.csv'}")
-        print(f"[STEP1-COMP] Updated: {output_root / 'step1_comparison_key_metrics.csv'}")
-
-    print("[STEP1-COMP] Completed comparison suite.")
-    print(f"[STEP1-COMP] Summary CSV: {output_root / 'step1_comparison_suite_summary.csv'}")
-    print(f"[STEP1-COMP] Key metrics CSV: {output_root / 'step1_comparison_key_metrics.csv'}")
-
 # ============================================================
 # Main STEP1 workflow
 # ============================================================
 
-def main(args: SimpleNamespace) -> None:
+def main(args: SimpleNamespace) -> Dict[str, object]:
     args = apply_defaults(args)
 
     step1_output_dir = ensure_dir(getattr(args, "step1_output_dir", "step1_diagnostics"))
@@ -1867,9 +1440,24 @@ def main(args: SimpleNamespace) -> None:
 
     scan_results: List[LambdaResult] = []
     lcurve_candidate: Optional[float] = None
+    lambda_iso_lambdas = [
+        float(v) for v in getattr(args, "step1_lambda_iso_values", [])
+    ] if bool(getattr(args, "step1_save_lambda_isosurfaces", False)) else []
 
     if bool(getattr(args, "step1_run_lambda_scan", True)):
-        scan_results, lcurve_candidate = run_lambda_scan(prepared, lambda_values, step1_output_dir)
+        scan_results, lcurve_candidate = run_lambda_scan(
+            prepared,
+            lambda_values,
+            step1_output_dir,
+            keep_solution_lambdas=lambda_iso_lambdas,
+        )
+        if lambda_iso_lambdas:
+            save_lambda_comparison_outputs(
+                prepared=prepared,
+                scan_results=scan_results,
+                output_dir=step1_output_dir,
+                lambdas_to_save=lambda_iso_lambdas,
+            )
     else:
         print("[STEP1] Lambda scan disabled.")
 
@@ -1890,6 +1478,24 @@ def main(args: SimpleNamespace) -> None:
         save_residual_npy=bool(getattr(args, "step1_save_residual_npy", True)),
         save_residual_png=bool(getattr(args, "step1_save_residual_png", False)),
     )
+
+    scenario_name = str(getattr(args, "step1_scenario_name", "single_run"))
+    summary_row = make_final_summary_row(
+        prepared=prepared,
+        tomo=tomo,
+        solution_raw=solution_raw,
+        ne=ne,
+        y_pred=y_pred,
+        suggested_scale=suggested_scale,
+        final_lambda=final_lam,
+        output_dir=step1_output_dir,
+        scenario_name=scenario_name,
+    )
+    (step1_output_dir / "step1_final_summary.json").write_text(
+        json.dumps(summary_row, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    write_rows_csv(step1_output_dir / "step1_final_summary.csv", [summary_row])
 
     if bool(getattr(args, "step1_run_leave_one_image_out", False)):
         run_leave_one_image_out(
@@ -1921,9 +1527,86 @@ def main(args: SimpleNamespace) -> None:
             png_path = base_name.parent / f"{base_name.name}_iso_{tag}MHz_h{int(args.harmonic)}.png"
         print("[STEP1] Save png to", png_path)
         save_final_png(prepared, ne, png_path)
+        summary_row["png_path"] = str(png_path)
 
     print("[STEP1] Completed.")
     print(f"[STEP1] Diagnostics directory: {step1_output_dir}")
+    return summary_row
+
+
+# ============================================================
+# STEP1 comparison-suite helpers
+# ============================================================
+
+
+def _tag_float(value: float) -> str:
+    return str(float(value)).replace(".", "p").replace("-", "m")
+
+
+def clone_args_for_scenario(
+    base_args: SimpleNamespace,
+    scenario: Dict[str, object],
+    comparison_root_dir: Path,
+    show_gui: bool = False,
+) -> SimpleNamespace:
+    """Clone args and apply one comparison-scenario override without touching main_multi_tomo.py."""
+    args = copy.deepcopy(base_args)
+    name = str(scenario.get("name", "scenario")).strip() or "scenario"
+
+    for key, value in scenario.items():
+        if key == "name":
+            continue
+        setattr(args, key, value)
+
+    args.step1_scenario_name = name
+    args.show_gui = bool(show_gui)
+
+    target_tag = base.parse_target_datetime(args.target_time).strftime("%Y%m%d_%H%M%S")
+    window_tag = f"pm{int(float(args.search_window_days))}d"
+    freq_list = list(args.freq_mhz_list) if args.freq_mhz_list is not None else [float(args.freq_mhz)]
+    freq_tag = "-".join(str(float(f)).rstrip("0").rstrip(".") for f in freq_list)
+
+    scenario_dir = ensure_dir(Path(comparison_root_dir) / name)
+    args.step1_output_dir = str(scenario_dir)
+    args.save_prepped_dir = str(scenario_dir / f"tomo_prepped_{target_tag}_{window_tag}")
+    args.save_ne_npz = str(scenario_dir / f"ne3d_solution_{target_tag}_{window_tag}_{freq_tag}MHz_{name}.npz")
+    args.png_path = str(scenario_dir / f"tomo_{target_tag}_{window_tag}_{freq_tag}MHz_{name}.png")
+
+    return args
+
+
+def run_comparison_suite(
+    base_args: SimpleNamespace,
+    scenarios: Sequence[Dict[str, object]],
+    comparison_root_dir: Path,
+    show_gui: bool = False,
+) -> None:
+    """Run controlled comparison scenarios and save one summary CSV."""
+    root = ensure_dir(comparison_root_dir)
+    rows: List[Dict[str, object]] = []
+
+    for i, scenario in enumerate(scenarios, start=1):
+        name = str(scenario.get("name", f"scenario_{i:02d}"))
+        print("\n" + "=" * 72)
+        print(f"[STEP1-COMPARE] Scenario {i}/{len(scenarios)}: {name}")
+        print("=" * 72)
+
+        scenario_args = clone_args_for_scenario(
+            base_args=base_args,
+            scenario=scenario,
+            comparison_root_dir=root,
+            show_gui=show_gui,
+        )
+        row = main(scenario_args)
+        rows.append(row)
+        write_rows_csv(root / "step1_comparison_suite_summary.csv", rows)
+
+    (root / "step1_comparison_suite_scenarios.json").write_text(
+        json.dumps(list(scenarios), indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    write_rows_csv(root / "step1_comparison_suite_summary.csv", rows)
+    print(f"[STEP1-COMPARE] Saved comparison summary: {root / 'step1_comparison_suite_summary.csv'}")
 
 
 # ============================================================
@@ -1951,7 +1634,8 @@ if __name__ == "__main__":
     DEFAULT_LONLAT = ""
     LONLAT_FILE = ""
 
-    OUT_N = 128
+    
+    OUT_N = 256
 
     R_MIN, R_MAX = 1.5, 4.0
     NR, NTH, NPH = 48, 48, 96
@@ -1961,7 +1645,7 @@ if __name__ == "__main__":
     HM = 5
 
     WT_NR = 1
-    LAM = 10.0
+    LAM = 5.0
     Q_LOW = 0.0
     WIDTH_PIX = 1.0
 
@@ -1970,14 +1654,38 @@ if __name__ == "__main__":
 
     DESPIKE_NSIG = 5.0
     DESPIKE_MED = 5
+    
+    ############# 軽量 ver. ##################
+    # OUT_N = 128
+
+    # R_MIN, R_MAX = 1.5, 4.0
+    # NR, NTH, NPH = 32, 32, 48
+
+    # DS = 0.01
+
+    # HM = 5
+
+    # WT_NR = 1
+    # LAM = 20.0
+    # Q_LOW = 0.0
+    # WIDTH_PIX = 1.0
+
+    # MAXITER = 1000
+    # TOL = 1e-3
+
+    # DESPIKE_NSIG = 5.0
+    # DESPIKE_MED = 5
+    #################################
+    
+    
 
     LIMB_U = base.DEFAULT_LIMB_U
     FILT = 1
     PB_FLOOR = ""
 
     DPA_DEG = 1.0
-    R_USE_MIN, R_USE_MAX = 1.5, 4.0
-    R_USE_MIN_BY_GROUP = {"cor1a": 1.5}
+    R_USE_MIN, R_USE_MAX = 1.7, 4.0
+    R_USE_MIN_BY_GROUP = {"cor1a": 1.7}
     R_USE_MAX_BY_GROUP = {}
     PB_SCALE_BY_GROUP = {}
 
@@ -1989,9 +1697,8 @@ if __name__ == "__main__":
     USE_TEMPORAL_DESPIKE = False
     NE3DTOMO_GLOBAL_YBK = False
     SHOW_RAY_PROGRESS = True
-    USE_RAY_CACHE = True
 
-    SHOW_GUI = False
+    SHOW_GUI = True
     HARMONIC = 2
     FREQ_MHZ_LIST = [33.8]
     ISO_COLORS = ["yellow"]
@@ -1999,158 +1706,169 @@ if __name__ == "__main__":
     TARGET_TAG = base.parse_target_datetime(TARGET_TIME).strftime("%Y%m%d_%H%M%S")
     WINDOW_TAG = f"pm{int(SEARCH_WINDOW_DAYS)}d"
     FREQ_TAG = "-".join(str(float(f)).rstrip("0").rstrip(".") for f in FREQ_MHZ_LIST)
-    RAY_CACHE_DIR = (
-        f"/mnt/d/wsl/home/kinno-7010/Research_data/Tomography/Rawdata/"
-        f"ray_cache_{TARGET_TAG}"
-    )
+
+    print("[INFO] Parameter Setting")
+    print(f"OUT_N={OUT_N}, R=({R_MIN}, {R_MAX}), N=({NR}, {NTH}, {NPH}), DS={DS}, HM={HM},")
+    print(f"LAM={LAM}, MAXITER={MAXITER}, TOL={TOL}, DESPIKE_NSIG={DESPIKE_NSIG}, DESPIKE_MED={DESPIKE_MED}")
+    print(f"R_USE=({R_USE_MIN}, {R_USE_MAX}), R_USE_MIN_BY_GROUP={R_USE_MIN_BY_GROUP}")
+
 
     # ------------------------------------------------------------------
     # STEP 1 diagnostic settings
     # ------------------------------------------------------------------
     STEP1_OUTPUT_DIR = (
         f"/mnt/d/wsl/home/kinno-7010/Research_data/Tomography/Rawdata/"
-        f"step1_compare_{TARGET_TAG}_{WINDOW_TAG}_{FREQ_TAG}MHz"
+        f"step1_diagnostics_{TARGET_TAG}_{WINDOW_TAG}_{FREQ_TAG}MHz"
     )
 
     STEP1_RUN_LAMBDA_SCAN = True
 
     # Scan around the original LAM=40.0.  Keep this list short at first because
     # each lambda requires one full CG solve.
-    STEP1_LAMBDA_VALUES = [5, 10.0, 20.0]
+    STEP1_LAMBDA_VALUES = [5.0, 10.0, 20.0, 40.0]
 
     # "default" keeps the original LAM.  Use "lcurve" only after checking diagnostics.
     STEP1_FINAL_LAM_MODE = "default"
 
     # Save residual maps.  NPY is light and useful; PNG can create many files.
-    STEP1_SAVE_RESIDUAL_NPY = False
-    STEP1_SAVE_RESIDUAL_PNG = False
+    STEP1_SAVE_RESIDUAL_NPY = True
+    STEP1_SAVE_RESIDUAL_PNG = True
 
     # True leave-one-image-out is expensive.  Keep it False until the basic scan works.
     STEP1_RUN_LEAVE_ONE_IMAGE_OUT = False
     STEP1_LOO_FINAL_LAMBDA_ONLY = True
     STEP1_LOO_MAX_HOLDOUTS = None  # e.g., 3 for quick testing
 
-    # Comparison suite.  When True, the script runs the scenario list below instead
-    # of the single STEP1 diagnostic workflow.
+    # Save isosurface PNGs for selected lambda values from the lambda scan.
+    # This allows direct visual comparison of lambda=10/20/40 without changing main_multi_tomo.py.
+    STEP1_SAVE_LAMBDA_ISOSURFACES = True
+    STEP1_LAMBDA_ISO_VALUES = [10.0, 20.0, 40.0]
+
+    # ------------------------------------------------------------------
+    # Optional comparison suite.
+    #
+    # This is expensive because each scenario performs an independent final solve.
+    # Keep False for an ordinary run.  Set True when you want to compare:
+    #   1) time-window dependence,
+    #   2) final lambda dependence,
+    #   3) COR1A/Earth relative pB calibration,
+    #   4) inner-boundary r_min/r_use_min dependence,
+    #   5) optional OUT_N=256 resolution dependence.
+    # ------------------------------------------------------------------
     STEP1_RUN_COMPARISON_SUITE = True
-    STEP1_COMPARISON_OUTPUT_DIR = (
+    STEP1_COMPARISON_SHOW_GUI = False
+    STEP1_COMPARISON_ROOT_DIR = (
         f"/mnt/d/wsl/home/kinno-7010/Research_data/Tomography/Rawdata/"
-        f"step1_comparison_suite_{TARGET_TAG}_{FREQ_TAG}MHz"
+        f"step1_compare_{TARGET_TAG}_{FREQ_TAG}MHz"
     )
+
+    # NOTE: PB_SCALE_BY_GROUP multiplies the observed pB before inversion.
+    # If diagnostics show fit_scale_cor1a/fit_scale_earth > 1, trial values
+    # below 1.0 test whether COR1A pB is relatively too bright.
     STEP1_COMPARISON_SCENARIOS = [
-        # 1) Time-window comparison: +/-3 days vs +/-7 days.
+        # Time-window dependence: pm3d vs pm7d.
         # {
-        #     "name": "time_window_3d",
-        #     "comparison_axis": "time_window",
+        #     "name": "time_pm3d",
         #     "search_window_days": 3.0,
+        #     "lam": LAM,
         #     "step1_run_lambda_scan": False,
+        #     "step1_save_lambda_isosurfaces": False,
         # },
         # {
-        #     "name": "time_window_7d",
-        #     "comparison_axis": "time_window",
+        #     "name": "time_pm7d",
         #     "search_window_days": 7.0,
+        #     "lam": LAM,
         #     "step1_run_lambda_scan": False,
+        #     "step1_save_lambda_isosurfaces": False,
         # },
-        # 2) Fixed-lambda comparison.
-        *[
-            {
-                "name": f"lambda_{lambda_para}",
-                "comparison_axis": "lambda",
-                "lam": float(lambda_para),
-                "step1_lambda_values": [float(lambda_para)],
-                "step1_run_lambda_scan": False,
-            }
-            for lambda_para in np.arange(1, 20)
-        ],
-        # {
-        #     "name": "lambda_5",
-        #     "comparison_axis": "lambda",
-        #     "lam": 5.0,
-        #     "step1_lambda_values": [5.0],
-        #     "step1_run_lambda_scan": False,
-        # },
+
+        # # Final-lambda dependence: save independent final residuals/NPZ/PNG for each lambda.
         # {
         #     "name": "lambda_10",
-        #     "comparison_axis": "lambda",
         #     "lam": 10.0,
-        #     "step1_lambda_values": [10.0],
         #     "step1_run_lambda_scan": False,
+        #     "step1_save_lambda_isosurfaces": False,
+        # },
+        {
+            "name": "lambda_20",
+            "lam": 20.0,
+            "step1_run_lambda_scan": False,
+            "step1_save_lambda_isosurfaces": False,
+        },
+        # {
+        #     "name": "lambda_40",
+        #     "lam": 40.0,
+        #     "step1_run_lambda_scan": False,
+        #     "step1_save_lambda_isosurfaces": False,
+        # },
+
+        # # COR1A relative calibration tests.
+        # {
+        #     "name": "cal_cor1a_0p50",
+        #     "lam": LAM,
+        #     "pb_scale_by_group": {"cor1a": 0.50},
+        #     "step1_run_lambda_scan": False,
+        #     "step1_save_lambda_isosurfaces": False,
         # },
         # {
-        #     "name": "lambda_20",
-        #     "comparison_axis": "lambda",
+        #     "name": "cal_cor1a_0p75",
+        #     "lam": LAM,
+        #     "pb_scale_by_group": {"cor1a": 0.75},
+        #     "step1_run_lambda_scan": False,
+        #     "step1_save_lambda_isosurfaces": False,
+        # },
+
+        # # Inner-boundary / occulter-edge sensitivity tests.
+        # {
+        #     "name": "rmin_1p6",
+        #     "lam": LAM,
+        #     "r_min": 1.6,
+        #     "r_use_min": 1.6,
+        #     "r_use_min_by_group": {"cor1a": 1.6},
+        #     "step1_run_lambda_scan": False,
+        #     "step1_save_lambda_isosurfaces": False,
+        # },
+        # {
+        #     "name": "rmin_1p7",
+        #     "lam": LAM,
+        #     "r_min": 1.7,
+        #     "r_use_min": 1.7,
+        #     "r_use_min_by_group": {"cor1a": 1.7},
+        #     "step1_run_lambda_scan": False,
+        #     "step1_save_lambda_isosurfaces": False,
+        # },
+
+        # # Resolution check.  This is costly; remove or comment out if unnecessary.
+        # {
+        #     "name": "resolution_out256",
+        #     "out_n": 256,
+        #     "lam": LAM,
+        #     "step1_run_lambda_scan": False,
+        #     "step1_save_lambda_isosurfaces": False,
+        # },
+        # {
+        #     "name": "cal_cor1a_0p50_lambda20_256",
+        #     "out_n": 256,
         #     "lam": 20.0,
-        #     "step1_lambda_values": [20.0],
+        #     "pb_scale_by_group": {"cor1a": 0.50},
         #     "step1_run_lambda_scan": False,
-        # },
-
-        # 3) Density-prior on/off comparison.  The off case also runs a small lambda scan.
-        # {
-        #     "name": "density_prior_on",
-        #     "comparison_axis": "density_prior",
-        #     "density_prior_model": "saito_equatorial",
-        #     "density_prior_scale": 2.8,
-        #     "step1_run_lambda_scan": False,
+        #     "step1_save_lambda_isosurfaces": False,
         # },
         # {
-        #     "name": "density_prior_off_lambda_scan",
-        #     "comparison_axis": "density_prior",
-        #     "density_prior_model": "none",
-        #     "density_prior_scale": 1.0,
-        #     "step1_lambda_values": [5.0, 10.0, 20.0],
-        #     "step1_run_lambda_scan": True,
-        #     "step1_final_lam_mode": "default",
-        # },
-
-        # 4) Regularization radial-weighting comparison.
-        # {
-        #     "name": "weighting_on",
-        #     "comparison_axis": "weighting",
-        #     "wt_nr": 1,
+        #     "name": "cal_cor1a_0p60_lambda20_256",
+        #     "out_n": 256,
+        #     "lam": 20.0,
+        #     "pb_scale_by_group": {"cor1a": 0.60},
         #     "step1_run_lambda_scan": False,
+        #     "step1_save_lambda_isosurfaces": False,
         # },
         # {
-        #     "name": "weighting_off",
-        #     "comparison_axis": "weighting",
-        #     "wt_nr": 0,
+        #     "name": "cal_cor1a_0p75_lambda20_256",
+        #     "out_n": 256,
+        #     "lam": 20.0,
+        #     "pb_scale_by_group": {"cor1a": 0.75},
         #     "step1_run_lambda_scan": False,
-        # },
-
-        # 5) Density-prior scale comparison.
-        # {
-        #     "name": "density_prior_scale_1p0",
-        #     "comparison_axis": "density_prior_scale",
-        #     "density_prior_model": "saito_equatorial",
-        #     "density_prior_scale": 1.0,
-        #     "step1_run_lambda_scan": False,
-        # },
-        {
-            "name": "density_prior_scale_2p0",
-            "comparison_axis": "density_prior_scale",
-            "density_prior_model": "saito_equatorial",
-            "density_prior_scale": 2.0,
-            "step1_run_lambda_scan": False,
-        },
-        # {
-        #     "name": "density_prior_scale_2p8",
-        #     "comparison_axis": "density_prior_scale",
-        #     "density_prior_model": "saito_equatorial",
-        #     "density_prior_scale": 2.8,
-        #     "step1_run_lambda_scan": False,
-        # },
-        {
-            "name": "density_prior_scale_3p0",
-            "comparison_axis": "density_prior_scale",
-            "density_prior_model": "saito_equatorial",
-            "density_prior_scale": 3.0,
-            "step1_run_lambda_scan": False,
-        },
-        # {
-        #     "name": "density_prior_scale_4p0",
-        #     "comparison_axis": "density_prior_scale",
-        #     "density_prior_model": "saito_equatorial",
-        #     "density_prior_scale": 4.0,
-        #     "step1_run_lambda_scan": False,
+        #     "step1_save_lambda_isosurfaces": False,
         # },
     ]
 
@@ -2217,8 +1935,6 @@ if __name__ == "__main__":
         use_temporal_despike=USE_TEMPORAL_DESPIKE,
         ne3dtomo_global_ybk=NE3DTOMO_GLOBAL_YBK,
         show_ray_progress=SHOW_RAY_PROGRESS,
-        use_ray_cache=USE_RAY_CACHE,
-        ray_cache_dir=RAY_CACHE_DIR,
 
         save_prepped_dir=SAVE_PREPPED_DIR,
         save_ne_npz=SAVE_NE_NPZ,
@@ -2240,12 +1956,17 @@ if __name__ == "__main__":
         step1_run_leave_one_image_out=STEP1_RUN_LEAVE_ONE_IMAGE_OUT,
         step1_loo_final_lambda_only=STEP1_LOO_FINAL_LAMBDA_ONLY,
         step1_loo_max_holdouts=STEP1_LOO_MAX_HOLDOUTS,
-        step1_run_comparison_suite=STEP1_RUN_COMPARISON_SUITE,
-        step1_comparison_output_dir=STEP1_COMPARISON_OUTPUT_DIR,
-        step1_comparison_scenarios=STEP1_COMPARISON_SCENARIOS,
+        step1_save_lambda_isosurfaces=STEP1_SAVE_LAMBDA_ISOSURFACES,
+        step1_lambda_iso_values=STEP1_LAMBDA_ISO_VALUES,
+        step1_scenario_name="single_run",
     )
 
     if STEP1_RUN_COMPARISON_SUITE:
-        run_comparison_suite(args)
+        run_comparison_suite(
+            base_args=args,
+            scenarios=STEP1_COMPARISON_SCENARIOS,
+            comparison_root_dir=Path(STEP1_COMPARISON_ROOT_DIR),
+            show_gui=STEP1_COMPARISON_SHOW_GUI,
+        )
     else:
         main(args)

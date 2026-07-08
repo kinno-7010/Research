@@ -23,7 +23,7 @@ Dependencies:
   pip install numpy astropy scipy pyvista pyvistaqt
 
 - LASCO-C2 pB / K-Cor pB のダウンロードと結合は `SOHO/SECCHI/LASCO/py_folder/download_integrate_kcor_lasco_pb.py` で事前に完了させる。
-
+ 
 - このファイルは、作成済みの `pB_Kcor_LASCO_axi_*.fits` と `COR1A_pb_pre_*.fits` を読み込み、tomography のみを実行する。
 
 - STEREO-A/SECCHI/COR1 pB: STEREO-A/SECCHI/COR1/py_folder/download_cor1a_pb.pyを実行して、STEREO-A/SECCHI/COR1/Rawdata/<YYYYMMDD>_<HHMMSS>_n4c1A.fts, dc1A_p000/120/240.ftsをダウンロード、"/mnt/d/wsl/home/kinno-7010/Research_data/STEREO-A/SECCHI/COR1/pB/Rawdata/COR1A_pb_pre_<YYYYMMDD>_<HHMMSS>.fits"を作成。その後、STEREO-A/SECCHI/COR1/make_cor1a_pb.proをSSWIDLで回す。
@@ -44,6 +44,10 @@ from astropy.wcs import WCS
 from scipy.ndimage import median_filter
 from scipy.sparse import csr_matrix
 from scipy.sparse.linalg import LinearOperator, cg
+try:
+    from scipy.optimize import minimize
+except Exception:
+    minimize = None
 
 try:
     import pyvista as pv
@@ -63,6 +67,21 @@ RE_CM = 2.8179403262e-13  # classical electron radius [cm]
 SIGMA_T = 6.6524587321e-25  # Thomson cross section [cm^2]
 ICEN = 1.0  # SSC normalization constant (matches provided port)
 DEFAULT_LIMB_U = 0.56  # SSC default used in provided Python port  # typical optical limb-darkening coefficient
+
+
+def thomson_msb_normalization_factor(u: float) -> float:
+    """Return the limb-darkening normalization factor for pB in mean-solar-brightness units.
+
+    The commonly used van de Hulst/Kramar pB kernel contains the factor
+    1/(1 - u/3) when the brightness is normalized to the mean solar disk
+    brightness.  Keeping this factor explicit avoids hiding an absolute-density
+    scale choice inside the forward matrix.
+    """
+    den = 1.0 - float(u) / 3.0
+    if not np.isfinite(den) or den <= 0:
+        raise ValueError(f"Invalid limb-darkening coefficient u={u}; 1-u/3 must be positive.")
+    return 1.0 / den
+
 
 
 # ----------------------------
@@ -652,10 +671,23 @@ def print_group_calibration_hints(
 # Thomson pB kernel
 # ----------------------------
 def thomsonscatter_pB_per_electron(impact_rsun: float, theta_from_pos_rad: float,
-                                  u: float = DEFAULT_LIMB_U) -> float:
+                                  u: float = DEFAULT_LIMB_U,
+                                  normalize_msb: bool = True,
+                                  kernel_scale: float = 1.0) -> float:
     """
     Polarized brightness contribution per single electron at a given position along a LOS,
-    using the SSC Ne3dTomo V1.1 kernel form.
+    using the SSC/van-de-Hulst kernel form.
+
+    Parameters
+    ----------
+    normalize_msb : bool
+        If True, multiply by 1/(1-u/3), appropriate when the input pB is in
+        mean-solar-brightness-like units (e.g. MSB / Mean Solar Brightness).
+        If an upstream SSC/IDL calibration has already absorbed this factor, set
+        this to False and document that choice.
+    kernel_scale : float
+        Explicit final multiplicative factor for controlled unit-calibration tests.
+        Keep at 1.0 unless a documented photometric conversion requires otherwise.
 
     Notes
     -----
@@ -694,6 +726,11 @@ def thomsonscatter_pB_per_electron(impact_rsun: float, theta_from_pos_rad: float
 
     pB = (3.0 / 16.0) * ICEN * SIGMA_T * (sinchi ** 2) * ((1.0 - u) * A + u * B)
 
+    if bool(normalize_msb):
+        pB *= thomson_msb_normalization_factor(u)
+
+    pB *= float(kernel_scale)
+
     # Final safety: do not allow NaN/Inf to leak
     if not np.isfinite(pB):
         return 0.0
@@ -708,6 +745,80 @@ def read_fits_image(path: Path) -> Tuple[np.ndarray, fits.Header]:
         data = hdul[0].data.astype(np.float64)
         hdr = hdul[0].header
     return data, hdr
+
+
+def summarize_pb_fits_calibration(path: Path) -> dict:
+    """Return a compact photometric/unit summary for a pB-related FITS file.
+
+    This is a diagnostic only.  It does not change the inversion data.  It is
+    intended to prevent accidental mixing of raw DN images with calibrated pB/MSB
+    products and to make the absolute-kernel normalization choice auditable.
+    """
+    data, hdr = read_fits_image(Path(path))
+    arr = np.asarray(data, dtype=np.float64)
+    finite = np.isfinite(arr)
+    v = arr[finite]
+    pos = v[v > 0] if v.size else np.array([], dtype=np.float64)
+
+    def _pct(a, q):
+        return float(np.nanpercentile(a, q)) if a.size else np.nan
+
+    bunit = str(hdr.get("BUNIT", "")).strip()
+    unit_text = bunit.lower()
+    is_raw_dn = unit_text in ("dn", "adu", "counts") or "dn" == unit_text
+    is_msb_like = (
+        "msb" in unit_text
+        or "mean solar brightness" in unit_text
+        or bunit == "pB"
+    )
+
+    return {
+        "path": str(Path(path)),
+        "name": Path(path).name,
+        "shape": tuple(arr.shape),
+        "instrument": str(hdr.get("INSTRUME", "")),
+        "detector": str(hdr.get("DETECTOR", "")),
+        "telescope": str(hdr.get("TELESCOP", "")),
+        "observatory": str(hdr.get("OBSRVTRY", "")),
+        "date_obs": str(hdr.get("DATE-OBS", hdr.get("DATE_OBS", ""))),
+        "bunit": bunit,
+        "is_raw_dn": bool(is_raw_dn),
+        "is_msb_like": bool(is_msb_like),
+        "finite_count": int(v.size),
+        "min": float(np.nanmin(v)) if v.size else np.nan,
+        "median": float(np.nanmedian(v)) if v.size else np.nan,
+        "max": float(np.nanmax(v)) if v.size else np.nan,
+        "p01": _pct(v, 1),
+        "p50": _pct(v, 50),
+        "p99": _pct(v, 99),
+        "positive_p50": _pct(pos, 50),
+        "positive_p99": _pct(pos, 99),
+    }
+
+
+def print_pb_calibration_report(paths: List[Path]) -> None:
+    """Print pB/DN unit and scale diagnostics for selected FITS files."""
+    if not paths:
+        return
+    print("[CAL] Input pB/DN calibration diagnostics:")
+    for path in paths:
+        try:
+            s = summarize_pb_fits_calibration(Path(path))
+        except Exception as exc:
+            print(f"[CAL] {Path(path).name}: failed to read ({exc})")
+            continue
+        flags = []
+        if s["is_raw_dn"]:
+            flags.append("RAW_DN_NOT_FOR_TOMO")
+        if s["is_msb_like"]:
+            flags.append("MSB_LIKE")
+        flag_text = ",".join(flags) if flags else "unit_unknown"
+        print(
+            f"[CAL] {s['name']}: BUNIT={s['bunit']!r}, {flag_text}, "
+            f"instrument={s['instrument']}/{s['detector']}, shape={s['shape']}, "
+            f"median={s['median']:.3e}, p99={s['p99']:.3e}, "
+            f"positive_median={s['positive_p50']:.3e}"
+        )
 
 
 def block_reduce_mean(img: np.ndarray, out_n: int) -> np.ndarray:
@@ -1925,6 +2036,8 @@ def build_rays_for_observation(
     r_min: float,
     r_max: float,
     limb_u: float,
+    thomson_normalize_msb: bool = True,
+    thomson_kernel_scale: float = 1.0,
 ) -> RayBundle:
     """
     For each used pixel, build a sparse ray (list of voxel indices + weights).
@@ -1983,7 +2096,13 @@ def build_rays_for_observation(
                 continue
 
             theta_from_pos = np.arccos(np.clip(rho / r, -1.0, 1.0))
-            pb_per_e = thomsonscatter_pB_per_electron(rho, theta_from_pos, u=limb_u)
+            pb_per_e = thomsonscatter_pB_per_electron(
+                rho,
+                theta_from_pos,
+                u=limb_u,
+                normalize_msb=bool(thomson_normalize_msb),
+                kernel_scale=float(thomson_kernel_scale),
+            )
 
             # Weight: kernel * ds * Rsun(cm)
             w = pb_per_e * ds * RSUN_CM
@@ -2220,11 +2339,31 @@ class RegularizedTomography:
             out = self.density_basis * out
         return out
 
-    def solve(self, y_obs: np.ndarray, maxiter: int = 50, tol: float = 1e-4, positivity: bool = True) -> Tuple[np.ndarray, int]:
+    def solve(
+        self,
+        y_obs: np.ndarray,
+        maxiter: int = 50,
+        tol: float = 1e-4,
+        positivity: bool = True,
+        positivity_method: str = "clip",
+    ) -> Tuple[np.ndarray, int]:
         """
-        Solve (A^T W^2 A + lam L^T L) x = A^T W^2 y.
+        Solve the weighted Tikhonov problem.
+
+        positivity_method options:
+          - "clip"  : solve the unconstrained normal equation with CG, then set
+                        negative components to zero.  Fast, but not a strict
+                        non-negative least-squares solution.
+          - "lbfgsb": solve the bound-constrained quadratic objective with
+                        L-BFGS-B and bounds x>=0.  More faithful to x>=0, but
+                        usually slower for large tomography runs.
+          - "none"  : no positivity enforcement.
         """
         W = self.W
+        y_obs = np.asarray(y_obs, dtype=np.float64).ravel()
+        method = str(positivity_method or "clip").strip().lower()
+        if not positivity:
+            method = "none"
 
         def matvec(v: np.ndarray) -> np.ndarray:
             Av = self.A_times(v)
@@ -2234,10 +2373,35 @@ class RegularizedTomography:
 
         b = self.AT_times((W * W) * y_obs)
         Aop = LinearOperator((self.grid.nvox, self.grid.nvox), matvec=matvec, dtype=np.float64)
-
         x0 = np.zeros(self.grid.nvox, dtype=np.float64)
-        # Some SciPy builds use rtol/atol rather than tol.  Try modern API first,
-        # then fall back to older signatures.
+
+        if method in ("lbfgsb", "l-bfgs-b", "strict", "bounds"):
+            if minimize is None:
+                raise RuntimeError("positivity_method='lbfgsb' requires scipy.optimize.minimize.")
+
+            def fun_and_grad(v: np.ndarray):
+                Av_minus_y = self.A_times(v) - y_obs
+                Wres = W * Av_minus_y
+                ltlv = apply_LTL(v, self.grid, wt_r=self.wt_r)
+                f = 0.5 * float(np.dot(Wres, Wres)) + 0.5 * self.lam * float(np.dot(v, ltlv))
+                g = self.AT_times((W * W) * Av_minus_y) + self.lam * ltlv
+                return f, g
+
+            res = minimize(
+                fun_and_grad,
+                x0,
+                method="L-BFGS-B",
+                jac=True,
+                bounds=[(0.0, None)] * self.grid.nvox,
+                options={"maxiter": int(maxiter), "ftol": float(tol), "gtol": float(tol), "maxls": 20},
+            )
+            x = np.asarray(res.x, dtype=np.float64)
+            info = 0 if bool(res.success) else 1
+            if info != 0:
+                print(f"[WARN] L-BFGS-B positivity solve did not fully converge: {res.message}")
+            return x, info
+
+        # Default fast path: unconstrained CG solve of the normal equations.
         try:
             x, info = cg(Aop, b, x0=x0, maxiter=maxiter, rtol=tol, atol=0.0)
         except TypeError:
@@ -2246,10 +2410,102 @@ class RegularizedTomography:
             except TypeError:
                 x, info = cg(Aop, b, x0=x0, maxiter=maxiter)
 
-        if positivity:
+        if method == "clip":
             x = np.maximum(x, 0.0)
+        elif method in ("none", "off", "false", "0"):
+            pass
+        else:
+            raise ValueError(f"Unknown positivity_method={positivity_method!r}; use 'clip', 'lbfgsb', or 'none'.")
 
         return x, info
+
+
+# ----------------------------
+# Lambda diagnostics
+# ----------------------------
+def regularization_norm_value(solution_raw: np.ndarray, grid: SphericalGrid, wt_r: Optional[np.ndarray]) -> float:
+    """Return sqrt(x^T L^T L x) for the current regularization operator."""
+    x = np.asarray(solution_raw, dtype=np.float64).ravel()
+    ltlx = apply_LTL(x, grid, wt_r=wt_r)
+    val = float(np.dot(x, ltlx))
+    if not np.isfinite(val) or val < 0:
+        return np.nan
+    return float(np.sqrt(val))
+
+
+def maybe_run_lambda_scan(
+    tomo: RegularizedTomography,
+    y_obs: np.ndarray,
+    lambda_values,
+    harmonic: int = 1,
+    maxiter: int = 50,
+    tol: float = 1e-4,
+    positivity_method: str = "clip",
+) -> list[dict]:
+    """Run a lightweight lambda scan using the already-built sparse forward matrix."""
+    values = [float(v) for v in (lambda_values or [])]
+    if not values:
+        return []
+    rows = []
+    old_lam = float(tomo.lam)
+    print(f"[LAMBDA] Running lambda scan with values={values}")
+    for lam in values:
+        tomo.lam = float(lam)
+        sol, info = tomo.solve(y_obs, maxiter=maxiter, tol=tol, positivity=True, positivity_method=positivity_method)
+        y_pred = tomo.A_times(sol)
+        wres = tomo.W * (y_pred - y_obs)
+        misfit_rms = float(np.sqrt(np.mean(wres * wres))) if wres.size else np.nan
+        reg_norm = regularization_norm_value(sol, tomo.grid, tomo.wt_r)
+        ne = tomo.solution_to_density(sol)
+        fr = frequency_range_mhz_from_ne(ne, harmonic=int(harmonic))
+        if fr is None:
+            fmin = fmax = np.nan
+        else:
+            _, _, fmin, fmax = fr
+        row = {
+            "lambda": float(lam),
+            "cg_info": int(info),
+            "weighted_misfit_rms": misfit_rms,
+            "regularization_norm": reg_norm,
+            "f_min_mhz": float(fmin),
+            "f_max_mhz": float(fmax),
+        }
+        rows.append(row)
+        print(
+            f"[LAMBDA] lambda={lam:.6g}: misfit_rms={misfit_rms:.4e}, "
+            f"reg_norm={reg_norm:.4e}, f_range={fmin:.3f}..{fmax:.3f} MHz, info={info}"
+        )
+    tomo.lam = old_lam
+    return rows
+
+
+def choose_lambda_from_scan(rows: list[dict], mode: str, fallback: float) -> float:
+    """Choose lambda from a lightweight scan.  'fixed' leaves fallback unchanged."""
+    mode = str(mode or "fixed").strip().lower()
+    if not rows or mode in ("fixed", "manual", "none", "off"):
+        return float(fallback)
+    good = [r for r in rows if np.isfinite(r.get("weighted_misfit_rms", np.nan))]
+    if not good:
+        return float(fallback)
+    if mode in ("min_misfit", "misfit"):
+        return float(min(good, key=lambda r: r["weighted_misfit_rms"])["lambda"])
+    if mode in ("lcurve", "corner") and len(good) >= 3:
+        # Simple normalized-distance L-curve corner in log(misfit)-log(reg) space.
+        xs = np.array([np.log10(r["weighted_misfit_rms"]) for r in good], dtype=float)
+        ys = np.array([np.log10(r["regularization_norm"]) for r in good], dtype=float)
+        lams = np.array([r["lambda"] for r in good], dtype=float)
+        order = np.argsort(lams)
+        xs, ys, lams = xs[order], ys[order], lams[order]
+        if np.all(np.isfinite(xs)) and np.all(np.isfinite(ys)):
+            def norm(v):
+                return (v - np.min(v)) / max(np.max(v) - np.min(v), 1e-300)
+            p = np.c_[norm(xs), norm(ys)]
+            v = p[-1] - p[0]
+            vn = np.linalg.norm(v)
+            if vn > 0:
+                d = np.abs(np.cross(v, p - p[0])) / vn
+                return float(lams[int(np.argmax(d))])
+    return float(fallback)
 
 
 # ----------------------------
@@ -2662,13 +2918,21 @@ def main(args):
         wt_nr=1,
 
         lam=1.0,
+        lambda_scan_values=[],
+        lambda_select_mode="fixed",
         q_low=0.0,
         width_pix=2.0,
         maxiter=10000,
         tol=1e-3,
+        positivity_method="clip",
         apply_brightness_scale=False,
+        use_density_prior=True,
         density_prior_model="none",
         density_prior_scale=1.0,
+        thomson_normalize_msb=True,
+        thomson_kernel_scale=1.0,
+        run_pb_unit_diagnostics=False,
+        pb_diagnostic_paths=[],
         calibration_reference_group="earth_merged",
 
         data_dir="",
@@ -2699,6 +2963,23 @@ def main(args):
     for k, v in defaults.items():
         if not hasattr(args, k):
             setattr(args, k, v)
+
+    if bool(getattr(args, "run_pb_unit_diagnostics", False)):
+        diag_paths = [Path(p) for p in getattr(args, "pb_diagnostic_paths", [])]
+        print_pb_calibration_report(diag_paths)
+
+    if not bool(getattr(args, "use_density_prior", False)):
+        args.density_prior_model = "none"
+
+    if bool(getattr(args, "thomson_normalize_msb", True)):
+        print(
+            f"[INFO] Thomson kernel MSB normalization enabled: "
+            f"factor=1/(1-u/3)={thomson_msb_normalization_factor(float(args.limb_u)):.6g}"
+        )
+    else:
+        print("[INFO] Thomson kernel MSB normalization disabled; verify this matches the pB unit convention.")
+    if abs(float(getattr(args, "thomson_kernel_scale", 1.0)) - 1.0) > 1e-12:
+        print(f"[INFO] Explicit Thomson kernel scale applied: {float(args.thomson_kernel_scale):.6g}")
 
     if bool(args.auto_find_pb_fits):
         if not args.data_dir:
@@ -2937,6 +3218,8 @@ def main(args):
             r_min=args.r_min,
             r_max=args.r_max,
             limb_u=args.limb_u,
+            thomson_normalize_msb=bool(args.thomson_normalize_msb),
+            thomson_kernel_scale=float(args.thomson_kernel_scale),
         )
         rays.append(ray)
         if bool(getattr(args, "show_ray_progress", True)):
@@ -2975,7 +3258,29 @@ def main(args):
         wt_r=wt_r,
         density_basis=density_basis,
     )
-    solution_raw, info = tomo.solve(y_obs, maxiter=args.maxiter, tol=args.tol, positivity=True)
+
+    lambda_scan_rows = maybe_run_lambda_scan(
+        tomo,
+        y_obs,
+        getattr(args, "lambda_scan_values", []),
+        harmonic=int(args.harmonic),
+        maxiter=int(args.maxiter),
+        tol=float(args.tol),
+        positivity_method=str(args.positivity_method),
+    )
+    chosen_lam = choose_lambda_from_scan(lambda_scan_rows, getattr(args, "lambda_select_mode", "fixed"), float(args.lam))
+    if abs(chosen_lam - float(args.lam)) > 1e-12:
+        print(f"[LAMBDA] lambda_select_mode={args.lambda_select_mode!r}: using lambda={chosen_lam:.6g} instead of {float(args.lam):.6g}")
+    args.lam = float(chosen_lam)
+    tomo.lam = float(args.lam)
+
+    solution_raw, info = tomo.solve(
+        y_obs,
+        maxiter=args.maxiter,
+        tol=args.tol,
+        positivity=True,
+        positivity_method=str(args.positivity_method),
+    )
     ne_raw = tomo.solution_to_density(solution_raw)
 
     if info != 0:
@@ -3122,6 +3427,12 @@ def main(args):
             width_pix=float(args.width_pix),
             maxiter=int(args.maxiter),
             tol=float(args.tol),
+            positivity_method=str(args.positivity_method),
+            use_density_prior=bool(args.use_density_prior),
+            thomson_normalize_msb=bool(args.thomson_normalize_msb),
+            thomson_kernel_scale=float(args.thomson_kernel_scale),
+            lambda_scan_values=np.array([float(v) for v in getattr(args, "lambda_scan_values", [])], dtype=np.float64),
+            lambda_select_mode=str(getattr(args, "lambda_select_mode", "fixed")),
             use_temporal_despike=bool(args.use_temporal_despike),
             ne3dtomo_global_ybk=bool(args.ne3dtomo_global_ybk),
             calibration_reference_group=str(args.calibration_reference_group),
@@ -3199,14 +3510,14 @@ if __name__ == "__main__":
     HM = 5
 
     WT_NR = 1
-    LAM = 40.0
+    LAM = 20.0
     Q_LOW = 0.0
     WIDTH_PIX = 1.0
 
     MAXITER = 10000
     TOL = 1e-5
     
-    DESPIKE_NSIG = 6.0
+    DESPIKE_NSIG = 5.0
     DESPIKE_MED = 5
     
     # ====================
@@ -3223,13 +3534,33 @@ if __name__ == "__main__":
     R_USE_MIN_BY_GROUP = {"cor1a": 1.5}
     R_USE_MAX_BY_GROUP = {}
     PB_SCALE_BY_GROUP = {}
+    
+    print("[INFO] Parameter Setting")
+    print(f"OUT_N={OUT_N}, R=({R_MIN}, {R_MAX}), N=({NR}, {NTH}, {NPH}), DS={DS}, HM={HM},")
+    print(f"LAM={LAM}, MAXITER={MAXITER}, TOL={TOL}, DESPIKE_NSIG={DESPIKE_NSIG}, DESPIKE_MED={DESPIKE_MED}")
+    print(f"R_USE=({R_USE_MIN}, {R_USE_MAX}), R_USE_MIN_BY_GROUP={R_USE_MIN_BY_GROUP}")
 
 
-    # With density prior enabled, we solve ne = prior*q.  Do not apply an additional
-    # global brightness scale unless you intentionally want a post-fit scalar calibration.
+    # With density prior enabled, we solve ne = prior*q.
+    # Set USE_DENSITY_PRIOR=False to solve absolute ne directly.
     APPLY_BRIGHTNESS_SCALE = False
+    USE_DENSITY_PRIOR = True
     DENSITY_PRIOR_MODEL = "saito_equatorial"
     DENSITY_PRIOR_SCALE = 2.8
+
+    # Positivity: "clip" is fast but approximate; "lbfgsb" enforces x>=0 more strictly and is slower.
+    POSITIVITY_METHOD = "clip"
+
+    # Lambda: keep fixed by default.  Set LAMBDA_SELECT_MODE="lcurve" or "min_misfit" after checking diagnostics.
+    LAMBDA_SCAN_VALUES = []  # e.g. [5.0, 10.0, 20.0, 40.0, 80.0]
+    LAMBDA_SELECT_MODE = "fixed"
+
+    # pB unit/kernel diagnostics.  MSB normalization is appropriate for MSB / Mean Solar Brightness inputs.
+    THOMSON_NORMALIZE_MSB = True
+    THOMSON_KERNEL_SCALE = 1.0
+    RUN_PB_UNIT_DIAGNOSTICS = False
+    PB_DIAGNOSTIC_PATHS = []
+
     CALIBRATION_REFERENCE_GROUP = "earth_merged"
 
     USE_TEMPORAL_DESPIKE = False
@@ -3296,13 +3627,21 @@ if __name__ == "__main__":
         wt_nr=WT_NR,
 
         lam=LAM,
+        lambda_scan_values=LAMBDA_SCAN_VALUES,
+        lambda_select_mode=LAMBDA_SELECT_MODE,
         q_low=Q_LOW,
         width_pix=WIDTH_PIX,
         maxiter=MAXITER,
         tol=TOL,
+        positivity_method=POSITIVITY_METHOD,
         apply_brightness_scale=APPLY_BRIGHTNESS_SCALE,
+        use_density_prior=USE_DENSITY_PRIOR,
         density_prior_model=DENSITY_PRIOR_MODEL,
         density_prior_scale=DENSITY_PRIOR_SCALE,
+        thomson_normalize_msb=THOMSON_NORMALIZE_MSB,
+        thomson_kernel_scale=THOMSON_KERNEL_SCALE,
+        run_pb_unit_diagnostics=RUN_PB_UNIT_DIAGNOSTICS,
+        pb_diagnostic_paths=PB_DIAGNOSTIC_PATHS,
         calibration_reference_group=CALIBRATION_REFERENCE_GROUP,
 
         use_temporal_despike=USE_TEMPORAL_DESPIKE,

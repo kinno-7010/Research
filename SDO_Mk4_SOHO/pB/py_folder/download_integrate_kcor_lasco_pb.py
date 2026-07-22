@@ -857,43 +857,151 @@ def _arcsec_to_wcs_unit(values: np.ndarray, unit: str) -> np.ndarray:
         return values / 3600.0
     return values
 
-def sample_image_bilinear_safe(img: np.ndarray, xpix: np.ndarray, ypix: np.ndarray) -> np.ndarray:
-    """Bilinear sample img at floating pixel coordinates. Invalid/outside points become NaN."""
+def sample_image_bilinear_safe(
+    img: np.ndarray,
+    xpix: np.ndarray,
+    ypix: np.ndarray,
+) -> np.ndarray:
+    """
+    Bilinearly sample an image at floating-point pixel coordinates.
+
+    Points outside the source image become NaN.
+
+    When only some of the four bilinear neighbours are finite, the finite
+    interpolation weights are renormalized. This prevents one NaN neighbour
+    from unnecessarily turning a valid boundary pixel into NaN.
+
+    At a general sub-pixel position, at least two finite contributing
+    neighbours are required. At an exact source-pixel position, one finite
+    neighbour is sufficient.
+    """
     img = np.asarray(img, dtype=np.float64)
     xpix = np.asarray(xpix, dtype=np.float64)
     ypix = np.asarray(ypix, dtype=np.float64)
+
     xpix, ypix = np.broadcast_arrays(xpix, ypix)
     out = np.full(xpix.shape, np.nan, dtype=np.float64)
 
-    finite = np.isfinite(xpix) & np.isfinite(ypix)
-    if not np.any(finite):
+    finite_coord = (
+        np.isfinite(xpix)
+        & np.isfinite(ypix)
+    )
+    if not np.any(finite_coord):
         return out
 
-    x0 = np.floor(xpix[finite]).astype(np.int64)
-    y0 = np.floor(ypix[finite]).astype(np.int64)
+    flat_coord = np.flatnonzero(finite_coord)
+
+    x = xpix.ravel()[flat_coord]
+    y = ypix.ravel()[flat_coord]
+
+    x0 = np.floor(x).astype(np.int64)
+    y0 = np.floor(y).astype(np.int64)
     x1 = x0 + 1
     y1 = y0 + 1
-    inside = (x0 >= 0) & (y0 >= 0) & (x1 < img.shape[1]) & (y1 < img.shape[0])
+
+    inside = (
+        (x0 >= 0)
+        & (y0 >= 0)
+        & (x1 < img.shape[1])
+        & (y1 < img.shape[0])
+    )
     if not np.any(inside):
         return out
 
-    flat_indices = np.flatnonzero(finite)[inside]
+    flat_out = flat_coord[inside]
+
+    x = x[inside]
+    y = y[inside]
     x0 = x0[inside]
     y0 = y0[inside]
     x1 = x1[inside]
     y1 = y1[inside]
-    x = xpix.ravel()[flat_indices]
-    y = ypix.ravel()[flat_indices]
 
     wx = x - x0
     wy = y - y0
-    vals = (
-        (1.0 - wx) * (1.0 - wy) * img[y0, x0]
-        + wx * (1.0 - wy) * img[y0, x1]
-        + (1.0 - wx) * wy * img[y1, x0]
-        + wx * wy * img[y1, x1]
+
+    values = np.stack(
+        [
+            img[y0, x0],
+            img[y0, x1],
+            img[y1, x0],
+            img[y1, x1],
+        ],
+        axis=0,
     )
-    out.ravel()[flat_indices] = vals
+
+    weights = np.stack(
+        [
+            (1.0 - wx) * (1.0 - wy),
+            wx * (1.0 - wy),
+            (1.0 - wx) * wy,
+            wx * wy,
+        ],
+        axis=0,
+    )
+
+    valid_value = np.isfinite(values)
+
+    finite_weights = np.where(
+        valid_value,
+        weights,
+        0.0,
+    )
+
+    contributing = (
+        valid_value
+        & (weights > 1e-12)
+    )
+
+    n_contributing = np.count_nonzero(
+        contributing,
+        axis=0,
+    )
+
+    weight_sum = np.sum(
+        finite_weights,
+        axis=0,
+    )
+
+    # At an exact integer pixel position, one neighbour can carry almost all
+    # the weight and should be accepted.
+    exact_single_pixel = (
+        np.max(finite_weights, axis=0)
+        >= 1.0 - 1e-12
+    )
+
+    usable = (
+        (weight_sum > 1e-12)
+        & (
+            (n_contributing >= 2)
+            | exact_single_pixel
+        )
+    )
+
+    sampled = np.full(
+        x.shape,
+        np.nan,
+        dtype=np.float64,
+    )
+
+    if np.any(usable):
+        numerator = np.sum(
+            np.where(
+                valid_value,
+                values,
+                0.0,
+            )
+            * finite_weights,
+            axis=0,
+        )
+
+        sampled[usable] = (
+            numerator[usable]
+            / weight_sum[usable]
+        )
+
+    out.ravel()[flat_out] = sampled
+
     return out
 
 def _header_unit_to_arcsec_scale(unit: str) -> float:
@@ -1227,62 +1335,98 @@ def xy_rsun_for_rebinned_image(
     rsun_arcsec_override: Optional[float] = None,
 ) -> Tuple[np.ndarray, np.ndarray, float]:
     """
-    Return helioprojective x/y coordinate maps for the *rebinned* image in **Rsun units**.
+    Return pixel-center coordinates on the rebinned image in solar-radius units.
 
-    This codebase frequently uses r_use_min/r_use_max in Rsun. Therefore x_map and y_map must be
-    expressed as x/RSUN_OBS and y/RSUN_OBS (dimensionless solar radii), not in arcsec.
+    The radial masks used during K-COR/LASCO integration are calculated with
+    the explicit FITS linear image-plane transformation:
 
-    If LASCO-C2 lacks RSUN_OBS/RSUN, pass the nearest K-Cor RSUN_OBS as
-    rsun_arcsec_override before applying any radial masks.  Otherwise the code falls
-    back to 959.63 arcsec and can shift the apparent 1.1 Rs boundary by about 1--2%.
+        CRPIX / CRVAL / CDELT / CD / PC / CROTA
 
-    Returns
-    -------
-    x_map_rsun, y_map_rsun : (out_n,out_n)
-        Helioprojective coordinates in Rsun (dimensionless), centered at Sun center.
-    rsun_arcsec : float
-        Apparent solar radius in arcsec (RSUN_OBS/RSUN keyword or override).
+    This is intentionally the same local image-plane convention used by the
+    plotting and tomography routines. It avoids celestial-longitude wrapping
+    and small inconsistencies between TAN-projected and linearly plotted
+    coordinates.
     """
-    if rsun_arcsec_override is not None and np.isfinite(float(rsun_arcsec_override)) and float(rsun_arcsec_override) > 0:
-        rsun_arcsec = float(rsun_arcsec_override)
+    if (
+        rsun_arcsec_override is not None
+        and np.isfinite(float(rsun_arcsec_override))
+        and float(rsun_arcsec_override) > 0
+    ):
+        rsun_arcsec = float(
+            rsun_arcsec_override
+        )
     else:
-        rsun_arcsec = float(hdr.get("RSUN_OBS", hdr.get("RSUN", 959.63)))
+        rsun_arcsec = float(
+            hdr.get(
+                "RSUN_OBS",
+                hdr.get("RSUN", 959.63),
+            )
+        )
 
-    # scale factor from original -> rebinned pixels
-    s = float(orig_n) / float(out_n)
-
-    # Pixel centers on rebinned grid
-    yy, xx = np.mgrid[0:out_n, 0:out_n]
-    xpix = (xx + 0.5) * s - 0.5
-    ypix = (yy + 0.5) * s - 0.5
-
-    # Use astropy WCS only when the header has a complete celestial WCS.
-    # For LASCO pB headers that only carry CRPIX/CDELT/CROTA, astropy can return
-    # a generic linear coordinate without enough semantic checks, so the explicit
-    # FITS-linear fallback is safer and easier to audit.
-    if _has_complete_celestial_wcs(hdr):
-        try:
-            w = WCS(hdr)
-            xw, yw = w.pixel_to_world_values(xpix, ypix)
-            cu = getattr(w.wcs, "cunit", ["", ""])
-            u1 = str(hdr.get("CUNIT1", cu[0] if len(cu) > 0 else "arcsec")).lower()
-            u2 = str(hdr.get("CUNIT2", cu[1] if len(cu) > 1 else "arcsec")).lower()
-            x_map = _wcs_unit_to_arcsec(np.asarray(xw, dtype=np.float64), u1)
-            y_map = _wcs_unit_to_arcsec(np.asarray(yw, dtype=np.float64), u2)
-        except Exception as exc:
-            print(f"[WARN] WCS coordinate-map construction failed ({exc}); using linear CRPIX/CDELT/CD/PC/CROTA mapping.")
-            x_map, y_map = _linear_pixel_to_arcsec(hdr, xpix, ypix)
-    else:
-        x_map, y_map = _linear_pixel_to_arcsec(hdr, xpix, ypix)
-
-    # ---- convert arcsec -> Rsun ----
-    if not np.isfinite(rsun_arcsec) or rsun_arcsec <= 0:
+    if (
+        not np.isfinite(rsun_arcsec)
+        or rsun_arcsec <= 0
+    ):
         rsun_arcsec = 959.63
-    x_map_rsun = x_map / rsun_arcsec
-    y_map_rsun = y_map / rsun_arcsec
 
-    return x_map_rsun.astype(np.float64), y_map_rsun.astype(np.float64), rsun_arcsec
+    orig_n = int(orig_n)
+    out_n = int(out_n)
 
+    if orig_n <= 0 or out_n <= 0:
+        raise ValueError(
+            "orig_n and out_n must be positive; "
+            f"got orig_n={orig_n}, out_n={out_n}."
+        )
+
+    scale = (
+        float(orig_n)
+        / float(out_n)
+    )
+
+    # Pixel centers on the rebinned grid expressed in the original,
+    # zero-based FITS pixel-coordinate system.
+    yy, xx = np.mgrid[
+        0:out_n,
+        0:out_n,
+    ]
+
+    xpix = (
+        (xx + 0.5) * scale
+        - 0.5
+    )
+    ypix = (
+        (yy + 0.5) * scale
+        - 0.5
+    )
+
+    # Always use the local linear image-plane coordinates so that the radial
+    # mask and the plotted guide circles use the same coordinate convention.
+    x_arcsec, y_arcsec = _linear_pixel_to_arcsec(
+        hdr,
+        xpix,
+        ypix,
+    )
+
+    x_map_rsun = (
+        np.asarray(
+            x_arcsec,
+            dtype=np.float64,
+        )
+        / rsun_arcsec
+    )
+    y_map_rsun = (
+        np.asarray(
+            y_arcsec,
+            dtype=np.float64,
+        )
+        / rsun_arcsec
+    )
+
+    return (
+        x_map_rsun,
+        y_map_rsun,
+        float(rsun_arcsec),
+    )
 
 
 
@@ -1383,9 +1527,12 @@ def combine_kcor_lasco_pair(
       pB_Kcor_LASCO_axi_<YYYYMMDD>_<HHMM>.fits
 
     K-Cor is not allowed to overwrite arbitrary radii: only pixels within
-    kcor_use_min_rsun..kcor_use_max_rsun are eligible.  This makes the inner K-Cor
+    kcor_use_min_rsun..kcor_use_max_rsun are eligible. This makes the inner K-Cor
     use explicit (for example, 1.1 R_sun) and prevents accidental use of invalid
     occulted/edge pixels.
+
+    At rho <= blend_inner_rsun, LASCO-C2 is never used in the combined image. A valid
+    K-Cor value is used when available; otherwise the output pixel is written as NaN.
 
     This version is deliberately conservative: if the K-Cor reprojection contributes too
     few valid pixels, it does not write a misleading LASCO-identical "combined" file.
@@ -1408,41 +1555,79 @@ def combine_kcor_lasco_pair(
         # has a reliable apparent solar radius at nearly the same Earth-view time.
         # Copy it before any Rsun-based radial mask or output-header creation.
         working_lasco_hdr = lasco_hdr.copy()
-        rsun_for_grid = _first_finite_header_float(working_lasco_hdr, ("RSUN_OBS", "RSUN"))
+        rsun_for_grid = _first_finite_header_float(
+            working_lasco_hdr,
+            ("RSUN_OBS", "RSUN"),
+        )
         rsun_source = "LASCO"
-        if rsun_for_grid is None:
-            rsun_for_grid = _first_finite_header_float(kcor_hdr, ("RSUN_OBS", "RSUN"))
-            rsun_source = "KCOR"
-        if rsun_for_grid is not None and np.isfinite(rsun_for_grid) and rsun_for_grid > 0:
-            working_lasco_hdr["RSUN_OBS"] = (float(rsun_for_grid), "Apparent solar radius [arcsec]")
-            working_lasco_hdr["RSUN"] = (float(rsun_for_grid), "Apparent solar radius [arcsec]")
 
-        # Build a rotation-free Earth-view output grid.  LASCO-C2 and K-COR are
-        # both reprojected to this same grid before scaling/blending, so the
-        # final tomography-ready FITS is not left in the slightly rolled LASCO
-        # native image coordinates.
+        if rsun_for_grid is None:
+            rsun_for_grid = _first_finite_header_float(
+                kcor_hdr,
+                ("RSUN_OBS", "RSUN"),
+            )
+            rsun_source = "KCOR"
+
+        if (
+            rsun_for_grid is not None
+            and np.isfinite(rsun_for_grid)
+            and rsun_for_grid > 0
+        ):
+            working_lasco_hdr["RSUN_OBS"] = (
+                float(rsun_for_grid),
+                "Apparent solar radius [arcsec]",
+            )
+            working_lasco_hdr["RSUN"] = (
+                float(rsun_for_grid),
+                "Apparent solar radius [arcsec]",
+            )
+
+        # Build a rotation-free Earth-view output grid. LASCO-C2 and K-COR are
+        # both reprojected to this same grid before scaling/blending.
         lasco_input_hdr = working_lasco_hdr.copy()
         lasco_input_img = np.array(lasco_img, dtype=np.float64, copy=True)
+
         earth_aligned_hdr = make_earth_aligned_output_header(lasco_input_hdr)
-        lasco_img = reproject_image_to_header(lasco_input_img, lasco_input_hdr, earth_aligned_hdr, lasco_input_img.shape)
-        kcor_on_lasco = reproject_image_to_header(kcor_img, kcor_hdr, earth_aligned_hdr, lasco_input_img.shape)
+
+        lasco_img = reproject_image_to_header(
+            lasco_input_img,
+            lasco_input_hdr,
+            earth_aligned_hdr,
+            lasco_input_img.shape,
+        )
+        kcor_on_lasco = reproject_image_to_header(
+            kcor_img,
+            kcor_hdr,
+            earth_aligned_hdr,
+            lasco_input_img.shape,
+        )
         working_lasco_hdr = earth_aligned_hdr
+
     except Exception as exc:
-        print(f"[SKIP] Could not combine {lasco_path.name} with {kcor_path.name}: {exc}")
+        print(
+            f"[SKIP] Could not combine {lasco_path.name} "
+            f"with {kcor_path.name}: {exc}"
+        )
         return None
 
     lasco_unit = _pb_unit_kind(lasco_hdr)
     kcor_unit = _pb_unit_kind(kcor_hdr)
+
     if lasco_unit == "raw_dn" or kcor_unit == "raw_dn":
         print(
-            f"[SKIP] Raw DN input detected (LASCO={lasco_hdr.get('BUNIT')!r}, "
-            f"KCOR={kcor_hdr.get('BUNIT')!r}); refusing to write tomography pB product."
+            f"[SKIP] Raw DN input detected "
+            f"(LASCO={lasco_hdr.get('BUNIT')!r}, "
+            f"KCOR={kcor_hdr.get('BUNIT')!r}); "
+            "refusing to write tomography pB product."
         )
         return None
+
     if lasco_unit == "unknown" or kcor_unit == "unknown":
         print(
-            f"[WARN] Unknown pB unit convention (LASCO BUNIT={lasco_hdr.get('BUNIT')!r}, "
-            f"KCOR BUNIT={kcor_hdr.get('BUNIT')!r}); proceeding but check absolute density scale."
+            f"[WARN] Unknown pB unit convention "
+            f"(LASCO BUNIT={lasco_hdr.get('BUNIT')!r}, "
+            f"KCOR BUNIT={kcor_hdr.get('BUNIT')!r}); "
+            "proceeding but check absolute density scale."
         )
 
     x_map, y_map, rsun_arcsec_for_grid = xy_rsun_for_rebinned_image(
@@ -1454,157 +1639,475 @@ def combine_kcor_lasco_pair(
     rho = np.hypot(x_map, y_map)
 
     kcor_rmin = float(kcor_use_min_rsun)
-    kcor_rmax = float(kcor_use_max_rsun) if kcor_use_max_rsun is not None else float(blend_outer_rsun)
+    kcor_rmax = (
+        float(kcor_use_max_rsun)
+        if kcor_use_max_rsun is not None
+        else float(blend_outer_rsun)
+    )
+
     if not np.isfinite(kcor_rmin) or kcor_rmin < 0:
         kcor_rmin = 0.0
+
     if not np.isfinite(kcor_rmax) or kcor_rmax <= kcor_rmin:
         kcor_rmax = float(blend_outer_rsun)
-    kcor_radius_mask = (rho >= kcor_rmin) & (rho <= kcor_rmax)
 
-    has_kcor_any_radius = np.isfinite(kcor_on_lasco) & (kcor_on_lasco > 0)
-    has_kcor_raw = has_kcor_any_radius & kcor_radius_mask
-    has_lasco = np.isfinite(lasco_img) & (lasco_img > 0)
+    kcor_radius_mask = (
+        (rho >= kcor_rmin)
+        & (rho <= kcor_rmax)
+    )
+
+    has_kcor_any_radius = (
+        np.isfinite(kcor_on_lasco)
+        & (kcor_on_lasco > 0)
+    )
+    has_kcor_raw = (
+        has_kcor_any_radius
+        & kcor_radius_mask
+    )
+    has_lasco = (
+        np.isfinite(lasco_img)
+        & (lasco_img > 0)
+    )
+
     finite_kcor = int(np.count_nonzero(has_kcor_raw))
     finite_kcor_all = int(np.count_nonzero(has_kcor_any_radius))
-    n_kcor_11_15 = int(np.count_nonzero(has_kcor_raw & (rho >= 1.1) & (rho < 1.5)))
-    n_kcor_15_22 = int(np.count_nonzero(has_kcor_raw & (rho >= 1.5) & (rho <= blend_inner_rsun)))
-    n_kcor_blend = int(np.count_nonzero(has_kcor_raw & (rho > blend_inner_rsun) & (rho < blend_outer_rsun)))
+
+    n_kcor_11_15 = int(
+        np.count_nonzero(
+            has_kcor_raw
+            & (rho >= 1.0)
+            & (rho < 1.5)
+        )
+    )
+    n_kcor_15_22 = int(
+        np.count_nonzero(
+            has_kcor_raw
+            & (rho >= 1.5)
+            & (rho <= blend_inner_rsun)
+        )
+    )
+    n_kcor_blend = int(
+        np.count_nonzero(
+            has_kcor_raw
+            & (rho > blend_inner_rsun)
+            & (rho < blend_outer_rsun)
+        )
+    )
+
     print(
-        f"[QC] K-Cor reprojected onto LASCO grid: positive finite pixels={finite_kcor_all}, "
-        f"eligible pixels={finite_kcor} within {kcor_rmin:.3f}..{kcor_rmax:.3f} Rsun, "
-        f"LASCO positive finite pixels={int(np.count_nonzero(has_lasco))}"
+        f"[QC] K-Cor reprojected onto LASCO grid: "
+        f"positive finite pixels={finite_kcor_all}, "
+        f"eligible pixels={finite_kcor} within "
+        f"{kcor_rmin:.3f}..{kcor_rmax:.3f} Rsun, "
+        f"LASCO positive finite pixels="
+        f"{int(np.count_nonzero(has_lasco))}"
     )
     print(
         f"[QC] K-Cor eligible pixels by radius: "
-        f"1.1..1.5 Rs={n_kcor_11_15}, 1.5..{blend_inner_rsun:.2f} Rs={n_kcor_15_22}, "
-        f"{blend_inner_rsun:.2f}..{blend_outer_rsun:.2f} Rs={n_kcor_blend}"
+        f"1.0..1.5 Rs={n_kcor_11_15}, "
+        f"1.5..{blend_inner_rsun:.2f} Rs={n_kcor_15_22}, "
+        f"{blend_inner_rsun:.2f}..{blend_outer_rsun:.2f} Rs="
+        f"{n_kcor_blend}"
     )
+
     if finite_kcor < int(min_kcor_used_pixels):
         print(
-            f"[SKIP] K-Cor reprojection contributed only {finite_kcor} valid positive pixels "
-            f"(< min_kcor_used_pixels={min_kcor_used_pixels}). Not writing misleading combined file."
+            f"[SKIP] K-Cor reprojection contributed only "
+            f"{finite_kcor} valid positive pixels "
+            f"(< min_kcor_used_pixels={min_kcor_used_pixels}). "
+            "Not writing misleading combined file."
         )
         return None
 
     kcor_scale = 1.0
     scale_npix = 0
     scale_method = "NONE"
+
     if bool(calibrate_kcor_to_lasco):
-        min_scale_pixels = max(20, int(min_kcor_used_pixels) // 2)
-        scale_mask = has_kcor_raw & has_lasco & (rho >= blend_inner_rsun) & (rho <= blend_outer_rsun)
-        kcor_scale, scale_npix = _robust_positive_scale(lasco_img, kcor_on_lasco, scale_mask, min_pixels=min_scale_pixels)
+        min_scale_pixels = max(
+            20,
+            int(min_kcor_used_pixels) // 2,
+        )
+
+        scale_mask = (
+            has_kcor_raw
+            & has_lasco
+            & (rho >= blend_inner_rsun)
+            & (rho <= blend_outer_rsun)
+        )
+
+        kcor_scale, scale_npix = _robust_positive_scale(
+            lasco_img,
+            kcor_on_lasco,
+            scale_mask,
+            min_pixels=min_scale_pixels,
+        )
+
         if scale_npix >= min_scale_pixels:
             scale_method = "BLEND"
         else:
             fb_inner = float(scale_fallback_inner_rsun)
-            fb_outer = float(scale_fallback_outer_rsun) if scale_fallback_outer_rsun is not None else float(blend_inner_rsun)
-            if np.isfinite(fb_inner) and np.isfinite(fb_outer) and fb_outer > fb_inner:
-                fallback_mask = has_kcor_raw & has_lasco & (rho >= fb_inner) & (rho <= fb_outer)
-                fb_scale, fb_npix = _robust_positive_scale(lasco_img, kcor_on_lasco, fallback_mask, min_pixels=min_scale_pixels)
+            fb_outer = (
+                float(scale_fallback_outer_rsun)
+                if scale_fallback_outer_rsun is not None
+                else float(blend_inner_rsun)
+            )
+
+            if (
+                np.isfinite(fb_inner)
+                and np.isfinite(fb_outer)
+                and fb_outer > fb_inner
+            ):
+                fallback_mask = (
+                    has_kcor_raw
+                    & has_lasco
+                    & (rho >= fb_inner)
+                    & (rho <= fb_outer)
+                )
+
+                fb_scale, fb_npix = _robust_positive_scale(
+                    lasco_img,
+                    kcor_on_lasco,
+                    fallback_mask,
+                    min_pixels=min_scale_pixels,
+                )
+
                 if fb_npix >= min_scale_pixels:
-                    kcor_scale, scale_npix = fb_scale, fb_npix
+                    kcor_scale = fb_scale
+                    scale_npix = fb_npix
                     scale_method = "FALLBACK"
+
                     print(
-                        f"[WARN] No usable K-Cor/LASCO pixels in the nominal blend annulus; "
-                        f"using fallback scale annulus {fb_inner:.3f}..{fb_outer:.3f} Rsun."
+                        "[WARN] No usable K-Cor/LASCO pixels in the "
+                        "nominal blend annulus; using fallback scale "
+                        f"annulus {fb_inner:.3f}..{fb_outer:.3f} Rsun."
                     )
 
-        if kcor_scale > float(max_scale_factor) or kcor_scale < 1.0 / float(max_scale_factor):
+        if (
+            kcor_scale > float(max_scale_factor)
+            or kcor_scale < 1.0 / float(max_scale_factor)
+        ):
             print(
-                f"[WARN] K-Cor/LASCO overlap scale={kcor_scale:.4g} is outside allowed range "
-                f"[1/{max_scale_factor:g}, {max_scale_factor:g}]. Using scale=1.0."
+                f"[WARN] K-Cor/LASCO overlap scale={kcor_scale:.4g} "
+                "is outside allowed range "
+                f"[1/{max_scale_factor:g}, {max_scale_factor:g}]. "
+                "Using scale=1.0."
             )
             kcor_scale = 1.0
             scale_method = "NONE"
+
         print(
             f"[QC] K-Cor-to-LASCO scale={kcor_scale:.6g} "
             f"(method={scale_method}, pixels={scale_npix})"
         )
 
     kcor_scaled = kcor_on_lasco * kcor_scale
-    has_kcor = np.isfinite(kcor_scaled) & (kcor_scaled > 0) & kcor_radius_mask
 
-    combined = np.array(lasco_img, dtype=np.float64, copy=True)
+    has_kcor = (
+        np.isfinite(kcor_scaled)
+        & (kcor_scaled > 0)
+        & kcor_radius_mask
+    )
 
-    inner = has_kcor & (rho <= blend_inner_rsun)
+    combined = np.array(
+        lasco_img,
+        dtype=np.float64,
+        copy=True,
+    )
+
+    # ---------------------------------------------------------
+    # Inner region: rho <= BLENDIN
+    #
+    # LASCO-C2 is never used in this region.
+    #
+    # Valid K-COR exists:
+    #     combined = scaled K-COR
+    #
+    # Valid K-COR does not exist:
+    #     combined = NaN
+    # ---------------------------------------------------------
+    c2_excluded_inner = (
+        np.isfinite(rho)
+        & (rho <= blend_inner_rsun)
+    )
+
+    # First remove all LASCO-C2 values inside BLENDIN.
+    combined[c2_excluded_inner] = np.nan
+
+    # Restore only valid K-COR values inside BLENDIN.
+    inner = (
+        has_kcor
+        & c2_excluded_inner
+    )
     combined[inner] = kcor_scaled[inner]
 
-    overlap = has_kcor & has_lasco & (rho > blend_inner_rsun) & (rho < blend_outer_rsun)
+    # Explicitly retain NaN where no valid K-COR value exists.
+    inner_missing_kcor = (
+        c2_excluded_inner
+        & (~has_kcor)
+    )
+    combined[inner_missing_kcor] = np.nan
+
+    # ---------------------------------------------------------
+    # Blend region: BLENDIN < rho < BLENDOUT
+    # ---------------------------------------------------------
+    overlap = (
+        has_kcor
+        & has_lasco
+        & (rho > blend_inner_rsun)
+        & (rho < blend_outer_rsun)
+    )
+
     if np.any(overlap):
-        alpha = (rho[overlap] - blend_inner_rsun) / max(1e-6, (blend_outer_rsun - blend_inner_rsun))
-        combined[overlap] = (1.0 - alpha) * kcor_scaled[overlap] + alpha * lasco_img[overlap]
+        alpha = (
+            rho[overlap] - blend_inner_rsun
+        ) / max(
+            1e-6,
+            blend_outer_rsun - blend_inner_rsun,
+        )
+
+        combined[overlap] = (
+            (1.0 - alpha) * kcor_scaled[overlap]
+            + alpha * lasco_img[overlap]
+        )
 
     # Fill LASCO holes only inside the explicitly allowed K-Cor radial domain.
-    fill_lasco_holes = has_kcor & (~has_lasco)
+    fill_lasco_holes = (
+        has_kcor
+        & (~has_lasco)
+    )
     combined[fill_lasco_holes] = kcor_scaled[fill_lasco_holes]
 
-    inner_no_data = np.isfinite(rho) & (rho < kcor_rmin)
+    inner_no_data = (
+        np.isfinite(rho)
+        & (rho < kcor_rmin)
+    )
     bad_geometry = ~np.isfinite(rho)
-    combined[inner_no_data | bad_geometry] = np.nan
 
-    kcor_used = inner | overlap | fill_lasco_holes
-    n_inner_no_data = int(np.count_nonzero(inner_no_data))
-    n_bad_geometry = int(np.count_nonzero(bad_geometry))
-    n_used = int(np.count_nonzero(kcor_used))
-    n_inner_used = int(np.count_nonzero(inner))
-    n_blend_used = int(np.count_nonzero(overlap))
-    n_hole_used = int(np.count_nonzero(fill_lasco_holes))
-    max_diff = float(np.nanmax(np.abs(combined - lasco_img))) if np.any(np.isfinite(combined - lasco_img)) else 0.0
-    if n_used < int(min_kcor_used_pixels) or not np.isfinite(max_diff) or max_diff <= 0:
+    combined[
+        inner_no_data
+        | bad_geometry
+    ] = np.nan
+
+    kcor_used = (
+        inner
+        | overlap
+        | fill_lasco_holes
+    )
+
+    n_inner_no_data = int(
+        np.count_nonzero(inner_no_data)
+    )
+    n_bad_geometry = int(
+        np.count_nonzero(bad_geometry)
+    )
+    n_c2_inner_excluded = int(
+        np.count_nonzero(
+            c2_excluded_inner
+            & has_lasco
+        )
+    )
+    n_inner_missing_kcor = int(
+        np.count_nonzero(inner_missing_kcor)
+    )
+    n_used = int(
+        np.count_nonzero(kcor_used)
+    )
+    n_inner_used = int(
+        np.count_nonzero(inner)
+    )
+    n_blend_used = int(
+        np.count_nonzero(overlap)
+    )
+    n_hole_used = int(
+        np.count_nonzero(fill_lasco_holes)
+    )
+
+    finite_difference = np.isfinite(
+        combined - lasco_img
+    )
+
+    max_diff = (
+        float(
+            np.nanmax(
+                np.abs(combined - lasco_img)
+            )
+        )
+        if np.any(finite_difference)
+        else 0.0
+    )
+
+    if (
+        n_used < int(min_kcor_used_pixels)
+        or not np.isfinite(max_diff)
+        or max_diff <= 0
+    ):
         print(
-            f"[SKIP] Combined image is effectively LASCO-only (K-Cor used pixels={n_used}, max_diff={max_diff:.3e}). "
+            "[SKIP] Combined image is effectively LASCO-only "
+            f"(K-Cor used pixels={n_used}, "
+            f"max_diff={max_diff:.3e}). "
             "Not writing pB_Kcor_LASCO_axi product."
         )
         return None
 
     hdr = working_lasco_hdr.copy()
+
     # Add K-Cor/Earth-view observer coordinates needed by main_multi_tomo.py.
     add_observer_geometry_keywords(
         out_hdr=hdr,
         source_hdr=kcor_hdr,
-        obs_dt=parse_pb_filename_datetime(kcor_path) or lasco_dt,
+        obs_dt=(
+            parse_pb_filename_datetime(kcor_path)
+            or lasco_dt
+        ),
         source_label="KCOR",
     )
 
     # Ensure that downstream tomography/plotting uses the same apparent solar
     # radius as the radial masks above.
-    if rsun_for_grid is not None and np.isfinite(rsun_for_grid) and rsun_for_grid > 0:
-        hdr["RSUN_OBS"] = (float(rsun_for_grid), "Apparent solar radius [arcsec]")
-        hdr["RSUN"] = (float(rsun_for_grid), "Apparent solar radius [arcsec]")
-        hdr["KCORRSUN"] = (float(_first_finite_header_float(kcor_hdr, ("RSUN_OBS", "RSUN")) or rsun_for_grid), "K-Cor apparent solar radius [arcsec]")
-        hdr["RSUNSRC"] = (str(rsun_source)[:8], "Source of RSUN_OBS used for output grid")
+    if (
+        rsun_for_grid is not None
+        and np.isfinite(rsun_for_grid)
+        and rsun_for_grid > 0
+    ):
+        hdr["RSUN_OBS"] = (
+            float(rsun_for_grid),
+            "Apparent solar radius [arcsec]",
+        )
+        hdr["RSUN"] = (
+            float(rsun_for_grid),
+            "Apparent solar radius [arcsec]",
+        )
+        hdr["KCORRSUN"] = (
+            float(
+                _first_finite_header_float(
+                    kcor_hdr,
+                    ("RSUN_OBS", "RSUN"),
+                )
+                or rsun_for_grid
+            ),
+            "K-Cor apparent solar radius [arcsec]",
+        )
+        hdr["RSUNSRC"] = (
+            str(rsun_source)[:8],
+            "Source of RSUN_OBS used for output grid",
+        )
 
-    hdr["HISTORY"] = f"Combined LASCO-C2 pB with K-Cor pB: {Path(kcor_path).name}"
+    hdr["HISTORY"] = (
+        f"Combined LASCO-C2 pB with K-Cor pB: "
+        f"{Path(kcor_path).name}"
+    )
     hdr["KCORFILE"] = Path(kcor_path).name[:68]
     hdr["LASCOPB"] = Path(lasco_path).name[:68]
     hdr["BLENDIN"] = float(blend_inner_rsun)
     hdr["BLENDOUT"] = float(blend_outer_rsun)
-    hdr["KCORSCAL"] = (float(kcor_scale), "Multiplicative scale applied to reprojected K-Cor pB")
-    hdr["KCORSPX"] = (int(scale_npix), "Pixels used for K-Cor/LASCO overlap scale")
-    hdr["KCORSMET"] = (str(scale_method)[:8], "K-Cor/LASCO scale method: BLEND/FALLBACK/NONE")
-    hdr["KCORUPX"] = (int(n_used), "Pixels where K-Cor contributed to combined pB")
-    hdr["KCORINPX"] = (int(n_inner_used), "K-Cor pixels used inside BLENDIN")
-    hdr["KCORBPX"] = (int(n_blend_used), "Pixels blended between K-Cor and LASCO")
-    hdr["KCORHPX"] = (int(n_hole_used), "LASCO-hole pixels filled by K-Cor")
-    hdr["KCORDIFF"] = (float(max_diff), "Max abs difference between combined and LASCO pB")
-    hdr["KCORRMIN"] = (float(kcor_rmin), "Minimum radius where K-Cor may be used [Rsun]")
-    hdr["KCORRMAX"] = (float(kcor_rmax), "Maximum radius where K-Cor may be used [Rsun]")
-    hdr["NANRMIN"] = (float(kcor_rmin), "Pixels below this radius are written as NaN [Rsun]")
-    hdr["INNERNPX"] = (int(n_inner_no_data), "Pixels set to NaN below NANRMIN")
-    hdr["BADGEOPX"] = (int(n_bad_geometry), "Pixels set to NaN due to invalid geometry")
-    hdr["KCOR11PX"] = (int(n_kcor_11_15), "Eligible K-Cor pixels in 1.1..1.5 Rsun")
-    hdr["KCOR15PX"] = (int(n_kcor_15_22), "Eligible K-Cor pixels in tomo inner range")
-    hdr["KCORBAPX"] = (int(n_kcor_blend), "Eligible K-Cor pixels in blend annulus")
-    hdr["KCORUNIT"] = str(kcor_hdr.get("BUNIT", ""))[:68]
-    hdr["LASCOUNI"] = str(lasco_hdr.get("BUNIT", ""))[:68]
 
-    fits.writeto(out, combined.astype(np.float32), hdr, overwrite=True)
+    hdr["KCORSCAL"] = (
+        float(kcor_scale),
+        "Multiplicative scale applied to reprojected K-Cor pB",
+    )
+    hdr["KCORSPX"] = (
+        int(scale_npix),
+        "Pixels used for K-Cor/LASCO overlap scale",
+    )
+    hdr["KCORSMET"] = (
+        str(scale_method)[:8],
+        "K-Cor/LASCO scale method: BLEND/FALLBACK/NONE",
+    )
+    hdr["KCORUPX"] = (
+        int(n_used),
+        "Pixels where K-Cor contributed to combined pB",
+    )
+    hdr["KCORINPX"] = (
+        int(n_inner_used),
+        "K-Cor pixels used inside BLENDIN",
+    )
+    hdr["KCORBPX"] = (
+        int(n_blend_used),
+        "Pixels blended between K-Cor and LASCO",
+    )
+    hdr["KCORHPX"] = (
+        int(n_hole_used),
+        "LASCO-hole pixels filled by K-Cor",
+    )
+    hdr["KCORDIFF"] = (
+        float(max_diff),
+        "Max abs difference between combined and LASCO pB",
+    )
+    hdr["KCORRMIN"] = (
+        float(kcor_rmin),
+        "Minimum radius where K-Cor may be used [Rsun]",
+    )
+    hdr["KCORRMAX"] = (
+        float(kcor_rmax),
+        "Maximum radius where K-Cor may be used [Rsun]",
+    )
+
+    # Record the explicit removal of C2 data at/below BLENDIN.
+    hdr["C2NANR"] = (
+        float(blend_inner_rsun),
+        "LASCO-C2 excluded at/below this radius [Rsun]",
+    )
+    hdr["C2NANPX"] = (
+        int(n_c2_inner_excluded),
+        "C2-positive pixels excluded at/below C2NANR",
+    )
+    hdr["INMISSPX"] = (
+        int(n_inner_missing_kcor),
+        "Inner pixels NaN because valid K-Cor is absent",
+    )
+
+    hdr["NANRMIN"] = (
+        float(kcor_rmin),
+        "Pixels below this radius are written as NaN [Rsun]",
+    )
+    hdr["INNERNPX"] = (
+        int(n_inner_no_data),
+        "Pixels set to NaN below NANRMIN",
+    )
+    hdr["BADGEOPX"] = (
+        int(n_bad_geometry),
+        "Pixels set to NaN due to invalid geometry",
+    )
+    hdr["KCOR11PX"] = (
+        int(n_kcor_11_15),
+        "Eligible K-Cor pixels in 1.0..1.5 Rsun",
+    )
+    hdr["KCOR15PX"] = (
+        int(n_kcor_15_22),
+        "Eligible K-Cor pixels in tomo inner range",
+    )
+    hdr["KCORBAPX"] = (
+        int(n_kcor_blend),
+        "Eligible K-Cor pixels in blend annulus",
+    )
+    hdr["KCORUNIT"] = str(
+        kcor_hdr.get("BUNIT", "")
+    )[:68]
+    hdr["LASCOUNI"] = str(
+        lasco_hdr.get("BUNIT", "")
+    )[:68]
+
+    fits.writeto(
+        out,
+        combined.astype(np.float32),
+        hdr,
+        overwrite=True,
+    )
+
     print(
         f"[OK] Combined K-Cor/LASCO pB: {out} "
-        f"(K-Cor used pixels={n_used}, inner={n_inner_used}, blend={n_blend_used}, "
-        f"holes={n_hole_used}, max_diff={max_diff:.3e})"
+        f"(K-Cor used pixels={n_used}, "
+        f"inner={n_inner_used}, "
+        f"blend={n_blend_used}, "
+        f"holes={n_hole_used}, "
+        f"C2 inner excluded={n_c2_inner_excluded}, "
+        f"inner missing K-Cor={n_inner_missing_kcor}, "
+        f"max_diff={max_diff:.3e})"
     )
+
     return out
+
 
 def copy_lasco_as_tomography_ready(
     lasco_path: Path,
@@ -1812,8 +2315,8 @@ if __name__ == "__main__":
     KCOR_COOKIE_FILE = "/home/kinno-7010/Research_code/MK4_coronagraph/MK4_coronagraph_KCOR/pB/hao_cookies.txt"
     KCOR_PRODUCT = "pbavg"
 
-    KCOR_LASCO_BLEND_INNER_RSUN = 2.2
-    KCOR_LASCO_BLEND_OUTER_RSUN = 2.5
+    KCOR_LASCO_BLEND_INNER_RSUN = 2.0
+    KCOR_LASCO_BLEND_OUTER_RSUN = 3.0
     CALIBRATE_KCOR_TO_LASCO = True
     MIN_KCOR_USED_PIXELS = 100
 

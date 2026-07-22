@@ -2189,10 +2189,36 @@ def _simple_observer_from_npz_or_time(npz, observer_time_iso: str) -> SimpleObse
     Build the minimal observer object required by the overlay routines.
 
     Priority:
-      1) Use observer Carrington lon/lat saved in the NPZ if present.
-      2) Otherwise compute Earth's Carrington lon/lat at observer_time_iso.
-      3) If SunPy ephemeris conversion fails, fall back to (0, 0) with a warning.
+      1) Use forced Earth-view rendering camera lon/lat saved in the NPZ.
+      2) Use observer Carrington lon/lat saved in the NPZ if present.
+      3) Otherwise compute Earth's Carrington lon/lat at observer_time_iso.
+      4) If SunPy ephemeris conversion fails, fall back to (0, 0) with a warning.
     """
+    render_lon = _scalar_from_npz(
+        npz,
+        ("render_camera_lon_deg",),
+        default=None,
+    )
+    render_lat = _scalar_from_npz(
+        npz,
+        ("render_camera_lat_deg",),
+        default=None,
+    )
+    render_is_earth = _scalar_from_npz(
+        npz,
+        ("render_camera_is_earth_view",),
+        default=False,
+    )
+
+    if render_lon is not None and render_lat is not None and bool(render_is_earth):
+        lon_f = float(render_lon) % 360.0
+        lat_f = float(render_lat)
+        print(
+            "[INFO] Observer Carrington lon/lat loaded from NPZ Earth-view render camera: "
+            f"({lon_f:.3f}, {lat_f:.3f}) deg"
+        )
+        return SimpleObserver(lonlat_deg=(lon_f, lat_f))
+
     lon = _scalar_from_npz(
         npz,
         ("obs_lon_deg", "observer_lon_deg", "crln_obs", "CRLN_OBS", "lon_obs_deg"),
@@ -2242,7 +2268,6 @@ def _simple_observer_from_npz_or_time(npz, observer_time_iso: str) -> SimpleObse
         )
         return SimpleObserver(lonlat_deg=(0.0, 0.0))
 
-
 def _build_npz_path_candidates(
     *,
     npz_dir: Path,
@@ -2250,6 +2275,7 @@ def _build_npz_path_candidates(
     window_tag: str,
     frequency_mhz: List[float],
     harmonic: int,
+    other_tag: str = None
 ) -> List[Path]:
     """Build robust NPZ filename candidates around the requested filename pattern."""
     freq_tags = []
@@ -2264,19 +2290,27 @@ def _build_npz_path_candidates(
 
     out: List[Path] = []
     for freq_tag in freq_tags:
-        # Requested naming convention.
-        out.append(
-            # npz_dir / f"ne3d_{target_tag}_{window_tag}_{freq_tag}MHz_h{int(harmonic)}.npz"
-            npz_dir / f"ne3d_{target_tag}_{window_tag}_{freq_tag}MHz_h{int(harmonic)}_backup.npz"
-        )
-        # Backward-compatible fallback for files produced by the previous overlay code.
-        out.append(
-            npz_dir.parent / f"ne3d_solution_{target_tag}_{window_tag}_{freq_tag}MHz.npz"
-        )
+        if other_tag is None:
+            # Requested naming convention.
+            out.append(
+                # npz_dir / f"ne3d_{target_tag}_{window_tag}_{freq_tag}MHz_h{int(harmonic)}.npz"
+                npz_dir / f"ne3d_{target_tag}_{window_tag}_{freq_tag}MHz_h{int(harmonic)}_backup.npz"
+            )
+            # Backward-compatible fallback for files produced by the previous overlay code.
+            out.append(
+                npz_dir / f"ne3d_solution_{target_tag}_{window_tag}_{freq_tag}MHz.npz"
+            )
+        elif other_tag is not None:
+            out.append(
+                npz_dir / f"ne3d_solution_{target_tag}_{window_tag}_{freq_tag}MHz_{other_tag}.npz"
+            )
+            out.append(
+                npz_dir.parent / f"ne3d_solution_{target_tag}_{window_tag}_{freq_tag}MHz_{other_tag}.npz"
+            )
     return out
 
 
-def load_tomography_from_npz(Frequency_MHz: List[float]):
+def load_tomography_from_npz(Frequency_MHz: List[float], other_tag: str = None):
     """
     Load the precomputed tomography solution from NPZ and return objects needed
     by the Spheroid/PFSS overlay.
@@ -2302,6 +2336,7 @@ def load_tomography_from_npz(Frequency_MHz: List[float]):
     NPZ_DIR = Path(
         "/mnt/d/wsl/home/kinno-7010/Research_data/Tomography/Rawdata/ne_npz"
     )
+    OTHER_TAG = other_tag
 
     target_dt = parse_target_datetime(TARGET_TIME)
     TARGET_TAG = target_dt.strftime("%Y%m%d_%H%M%S")
@@ -2313,6 +2348,7 @@ def load_tomography_from_npz(Frequency_MHz: List[float]):
         window_tag=WINDOW_TAG,
         frequency_mhz=Frequency_MHz,
         harmonic=HARMONIC,
+        other_tag=OTHER_TAG
     )
     npz_path = _npz_first_existing_path(npz_candidates)
 
@@ -2393,6 +2429,7 @@ def main(
     r_scatter: float,
     r_scatter_dr: float,
     spheroid_params: Optional[SpheroidDome3DParams] = None,
+    other_tag: str = None
 ):
     OBSTIME_ISO = time_iso
 
@@ -2411,7 +2448,7 @@ def main(
 
     # ---- Tomography: load precomputed NPZ instead of recomputing inversion ----
     t_tomo_start = time.perf_counter()
-    tomo_result = load_tomography_from_npz(Frequency_MHz)
+    tomo_result = load_tomography_from_npz(Frequency_MHz, other_tag)
     grid = tomo_result["grid"]
     ne = tomo_result["ne"]
     obs0 = tomo_result["obs_ref"]
@@ -2437,9 +2474,10 @@ def main(
     SHOW_SUN = True
     SHOW_GUI = True
     SAVE_PNG = True
+    OTHER_TAG = "" if other_tag is None else f"_{other_tag}"
     PNG_PATH = Path(
         f"/mnt/d/wsl/home/kinno-7010/Research_data/Tomography/output/multi-tomo/"
-        f"tomo_sphe_{''.join(str(f) for f in ISO_FREQ_MHZ)}MHz_{time_iso.replace(':', '')}.png"
+        f"tomo_sphe_{''.join(str(f) for f in ISO_FREQ_MHZ)}MHz_{time_iso.replace(':', '')}{OTHER_TAG}.png"
     )
 
     print(f"[INFO] ISO_FREQ_MHZ={ISO_FREQ_MHZ}, harmonic={HARMONIC}")
@@ -2641,7 +2679,10 @@ def main(
 
 if __name__ == "__main__":
     time_iso = "2022-06-13T03:26:29"
-    Frequency_MHz = [33]
+    Frequency_MHz = [42]
+    
+    OTHER_TAG = None
+    # OTHER_TAG = "no-weight"
     
     rss = 2.5
 
@@ -2653,8 +2694,8 @@ if __name__ == "__main__":
     spheroid_apex_rsun = 3.27
     spheroid_kappa = 0.50
     spheroid_epsilon = -0.45
-    r_scatter = 2.4 # yellow belt
-    r_scatter_dr = 0.2
+    r_scatter = 1.8 # blue belt
+    r_scatter_dr = 0.1
     
     
     spheroid = SpheroidDome3DParams(
@@ -2679,6 +2720,7 @@ if __name__ == "__main__":
         r_scatter=r_scatter,
         r_scatter_dr=r_scatter_dr,
         spheroid_params=spheroid,
+        other_tag=OTHER_TAG
     )
     
         

@@ -237,18 +237,18 @@ def create_single_raw_image(ax, target_time_str: str):
             label=f"{ranges['mk4_outer_lasco_inner']} $R_\\odot$")
 
     # 140–200°を10°刻みでガイドラインを描画
-    angles_deg = np.arange(140.0, 201.0, 10.0)
-    plot_multi_degree_lines(ax, angles_deg, ranges, p_lasco, extent_global)
+    # angles_deg = np.arange(140.0, 201.0, 10.0)
+    # plot_multi_degree_lines(ax, angles_deg, ranges, p_lasco, extent_global)
     
     # 軸範囲を global に固定
-    ax.set_xlim(-350, 0); ax.set_ylim(-100, 200)
+    ax.set_xlim(-300, 300); ax.set_ylim(-300, 300)
     # ax.set_xlabel('X [pixel]'); ax.set_ylabel('Y [pixel]'); ax.set_facecolor('gray')
     ax.set_title(
         f"Raw Data | SDO/AIA 193 Å: {aia193_map.date.strftime('%Y-%m-%d %H:%M:%S')}\n"
         f"K-Cor: {mk4_map.date.strftime('%H:%M:%S')} | LASCO-C2: {lasco_map.date.strftime('%H:%M:%S')}",
         fontsize=18
     )
-    ax.legend(loc='best')
+    ax.legend(loc='upper right', fontsize=12, framealpha=0.5)
     
     # パラメータ情報を返す（重複スキャン回避のため）
     return {
@@ -261,12 +261,16 @@ def create_single_raw_image(ax, target_time_str: str):
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
     from astropy.time import Time
-    target_time_str = "2022-06-13T03:37:00"
+    
+    target_time_str = "2022-06-13T03:00:00"
     target_time_obj = Time(target_time_str)
+    
     fig, ax = plt.subplots(figsize=(12, 12))
     create_single_raw_image(ax, target_time_str)
+    
     output_dir = Path(f"/mnt/d/wsl/home/kinno-7010/Research_data/SDO_Mk4_SOHO/raw/single_raw_image_multiline_{target_time_obj.strftime('%Y%m%d_%H%M%S')}.png")
     output_dir.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_dir, dpi=300, bbox_inches="tight")
     print(f"Saved figure to {output_dir}")
+    
     plt.show()

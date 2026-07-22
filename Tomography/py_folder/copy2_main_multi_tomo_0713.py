@@ -846,346 +846,6 @@ def print_group_calibration_hints(
         print(f"[DIAG] calibration_hint {label}: relative to {reference_group!r} = {rel}")
 
 
-def robust_weighted_projection_scale(
-    y_obs,
-    y_pred,
-    W,
-    min_count: int = 100,
-    clip_sigma: float = 4.0,
-    max_clip_iter: int = 2,
-) -> Tuple[float, int]:
-    """
-    Estimate a multiplicative forward-model gain robustly.
-
-    The returned scalar g minimizes ||W * (g*y_pred - y_obs)|| after iterative
-    clipping in weighted-residual space.  This is used only for inter-instrument
-    relative calibration; the reference instrument remains fixed at gain 1.
-    """
-    yo = np.asarray(y_obs, dtype=np.float64).ravel()
-    yp = np.asarray(y_pred, dtype=np.float64).ravel()
-    ww = np.asarray(W, dtype=np.float64).ravel()
-
-    use = (
-        np.isfinite(yo)
-        & np.isfinite(yp)
-        & np.isfinite(ww)
-        & (ww > 0)
-        & (yp != 0)
-    )
-    if np.count_nonzero(use) < int(min_count):
-        return 1.0, int(np.count_nonzero(use))
-
-    for _ in range(max(0, int(max_clip_iter)) + 1):
-        w2 = ww[use] * ww[use]
-        den = float(np.sum(w2 * yp[use] * yp[use]))
-        if not np.isfinite(den) or den <= 0:
-            return 1.0, int(np.count_nonzero(use))
-        num = float(np.sum(w2 * yp[use] * yo[use]))
-        gain = num / den
-        if not np.isfinite(gain) or gain <= 0:
-            return 1.0, int(np.count_nonzero(use))
-
-        resid = ww * (gain * yp - yo)
-        rr = resid[use]
-        if rr.size < int(min_count) or not np.isfinite(float(clip_sigma)) or float(clip_sigma) <= 0:
-            break
-        med = float(np.nanmedian(rr))
-        mad = float(np.nanmedian(np.abs(rr - med)))
-        sig = 1.4826 * mad
-        if not np.isfinite(sig) or sig <= 0:
-            break
-        new_use = use & (np.abs(resid - med) <= float(clip_sigma) * sig)
-        if np.count_nonzero(new_use) < int(min_count) or np.array_equal(new_use, use):
-            break
-        use = new_use
-
-    return float(gain), int(np.count_nonzero(use))
-
-
-def _optional_positive_float(value) -> Optional[float]:
-    try:
-        if value is None:
-            return None
-        if isinstance(value, str) and value.strip() == "":
-            return None
-        out = float(value)
-        if not np.isfinite(out) or out <= 0:
-            return None
-        return out
-    except Exception:
-        return None
-
-
-def build_group_measurement_scale_vector(
-    pb_paths: List[Path],
-    tomo: "RegularizedTomography",
-    group_forward_gains: dict[str, float],
-) -> np.ndarray:
-    """
-    Build one row-wise multiplicative response vector for the forward operator.
-
-    For group g, the observation model is y_g = gain_g * A_g x + epsilon_g.
-    The reference group must therefore have gain 1.  This changes neither the
-    selected Earth/STEREO-A observations nor the ray geometry.
-    """
-    if len(pb_paths) != len(tomo.slices):
-        raise ValueError(
-            f"pb_paths/tomography slice mismatch: {len(pb_paths)} != {len(tomo.slices)}"
-        )
-    scale = np.ones(tomo.n_meas, dtype=np.float64)
-    for path, sl in zip(pb_paths, tomo.slices):
-        key = tomography_observation_group_key(Path(path))
-        gain = float(group_forward_gains.get(key, 1.0))
-        if not np.isfinite(gain) or gain <= 0:
-            raise ValueError(f"Invalid forward gain for group {key!r}: {gain}")
-        scale[sl] = gain
-    return scale
-
-
-def estimate_relative_group_forward_gains(
-    pb_paths: List[Path],
-    tomo: "RegularizedTomography",
-    y_obs: np.ndarray,
-    y_pred_unscaled: np.ndarray,
-    W: np.ndarray,
-    reference_group: str,
-    r_min: Optional[float] = None,
-    r_max: Optional[float] = None,
-    min_count: int = 100,
-    clip_sigma: float = 4.0,
-) -> Tuple[dict[str, float], dict[str, dict[str, float]]]:
-    """
-    Estimate group gains relative to a fixed reference group.
-
-    A robust gain is first fitted for every image.  The group representative is
-    the median of its per-image gains, preventing a group with more images from
-    dominating the calibration.  Dividing by the reference-group representative
-    removes a global density-amplitude bias caused by regularization.
-    """
-    y_obs = np.asarray(y_obs, dtype=np.float64).ravel()
-    y_pred_unscaled = np.asarray(y_pred_unscaled, dtype=np.float64).ravel()
-    W = np.asarray(W, dtype=np.float64).ravel()
-
-    per_group: dict[str, list[float]] = {}
-    per_group_used: dict[str, list[int]] = {}
-
-    for path, obs, sl in zip(pb_paths, tomo.observations, tomo.slices):
-        key = tomography_observation_group_key(Path(path))
-        yo = y_obs[sl]
-        yp = y_pred_unscaled[sl]
-        ww = W[sl]
-
-        rho_use = np.hypot(
-            obs.x.ravel()[obs.idx_map],
-            obs.y.ravel()[obs.idx_map],
-        )
-        radial = np.isfinite(rho_use)
-        if r_min is not None:
-            radial &= rho_use >= float(r_min)
-        if r_max is not None:
-            radial &= rho_use <= float(r_max)
-
-        gain_i, n_used = robust_weighted_projection_scale(
-            yo[radial],
-            yp[radial],
-            ww[radial],
-            min_count=int(min_count),
-            clip_sigma=float(clip_sigma),
-            max_clip_iter=2,
-        )
-        if np.isfinite(gain_i) and gain_i > 0 and n_used >= int(min_count):
-            per_group.setdefault(key, []).append(float(gain_i))
-            per_group_used.setdefault(key, []).append(int(n_used))
-
-    group_fit: dict[str, float] = {}
-    stats: dict[str, dict[str, float]] = {}
-    for key, values in per_group.items():
-        arr = np.asarray(values, dtype=np.float64)
-        if arr.size == 0:
-            continue
-        q16, q50, q84 = np.nanpercentile(arr, [16.0, 50.0, 84.0])
-        group_fit[key] = float(q50)
-        stats[key] = {
-            "n_images": float(arr.size),
-            "fit_scale_median": float(q50),
-            "fit_scale_p16": float(q16),
-            "fit_scale_p84": float(q84),
-            "median_used_pixels": float(np.nanmedian(per_group_used.get(key, [0]))),
-        }
-
-    ref = group_fit.get(str(reference_group))
-    if ref is None or not np.isfinite(ref) or ref <= 0:
-        raise ValueError(
-            f"Cannot estimate inter-instrument calibration: reference group "
-            f"{reference_group!r} has no valid per-image fit scale."
-        )
-
-    relative = {
-        key: float(value / ref)
-        for key, value in group_fit.items()
-        if np.isfinite(value) and value > 0
-    }
-    relative[str(reference_group)] = 1.0
-    return relative, stats
-
-
-def run_group_cross_calibration(
-    tomo: "RegularizedTomography",
-    pb_paths: List[Path],
-    y_obs: np.ndarray,
-    reference_group: str = "earth_merged",
-    initial_group_forward_gains=None,
-    max_iterations: int = 3,
-    convergence_tol: float = 0.01,
-    damping: float = 0.7,
-    gain_min: float = 0.25,
-    gain_max: float = 4.0,
-    r_min: Optional[float] = None,
-    r_max: Optional[float] = None,
-    min_count: int = 100,
-    clip_sigma: float = 4.0,
-    solve_maxiter: int = 10000,
-    solve_tol: float = 1e-3,
-    positivity_method: str = "clip",
-    solve_use_preconditioner: bool = True,
-    solve_preconditioner_floor: float = 1e-12,
-) -> Tuple[dict[str, float], list[dict], Optional[np.ndarray]]:
-    """
-    Alternately solve the density and relative instrument gains.
-
-    Earth-view and STEREO-A observations are both retained.  Only one scalar
-    response gain per observation group is fitted, with the Earth-view reference
-    fixed at 1 to remove the global scale degeneracy.  The reciprocal of a fitted
-    forward gain is the multiplicative correction that would place that group's
-    observed pB on the reference-group brightness scale.
-    """
-    group_names = sorted(
-        {tomography_observation_group_key(Path(path)) for path in pb_paths}
-    )
-    reference_group = str(reference_group)
-    if reference_group not in group_names:
-        raise ValueError(
-            f"Cross-calibration reference group {reference_group!r} is absent; "
-            f"available groups={group_names}"
-        )
-    if len(group_names) < 2:
-        print("[CAL] Cross-calibration skipped because only one observation group is present.")
-        gains = {group_names[0]: 1.0} if group_names else {}
-        tomo.set_measurement_scale(
-            build_group_measurement_scale_vector(pb_paths, tomo, gains)
-        )
-        return gains, [], None
-
-    initial = normalize_group_float_map(
-        initial_group_forward_gains,
-        "cross_calibration_initial_gain_by_group",
-    )
-    gains = {key: float(initial.get(key, 1.0)) for key in group_names}
-    gains[reference_group] = 1.0
-
-    gain_min = float(gain_min)
-    gain_max = float(gain_max)
-    if not (np.isfinite(gain_min) and np.isfinite(gain_max) and 0 < gain_min < gain_max):
-        raise ValueError(
-            f"Invalid cross-calibration gain bounds: {gain_min}, {gain_max}"
-        )
-    for key in group_names:
-        gains[key] = float(np.clip(gains[key], gain_min, gain_max))
-    gains[reference_group] = 1.0
-    damping = float(np.clip(float(damping), 0.0, 1.0))
-    max_iterations = max(1, int(max_iterations))
-
-    history: list[dict] = []
-    x_seed: Optional[np.ndarray] = None
-
-    print(
-        "[CAL] Automatic inter-instrument calibration enabled: "
-        f"reference={reference_group!r}, groups={group_names}, "
-        f"gain_bounds=({gain_min:.4g}, {gain_max:.4g}), damping={damping:.3g}"
-    )
-    if r_min is not None or r_max is not None:
-        print(f"[CAL] Calibration radial range: {r_min} .. {r_max} Rsun")
-
-    for iteration in range(1, max_iterations + 1):
-        tomo.set_measurement_scale(
-            build_group_measurement_scale_vector(pb_paths, tomo, gains)
-        )
-        solution, info = tomo.solve(
-            y_obs,
-            maxiter=int(solve_maxiter),
-            tol=float(solve_tol),
-            positivity=True,
-            positivity_method=str(positivity_method),
-            x0=x_seed,
-            use_preconditioner=bool(solve_use_preconditioner),
-            preconditioner_floor=float(solve_preconditioner_floor),
-        )
-        x_seed = solution
-
-        base_pred = tomo.A_times_unscaled(solution)
-        desired, stats = estimate_relative_group_forward_gains(
-            pb_paths=pb_paths,
-            tomo=tomo,
-            y_obs=y_obs,
-            y_pred_unscaled=base_pred,
-            W=tomo.W,
-            reference_group=reference_group,
-            r_min=r_min,
-            r_max=r_max,
-            min_count=int(min_count),
-            clip_sigma=float(clip_sigma),
-        )
-
-        updated = dict(gains)
-        max_log_change = 0.0
-        for key in group_names:
-            if key == reference_group:
-                updated[key] = 1.0
-                continue
-            target = float(desired.get(key, gains[key]))
-            target = float(np.clip(target, gain_min, gain_max))
-            old = float(np.clip(gains[key], gain_min, gain_max))
-            if damping <= 0:
-                new = old
-            else:
-                new = float(np.exp((1.0 - damping) * np.log(old) + damping * np.log(target)))
-            new = float(np.clip(new, gain_min, gain_max))
-            updated[key] = new
-            max_log_change = max(max_log_change, abs(float(np.log(new / old))))
-            max_log_change_percent = 100.0 * np.expm1(max_log_change)
-
-        row = {
-            "iteration": int(iteration),
-            "solver_info": int(info),
-            "max_abs_log_gain_change": float(max_log_change),
-            "max_log_gain_change_percent": float(max_log_change_percent),
-            "gains": dict(updated),
-            "desired_relative_gains": dict(desired),
-            "per_group_stats": stats,
-        }
-        history.append(row)
-
-        correction = {key: 1.0 / value for key, value in updated.items()}
-        print(
-            f"[CAL] iteration={iteration}: forward_gains={updated}, "
-            f"data_corrections={correction}, "
-            f"max_abs_log_change={max_log_change:.4g}, max_log_change_equivalent_percent={max_log_change_percent:.4g} ,solver_info={info}"
-        )
-        gains = updated
-
-        if max_log_change <= float(convergence_tol):
-            print(
-                f"[CAL] Cross-calibration converged at iteration {iteration}: "
-                f"tolerance={float(convergence_tol):.4g}"
-            )
-            break
-
-    tomo.set_measurement_scale(
-        build_group_measurement_scale_vector(pb_paths, tomo, gains)
-    )
-    return gains, history, x_seed
-
-
 # ----------------------------
 # Thomson pB kernel
 # ----------------------------
@@ -2644,11 +2304,27 @@ def build_rays_for_observation(
 # ----------------------------
 # Regularization operator (L^T L)
 # ----------------------------
-def _regularization_radial_scale(grid: SphericalGrid, wt_r: Optional[np.ndarray]) -> np.ndarray:
-    """Return the per-radius row scale used by the Ne3dTomo regularizer."""
-    nr = grid.nr
+def apply_LTL(x: np.ndarray, grid: SphericalGrid, wt_r: Optional[np.ndarray] = None) -> np.ndarray:
+    """Apply R^T R using the second-order smoothing form in tomo_sph_omp.f90.
+
+    Ne3dTomo's spherical-grid Fortran code builds an explicit sparse
+    regularization matrix R with rows for
+
+      - d^2/dphi^2 with periodic longitude,
+      - d^2/dtheta^2 excluding the singular latitude/colatitude boundaries,
+      - d^2/dr^2, using one-sided first differences at radial boundaries.
+
+    If wt_r is supplied, it is interpreted as the normalized radial background
+    profile N(r)/max(N), and each row of R is divided by this value. This matches
+    the Fortran logic where ybk is normalized first and the regularization
+    coefficients are scaled by 1/N(r).
+    """
+    nr, nth, nph = grid.nr, grid.nth, grid.nph
+    X = np.asarray(x, dtype=np.float64).reshape((nr, nth, nph))
+    out = np.zeros_like(X)
+
     if wt_r is not None:
-        wr = np.asarray(wt_r, dtype=np.float64).copy()
+        wr = np.asarray(wt_r, dtype=np.float64)
         if wr.size != nr:
             raise ValueError(f"wt_r must have length nr={nr}, got {wr.size}")
         wr = np.where(np.isfinite(wr) & (wr > 0), wr, np.nan)
@@ -2662,105 +2338,44 @@ def _regularization_radial_scale(grid: SphericalGrid, wt_r: Optional[np.ndarray]
         wr = np.maximum(wr, 1e-12)
     else:
         wr = np.ones(nr, dtype=np.float64)
-    return 1.0 / wr
 
+    def _scale(k: int) -> float:
+        return 1.0 / float(wr[k])
 
-def apply_LTL(x: np.ndarray, grid: SphericalGrid, wt_r: Optional[np.ndarray] = None) -> np.ndarray:
-    """Apply exactly the same ``R.T @ R`` operator as the original loop code.
+    # R rows are defined for theta interior points only, following the Fortran
+    # loop j=1..st-2. Python theta index j=1..nth-2.
+    for k in range(nr):
+        sc = _scale(k)
+        for j in range(1, nth - 1):
+            # Longitude rows: [1, -2, 1] with periodic phi.
+            res_p = (np.roll(X[k, j, :], 1) - 2.0 * X[k, j, :] + np.roll(X[k, j, :], -1)) * sc
+            out[k, j, :] += (-2.0 * sc) * res_p
+            out[k, j, :] += sc * np.roll(res_p, -1)
+            out[k, j, :] += sc * np.roll(res_p, 1)
 
-    This implementation is vectorized over radius, colatitude, and longitude.
-    It preserves the Ne3dTomo/Fortran row definitions, including periodic phi,
-    omitted theta-boundary rows, and one-sided radial first differences at both
-    radial boundaries.  Only the computational representation is changed.
-    """
-    nr, nth, nph = grid.nr, grid.nth, grid.nph
-    X = np.asarray(x, dtype=np.float64).reshape((nr, nth, nph))
-    out = np.zeros_like(X)
-    if nr == 0 or nth < 3 or nph == 0:
-        return out.ravel()
+            # Latitude rows: theta second difference.
+            res_t = (X[k, j - 1, :] - 2.0 * X[k, j, :] + X[k, j + 1, :]) * sc
+            out[k, j - 1, :] += sc * res_t
+            out[k, j,     :] += (-2.0 * sc) * res_t
+            out[k, j + 1, :] += sc * res_t
 
-    sc = _regularization_radial_scale(grid, wt_r)
-    sc3 = sc[:, None, None]
-    Xi = X[:, 1:-1, :]
-
-    # Longitude rows: [1, -2, 1], periodic in phi.
-    res_p = (np.roll(Xi, 1, axis=2) - 2.0 * Xi + np.roll(Xi, -1, axis=2)) * sc3
-    out[:, 1:-1, :] += (-2.0 * sc3) * res_p
-    out[:, 1:-1, :] += sc3 * np.roll(res_p, -1, axis=2)
-    out[:, 1:-1, :] += sc3 * np.roll(res_p, 1, axis=2)
-
-    # Colatitude rows: [1, -2, 1] for theta-interior row centers only.
-    res_t = (X[:, :-2, :] - 2.0 * X[:, 1:-1, :] + X[:, 2:, :]) * sc3
-    out[:, :-2, :] += sc3 * res_t
-    out[:, 1:-1, :] += (-2.0 * sc3) * res_t
-    out[:, 2:, :] += sc3 * res_t
-
-    if nr > 1:
-        # Inner radial boundary row: [-1, 1], scaled by sc[0].
-        res_r0 = (-X[0, 1:-1, :] + X[1, 1:-1, :]) * sc[0]
-        out[0, 1:-1, :] += (-sc[0]) * res_r0
-        out[1, 1:-1, :] += sc[0] * res_r0
-
-        # Outer radial boundary row: [-1, 1], scaled by sc[-1].
-        res_rn = (-X[-2, 1:-1, :] + X[-1, 1:-1, :]) * sc[-1]
-        out[-2, 1:-1, :] += (-sc[-1]) * res_rn
-        out[-1, 1:-1, :] += sc[-1] * res_rn
-
-    if nr > 2:
-        # Interior radial rows: [1, -2, 1].
-        sci = sc[1:-1, None, None]
-        res_ri = (
-            X[:-2, 1:-1, :]
-            - 2.0 * X[1:-1, 1:-1, :]
-            + X[2:, 1:-1, :]
-        ) * sci
-        out[:-2, 1:-1, :] += sci * res_ri
-        out[1:-1, 1:-1, :] += (-2.0 * sci) * res_ri
-        out[2:, 1:-1, :] += sci * res_ri
+            # Radial rows: one-sided first difference at boundaries; centered
+            # second difference in the interior.
+            if k == 0 and nr > 1:
+                res_r = (-X[k, j, :] + X[k + 1, j, :]) * sc
+                out[k,     j, :] += (-1.0 * sc) * res_r
+                out[k + 1, j, :] += ( 1.0 * sc) * res_r
+            elif k == nr - 1 and nr > 1:
+                res_r = (-X[k - 1, j, :] + X[k, j, :]) * sc
+                out[k - 1, j, :] += (-1.0 * sc) * res_r
+                out[k,     j, :] += ( 1.0 * sc) * res_r
+            elif 0 < k < nr - 1:
+                res_r = (X[k - 1, j, :] - 2.0 * X[k, j, :] + X[k + 1, j, :]) * sc
+                out[k - 1, j, :] += sc * res_r
+                out[k,     j, :] += (-2.0 * sc) * res_r
+                out[k + 1, j, :] += sc * res_r
 
     return out.ravel()
-
-
-def regularization_diagonal(
-    grid: SphericalGrid,
-    wt_r: Optional[np.ndarray] = None,
-) -> np.ndarray:
-    """Return the exact diagonal of the current ``R.T @ R`` operator.
-
-    The diagonal is used only for preconditioning.  It does not alter the
-    objective function or the reconstructed solution.
-    """
-    nr, nth, nph = grid.nr, grid.nth, grid.nph
-    diag = np.zeros((nr, nth, nph), dtype=np.float64)
-    if nr == 0 or nth < 3 or nph == 0:
-        return diag.ravel()
-
-    sc2 = _regularization_radial_scale(grid, wt_r) ** 2
-
-    # Phi: every theta-interior voxel appears once as center (-2) and twice as
-    # a periodic neighbor (+1), giving 4 + 1 + 1 = 6 times sc^2.
-    diag[:, 1:-1, :] += 6.0 * sc2[:, None, None]
-
-    # Theta rows centered at j=1..nth-2.
-    theta_coeff = np.zeros(nth, dtype=np.float64)
-    theta_coeff[1:-1] += 4.0
-    theta_coeff[:-2] += 1.0
-    theta_coeff[2:] += 1.0
-    diag += sc2[:, None, None] * theta_coeff[None, :, None]
-
-    # Radial rows exist only at theta-interior locations.
-    radial_coeff = np.zeros(nr, dtype=np.float64)
-    if nr > 1:
-        radial_coeff[0] += sc2[0]
-        radial_coeff[1] += sc2[0]
-        radial_coeff[-2] += sc2[-1]
-        radial_coeff[-1] += sc2[-1]
-    if nr > 2:
-        radial_coeff[:-2] += sc2[1:-1]
-        radial_coeff[1:-1] += 4.0 * sc2[1:-1]
-        radial_coeff[2:] += sc2[1:-1]
-    diag[:, 1:-1, :] += radial_coeff[:, None, None]
-    return diag.ravel()
 
 
 # ----------------------------
@@ -2775,10 +2390,6 @@ class RegularizedTomography:
         lam: float = 1e-2,
         wt_r: Optional[np.ndarray] = None,
         density_basis: Optional[np.ndarray] = None,
-        measurement_scale: Optional[np.ndarray] = None,
-        forward_matrix=None,
-        use_preconditioner: bool = True,
-        preconditioner_floor: float = 1e-12,
     ):
         self.grid = grid
         self.observations = observations
@@ -2794,51 +2405,7 @@ class RegularizedTomography:
             self.density_basis = db
         self.W = np.concatenate([o.w for o in observations]).astype(np.float64)
         self._build_slices()
-        self.measurement_scale = np.ones(self.n_meas, dtype=np.float64)
-        self.use_preconditioner = bool(use_preconditioner)
-        self.preconditioner_floor = float(preconditioner_floor)
-        self._measurement_scale_version = 0
-        self._data_diagonal_cache_version = -1
-        self._data_diagonal_cache = None
-        self._regularization_diagonal_cache = None
-        self.last_solver_iterations = 0
-        self.last_solver_used_preconditioner = False
-        if measurement_scale is not None:
-            self.set_measurement_scale(measurement_scale)
-        if forward_matrix is None:
-            self._build_sparse_forward_matrix()
-        else:
-            if tuple(forward_matrix.shape) != (self.n_meas, self.grid.nvox):
-                raise ValueError(
-                    f"forward_matrix shape must be {(self.n_meas, self.grid.nvox)}, "
-                    f"got {forward_matrix.shape}"
-                )
-            self.A_csr = forward_matrix
-            print(
-                f"[MATRIX-CACHE-HIT] Reusing sparse forward matrix A: "
-                f"shape={self.A_csr.shape}, nnz={self.A_csr.nnz}"
-            )
-
-    def set_measurement_scale(self, measurement_scale: np.ndarray) -> None:
-        """
-        Set row-wise forward-response gains.
-
-        The effective observation operator is diag(measurement_scale) @ A.  This
-        permits one relative radiometric gain per instrument group without
-        modifying the observations, data weights, selected viewpoints, or ray
-        cache.
-        """
-        scale = np.asarray(measurement_scale, dtype=np.float64).ravel()
-        if scale.size != self.n_meas:
-            raise ValueError(
-                f"measurement_scale must have size {self.n_meas}, got {scale.size}"
-            )
-        if np.any(~np.isfinite(scale)) or np.any(scale <= 0):
-            raise ValueError("measurement_scale must contain positive finite values.")
-        self.measurement_scale = scale.copy()
-        self._measurement_scale_version = getattr(self, "_measurement_scale_version", 0) + 1
-        self._data_diagonal_cache_version = -1
-        self._data_diagonal_cache = None
+        self._build_sparse_forward_matrix()
 
     def solution_to_density(self, x: np.ndarray) -> np.ndarray:
         """Convert the solver variable to physical electron density [cm^-3]."""
@@ -2921,99 +2488,35 @@ class RegularizedTomography:
             f"density={self.A_csr.nnz / max(1, self.A_csr.shape[0] * self.A_csr.shape[1]):.3e}"
         )
 
-    def A_times_unscaled(self, x: np.ndarray) -> np.ndarray:
-        """Forward projection with the physical Thomson operator before group gains."""
+    def A_times(self, x: np.ndarray) -> np.ndarray:
+        """
+        Forward projection y = A x, concatenated over observations.
+
+        The previous implementation looped over rays in Python.  This version uses
+        the prebuilt CSR sparse matrix, which is mathematically identical but much
+        faster because the sparse matrix-vector multiplication is executed in
+        compiled SciPy code.
+        """
         x = np.asarray(x, dtype=np.float64)
         if x.size != self.grid.nvox:
-            raise ValueError(
-                f"A_times_unscaled expected x.size={self.grid.nvox}, got {x.size}"
-            )
+            raise ValueError(f"A_times expected x.size={self.grid.nvox}, got {x.size}")
         ne = self.solution_to_density(x)
         return np.asarray(self.A_csr.dot(ne), dtype=np.float64).ravel()
 
-    def A_times(self, x: np.ndarray) -> np.ndarray:
-        """
-        Forward projection including the current inter-instrument response gains.
-        """
-        return self.measurement_scale * self.A_times_unscaled(x)
-
     def AT_times(self, y: np.ndarray) -> np.ndarray:
         """
-        Backprojection through the transpose of the gain-scaled forward operator.
+        Backprojection x = A^T y.
+
+        This uses the transpose of the same CSR forward matrix.  It is equivalent
+        to accumulating ww * y_i into each voxel for every ray contribution.
         """
         y = np.asarray(y, dtype=np.float64)
         if y.size != self.n_meas:
             raise ValueError(f"AT_times expected y.size={self.n_meas}, got {y.size}")
-        out = np.asarray(
-            self.A_csr.T.dot(self.measurement_scale * y),
-            dtype=np.float64,
-        ).ravel()
+        out = np.asarray(self.A_csr.T.dot(y), dtype=np.float64).ravel()
         if self.density_basis is not None:
             out = self.density_basis * out
         return out
-
-    def _data_normal_diagonal(self, chunk_rows: int = 32768) -> np.ndarray:
-        """Return diag(A_eff.T W^2 A_eff) in solver-variable space.
-
-        The calculation is chunked and cached for the current measurement gains.
-        It changes only CG scaling, never the inverse problem being solved.
-        """
-        if (
-            self._data_diagonal_cache is not None
-            and self._data_diagonal_cache_version == self._measurement_scale_version
-        ):
-            return self._data_diagonal_cache
-
-        diag = np.zeros(self.grid.nvox, dtype=np.float64)
-        row_weight = (self.W * self.measurement_scale) ** 2
-        indptr = self.A_csr.indptr
-        indices = self.A_csr.indices
-        data = self.A_csr.data
-        chunk_rows = max(1, int(chunk_rows))
-        for r0 in range(0, self.n_meas, chunk_rows):
-            r1 = min(self.n_meas, r0 + chunk_rows)
-            start = int(indptr[r0])
-            stop = int(indptr[r1])
-            if stop <= start:
-                continue
-            counts = np.diff(indptr[r0:r1 + 1])
-            rw = np.repeat(row_weight[r0:r1], counts)
-            vals = data[start:stop]
-            diag += np.bincount(
-                indices[start:stop],
-                weights=(vals * vals) * rw,
-                minlength=self.grid.nvox,
-            )
-
-        if self.density_basis is not None:
-            diag *= self.density_basis * self.density_basis
-        self._data_diagonal_cache = diag
-        self._data_diagonal_cache_version = self._measurement_scale_version
-        return diag
-
-    def _build_diagonal_preconditioner(
-        self,
-        floor: Optional[float] = None,
-    ) -> LinearOperator:
-        """Build a positive Jacobi preconditioner for the current lambda/gains."""
-        data_diag = self._data_normal_diagonal()
-        if self._regularization_diagonal_cache is None:
-            self._regularization_diagonal_cache = regularization_diagonal(
-                self.grid, wt_r=self.wt_r
-            )
-        diag = data_diag + float(self.lam) * self._regularization_diagonal_cache
-        positive = diag[np.isfinite(diag) & (diag > 0)]
-        rel_floor = self.preconditioner_floor if floor is None else float(floor)
-        rel_floor = max(float(rel_floor), 0.0)
-        reference = float(np.nanmedian(positive)) if positive.size else 1.0
-        absolute_floor = max(reference * rel_floor, np.finfo(np.float64).tiny)
-        diag = np.where(np.isfinite(diag) & (diag > absolute_floor), diag, absolute_floor)
-        inv_diag = 1.0 / diag
-        return LinearOperator(
-            (self.grid.nvox, self.grid.nvox),
-            matvec=lambda v: inv_diag * np.asarray(v, dtype=np.float64),
-            dtype=np.float64,
-        )
 
     def solve(
         self,
@@ -3022,9 +2525,6 @@ class RegularizedTomography:
         tol: float = 1e-4,
         positivity: bool = True,
         positivity_method: str = "clip",
-        x0: Optional[np.ndarray] = None,
-        use_preconditioner: Optional[bool] = None,
-        preconditioner_floor: Optional[float] = None,
     ) -> Tuple[np.ndarray, int]:
         """
         Solve the weighted Tikhonov problem.
@@ -3037,11 +2537,6 @@ class RegularizedTomography:
                         L-BFGS-B and bounds x>=0.  More faithful to x>=0, but
                         usually slower for large tomography runs.
           - "none"  : no positivity enforcement.
-
-        x0 can be supplied to warm-start repeated solves during gain calibration
-        or a lambda continuation scan.  The optional Jacobi preconditioner uses
-        the exact diagonal of the unchanged normal equation and therefore changes
-        convergence speed only, not the physical objective or its solution.
         """
         W = self.W
         y_obs = np.asarray(y_obs, dtype=np.float64).ravel()
@@ -3057,18 +2552,7 @@ class RegularizedTomography:
 
         b = self.AT_times((W * W) * y_obs)
         Aop = LinearOperator((self.grid.nvox, self.grid.nvox), matvec=matvec, dtype=np.float64)
-
-        if x0 is None:
-            x0_use = np.zeros(self.grid.nvox, dtype=np.float64)
-        else:
-            x0_use = np.asarray(x0, dtype=np.float64).ravel().copy()
-            if x0_use.size != self.grid.nvox:
-                raise ValueError(
-                    f"x0 must have size {self.grid.nvox}, got {x0_use.size}"
-                )
-            x0_use = np.where(np.isfinite(x0_use), x0_use, 0.0)
-            if method in ("clip", "lbfgsb", "l-bfgs-b", "strict", "bounds"):
-                x0_use = np.maximum(x0_use, 0.0)
+        x0 = np.zeros(self.grid.nvox, dtype=np.float64)
 
         if method in ("lbfgsb", "l-bfgs-b", "strict", "bounds"):
             if minimize is None:
@@ -3084,7 +2568,7 @@ class RegularizedTomography:
 
             res = minimize(
                 fun_and_grad,
-                x0_use,
+                x0,
                 method="L-BFGS-B",
                 jac=True,
                 bounds=[(0.0, None)] * self.grid.nvox,
@@ -3096,36 +2580,14 @@ class RegularizedTomography:
                 print(f"[WARN] L-BFGS-B positivity solve did not fully converge: {res.message}")
             return x, info
 
-        # Default fast path: preconditioned CG on the same normal equations.
-        use_pc = self.use_preconditioner if use_preconditioner is None else bool(use_preconditioner)
-        Mop = self._build_diagonal_preconditioner(preconditioner_floor) if use_pc else None
-        iteration_counter = [0]
-
-        def _count_iteration(_xk):
-            iteration_counter[0] += 1
-
+        # Default fast path: unconstrained CG solve of the normal equations.
         try:
-            x, info = cg(
-                Aop, b, x0=x0_use, maxiter=maxiter, rtol=tol, atol=0.0,
-                M=Mop, callback=_count_iteration,
-            )
+            x, info = cg(Aop, b, x0=x0, maxiter=maxiter, rtol=tol, atol=0.0)
         except TypeError:
             try:
-                x, info = cg(
-                    Aop, b, x0=x0_use, maxiter=maxiter, tol=tol,
-                    M=Mop, callback=_count_iteration,
-                )
+                x, info = cg(Aop, b, x0=x0, maxiter=maxiter, tol=tol)
             except TypeError:
-                x, info = cg(
-                    Aop, b, x0=x0_use, maxiter=maxiter,
-                    M=Mop, callback=_count_iteration,
-                )
-        self.last_solver_iterations = int(iteration_counter[0])
-        self.last_solver_used_preconditioner = bool(use_pc)
-        print(
-            f"[SOLVER] CG iterations={self.last_solver_iterations}, info={info}, "
-            f"preconditioner={'jacobi' if use_pc else 'none'}"
-        )
+                x, info = cg(Aop, b, x0=x0, maxiter=maxiter)
 
         if method == "clip":
             x = np.maximum(x, 0.0)
@@ -3338,32 +2800,6 @@ def save_summary_csv_via_extended(
             ),
         }
     )
-
-    final_forward_gains = normalize_group_float_map(
-        getattr(args, "cross_calibration_final_forward_gains", {}),
-        "cross_calibration_final_forward_gains",
-    )
-    final_data_corrections = normalize_group_float_map(
-        getattr(args, "cross_calibration_final_data_corrections", {}),
-        "cross_calibration_final_data_corrections",
-    )
-    summary_row.update(
-        {
-            "auto_cross_calibrate_groups": bool(
-                getattr(args, "auto_cross_calibrate_groups", False)
-            ),
-            "cross_calibration_reference_group": str(
-                getattr(args, "calibration_reference_group", "earth_merged")
-            ),
-            "cross_calibration_iterations": int(
-                len(getattr(args, "cross_calibration_history", []) or [])
-            ),
-        }
-    )
-    for key, value in final_forward_gains.items():
-        summary_row[f"cross_cal_forward_gain_{key}"] = float(value)
-    for key, value in final_data_corrections.items():
-        summary_row[f"cross_cal_data_correction_{key}"] = float(value)
 
     ext.write_rows_csv(summary_path, [summary_row])
     print(f"[OK] Saved final summary CSV: {summary_path}")
@@ -3801,18 +3237,6 @@ def main(args):
         run_pb_unit_diagnostics=False,
         pb_diagnostic_paths=[],
         calibration_reference_group="earth_merged",
-        auto_cross_calibrate_groups=False,
-        cross_calibration_initial_gain_by_group={},
-        cross_calibration_max_iterations=3,
-        cross_calibration_tolerance=0.01,
-        cross_calibration_damping=0.7,
-        cross_calibration_gain_min=0.25,
-        cross_calibration_gain_max=4.0,
-        cross_calibration_r_min="",
-        cross_calibration_r_max="",
-        cross_calibration_min_count=100,
-        cross_calibration_clip_sigma=4.0,
-        cross_calibration_recalibrate_after_lambda_selection=True,
 
         data_dir="",
         cor1a_data_dir="",
@@ -4180,63 +3604,6 @@ def main(args):
         density_basis=density_basis,
     )
 
-    group_forward_gains = {
-        key: 1.0
-        for key in sorted(
-            {tomography_observation_group_key(Path(path)) for path in pb_paths}
-        )
-    }
-    cross_calibration_history: list[dict] = []
-    cross_calibration_seed: Optional[np.ndarray] = None
-
-    if bool(getattr(args, "auto_cross_calibrate_groups", False)):
-        cal_r_min = _optional_positive_float(
-            getattr(args, "cross_calibration_r_min", "")
-        )
-        cal_r_max = _optional_positive_float(
-            getattr(args, "cross_calibration_r_max", "")
-        )
-        if cal_r_min is None:
-            cal_r_min = max(float(bounds[0]) for bounds in obs_r_bounds)
-        if cal_r_max is None:
-            cal_r_max = min(float(bounds[1]) for bounds in obs_r_bounds)
-        if cal_r_min >= cal_r_max:
-            raise ValueError(
-                f"Cross-calibration has no common radial range: "
-                f"{cal_r_min} >= {cal_r_max} Rsun"
-            )
-
-        group_forward_gains, cross_calibration_history, cross_calibration_seed = (
-            run_group_cross_calibration(
-                tomo=tomo,
-                pb_paths=pb_paths,
-                y_obs=y_obs,
-                reference_group=str(args.calibration_reference_group),
-                initial_group_forward_gains=getattr(
-                    args, "cross_calibration_initial_gain_by_group", {}
-                ),
-                max_iterations=int(args.cross_calibration_max_iterations),
-                convergence_tol=float(args.cross_calibration_tolerance),
-                damping=float(args.cross_calibration_damping),
-                gain_min=float(args.cross_calibration_gain_min),
-                gain_max=float(args.cross_calibration_gain_max),
-                r_min=cal_r_min,
-                r_max=cal_r_max,
-                min_count=int(args.cross_calibration_min_count),
-                clip_sigma=float(args.cross_calibration_clip_sigma),
-                solve_maxiter=int(args.maxiter),
-                solve_tol=float(args.tol),
-                positivity_method=str(args.positivity_method),
-            )
-        )
-    else:
-        tomo.set_measurement_scale(
-            build_group_measurement_scale_vector(
-                pb_paths, tomo, group_forward_gains
-            )
-        )
-        print("[CAL] Automatic inter-instrument calibration disabled.")
-
     lambda_scan_rows = maybe_run_lambda_scan(
         tomo,
         y_obs,
@@ -4246,67 +3613,11 @@ def main(args):
         tol=float(args.tol),
         positivity_method=str(args.positivity_method),
     )
-    old_lam = float(args.lam)
-    chosen_lam = choose_lambda_from_scan(
-        lambda_scan_rows,
-        getattr(args, "lambda_select_mode", "fixed"),
-        old_lam,
-    )
-    if abs(chosen_lam - old_lam) > 1e-12:
-        print(
-            f"[LAMBDA] lambda_select_mode={args.lambda_select_mode!r}: "
-            f"using lambda={chosen_lam:.6g} instead of {old_lam:.6g}"
-        )
+    chosen_lam = choose_lambda_from_scan(lambda_scan_rows, getattr(args, "lambda_select_mode", "fixed"), float(args.lam))
+    if abs(chosen_lam - float(args.lam)) > 1e-12:
+        print(f"[LAMBDA] lambda_select_mode={args.lambda_select_mode!r}: using lambda={chosen_lam:.6g} instead of {float(args.lam):.6g}")
     args.lam = float(chosen_lam)
     tomo.lam = float(args.lam)
-
-    if (
-        bool(getattr(args, "auto_cross_calibrate_groups", False))
-        and bool(
-            getattr(
-                args,
-                "cross_calibration_recalibrate_after_lambda_selection",
-                True,
-            )
-        )
-        and abs(chosen_lam - old_lam) > 1e-12
-    ):
-        gains_after_lambda, history_after_lambda, cross_calibration_seed = (
-            run_group_cross_calibration(
-                tomo=tomo,
-                pb_paths=pb_paths,
-                y_obs=y_obs,
-                reference_group=str(args.calibration_reference_group),
-                initial_group_forward_gains=group_forward_gains,
-                max_iterations=int(args.cross_calibration_max_iterations),
-                convergence_tol=float(args.cross_calibration_tolerance),
-                damping=float(args.cross_calibration_damping),
-                gain_min=float(args.cross_calibration_gain_min),
-                gain_max=float(args.cross_calibration_gain_max),
-                r_min=cal_r_min,
-                r_max=cal_r_max,
-                min_count=int(args.cross_calibration_min_count),
-                clip_sigma=float(args.cross_calibration_clip_sigma),
-                solve_maxiter=int(args.maxiter),
-                solve_tol=float(args.tol),
-                positivity_method=str(args.positivity_method),
-            )
-        )
-        group_forward_gains = gains_after_lambda
-        cross_calibration_history.extend(history_after_lambda)
-
-    group_data_corrections = {
-        key: 1.0 / value for key, value in group_forward_gains.items()
-    }
-    args.cross_calibration_final_forward_gains = dict(group_forward_gains)
-    args.cross_calibration_final_data_corrections = dict(group_data_corrections)
-    args.cross_calibration_history = list(cross_calibration_history)
-
-    print(f"[CAL] Final forward gains (model -> observed pB): {group_forward_gains}")
-    print(
-        "[CAL] Equivalent data corrections (observed pB -> reference scale): "
-        f"{group_data_corrections}"
-    )
 
     solution_raw, info = tomo.solve(
         y_obs,
@@ -4314,7 +3625,6 @@ def main(args):
         tol=args.tol,
         positivity=True,
         positivity_method=str(args.positivity_method),
-        x0=cross_calibration_seed,
     )
     ne_raw = tomo.solution_to_density(solution_raw)
 
@@ -4510,39 +3820,6 @@ def main(args):
             use_ray_cache=bool(getattr(args, "use_ray_cache", True)),
             ray_cache_dir=str(getattr(args, "ray_cache_dir", "")),
             calibration_reference_group=str(args.calibration_reference_group),
-            auto_cross_calibrate_groups=bool(
-                getattr(args, "auto_cross_calibrate_groups", False)
-            ),
-            cross_calibration_reference_group=str(args.calibration_reference_group),
-            cross_calibration_group_keys=np.array(
-                list(group_forward_gains.keys()), dtype="U64"
-            ),
-            cross_calibration_forward_gains=np.array(
-                list(group_forward_gains.values()), dtype=np.float64
-            ),
-            cross_calibration_data_corrections=np.array(
-                [group_data_corrections[key] for key in group_forward_gains],
-                dtype=np.float64,
-            ),
-            cross_calibration_iterations=int(len(cross_calibration_history)),
-            cross_calibration_tolerance=float(
-                getattr(args, "cross_calibration_tolerance", 0.01)
-            ),
-            cross_calibration_damping=float(
-                getattr(args, "cross_calibration_damping", 0.7)
-            ),
-            cross_calibration_gain_min=float(
-                getattr(args, "cross_calibration_gain_min", 0.25)
-            ),
-            cross_calibration_gain_max=float(
-                getattr(args, "cross_calibration_gain_max", 4.0)
-            ),
-            cross_calibration_r_min=str(
-                getattr(args, "cross_calibration_r_min", "")
-            ),
-            cross_calibration_r_max=str(
-                getattr(args, "cross_calibration_r_max", "")
-            ),
             harmonic=int(args.harmonic),
             freq_mhz_list=freq_list_to_save,
             r_edges=r_edges.astype(np.float32),
@@ -4610,20 +3887,20 @@ if __name__ == "__main__":
     OUT_N = 256
     
     R_MIN, R_MAX = 1.5, 4.0
-    NR, NTH, NPH = 80,80,160
+    NR, NTH, NPH = 128,128,256
 
     DS = 0.01
     
-    HM = 3
+    HM = 5
 
     WT_NR = [1] # weighting
     # WT_NR = [0] # no-weighting
     LAM = 5.0
     Q_LOW = 0.0
-    WIDTH_PIX = 1.0
+    WIDTH_PIX = 0.5
 
-    MAXITER = 15000
-    TOL = 1e-3
+    MAXITER = 20000
+    TOL = 1e-5
     
     DESPIKE_NSIG = 6.0
     DESPIKE_MED = 5
@@ -4660,7 +3937,7 @@ if __name__ == "__main__":
     POSITIVITY_METHOD = "clip"
 
     # Lambda: keep fixed by default.  Set LAMBDA_SELECT_MODE="lcurve" or "min_misfit" after checking diagnostics.
-    LAMBDA_SCAN_VALUES = [1.0, 5.0, 8.0, 10.0, 15.0]  # e.g. [5.0, 10.0, 20.0, 40.0, 80.0]
+    LAMBDA_SCAN_VALUES = []  # e.g. [5.0, 10.0, 20.0, 40.0, 80.0]
     LAMBDA_SELECT_MODE = "fixed"
 
     # pB unit/kernel diagnostics.  MSB normalization is appropriate for MSB / Mean Solar Brightness inputs.
@@ -4671,23 +3948,8 @@ if __name__ == "__main__":
 
     CALIBRATION_REFERENCE_GROUP = "earth_merged"
 
-    # Joint relative radiometric calibration.  Earth-view remains the fixed
-    # reference; COR1A is retained and fitted with one scalar forward gain.
-    AUTO_CROSS_CALIBRATE_GROUPS = True
-    CROSS_CALIBRATION_INITIAL_GAIN_BY_GROUP = {"cor1a":0.93}
-    CROSS_CALIBRATION_MAX_ITERATIONS = 6
-    CROSS_CALIBRATION_TOLERANCE = 0.01
-    CROSS_CALIBRATION_DAMPING = 0.7
-    CROSS_CALIBRATION_GAIN_MIN = 0.25
-    CROSS_CALIBRATION_GAIN_MAX = 4.0
-    CROSS_CALIBRATION_R_MIN = 1.7
-    CROSS_CALIBRATION_R_MAX = 3.5
-    CROSS_CALIBRATION_MIN_COUNT = 1000
-    CROSS_CALIBRATION_CLIP_SIGMA = 4.0
-    CROSS_CALIBRATION_RECALIBRATE_AFTER_LAMBDA_SELECTION = True
-
     USE_TEMPORAL_DESPIKE = False
-    NE3DTOMO_GLOBAL_YBK = True
+    NE3DTOMO_GLOBAL_YBK = False
     SHOW_RAY_PROGRESS = True
     USE_RAY_CACHE = True
 
@@ -4699,7 +3961,6 @@ if __name__ == "__main__":
     TARGET_TAG = parse_target_datetime(TARGET_TIME).strftime("%Y%m%d_%H%M%S")
     WINDOW_TAG = f"pm{int(SEARCH_WINDOW_DAYS)}d"
     FREQ_TAG = "-".join(str(float(f)).rstrip("0").rstrip(".") for f in FREQ_MHZ_LIST)
-    CALIBRATION_TAG = "_auto-cal" if AUTO_CROSS_CALIBRATE_GROUPS else ""
     RAY_CACHE_DIR = (
         f"/mnt/d/wsl/home/kinno-7010/Research_data/Tomography/Rawdata/"
         f"ray_cache_{TARGET_TAG}"
@@ -4714,16 +3975,16 @@ if __name__ == "__main__":
         if WT_NR_para == 0:
             SAVE_NE_NPZ = (
                 f"/mnt/d/wsl/home/kinno-7010/Research_data/Tomography/Rawdata/ne_npz/"
-                f"ne3d_solution_{TARGET_TAG}_{WINDOW_TAG}_{FREQ_TAG}MHz{CALIBRATION_TAG}_no-weight.npz"
+                f"ne3d_solution_{TARGET_TAG}_{WINDOW_TAG}_{FREQ_TAG}MHz_no-weight.npz"
             )
             SAVE_SUMMARY_CSV = True
             SUMMARY_CSV_PATH = (
                 f"/mnt/d/wsl/home/kinno-7010/Research_data/Tomography/Rawdata/ne_npz/"
-                f"ne3d_solution_{TARGET_TAG}_{WINDOW_TAG}_{FREQ_TAG}MHz{CALIBRATION_TAG}_summary_no-weight.csv"
+                f"ne3d_solution_{TARGET_TAG}_{WINDOW_TAG}_{FREQ_TAG}MHz_summary_no-weight.csv"
             )
             SAVE_PNG_PATH = (
                 f"/mnt/d/wsl/home/kinno-7010/Research_data/Tomography/output/multi-tomo/"
-                f"tomo_{TARGET_TAG}_{WINDOW_TAG}_{FREQ_TAG}MHz{CALIBRATION_TAG}_no-weight.png"
+                f"tomo_{TARGET_TAG}_{WINDOW_TAG}_{FREQ_TAG}MHz_no-weight.png"
             )
 
             args = SimpleNamespace(
@@ -4780,18 +4041,6 @@ if __name__ == "__main__":
                 run_pb_unit_diagnostics=RUN_PB_UNIT_DIAGNOSTICS,
                 pb_diagnostic_paths=PB_DIAGNOSTIC_PATHS,
                 calibration_reference_group=CALIBRATION_REFERENCE_GROUP,
-                auto_cross_calibrate_groups=AUTO_CROSS_CALIBRATE_GROUPS,
-                cross_calibration_initial_gain_by_group=CROSS_CALIBRATION_INITIAL_GAIN_BY_GROUP,
-                cross_calibration_max_iterations=CROSS_CALIBRATION_MAX_ITERATIONS,
-                cross_calibration_tolerance=CROSS_CALIBRATION_TOLERANCE,
-                cross_calibration_damping=CROSS_CALIBRATION_DAMPING,
-                cross_calibration_gain_min=CROSS_CALIBRATION_GAIN_MIN,
-                cross_calibration_gain_max=CROSS_CALIBRATION_GAIN_MAX,
-                cross_calibration_r_min=CROSS_CALIBRATION_R_MIN,
-                cross_calibration_r_max=CROSS_CALIBRATION_R_MAX,
-                cross_calibration_min_count=CROSS_CALIBRATION_MIN_COUNT,
-                cross_calibration_clip_sigma=CROSS_CALIBRATION_CLIP_SIGMA,
-                cross_calibration_recalibrate_after_lambda_selection=CROSS_CALIBRATION_RECALIBRATE_AFTER_LAMBDA_SELECTION,
 
                 use_temporal_despike=USE_TEMPORAL_DESPIKE,
                 ne3dtomo_global_ybk=NE3DTOMO_GLOBAL_YBK,
@@ -4815,16 +4064,16 @@ if __name__ == "__main__":
         elif WT_NR_para == 1:
             SAVE_NE_NPZ = (
                 f"/mnt/d/wsl/home/kinno-7010/Research_data/Tomography/Rawdata/ne_npz/"
-                f"ne3d_solution_{TARGET_TAG}_{WINDOW_TAG}_{FREQ_TAG}MHz{CALIBRATION_TAG}.npz"
+                f"ne3d_solution_{TARGET_TAG}_{WINDOW_TAG}_{FREQ_TAG}MHz.npz"
             )
             SAVE_SUMMARY_CSV = True
             SUMMARY_CSV_PATH = (
                 f"/mnt/d/wsl/home/kinno-7010/Research_data/Tomography/Rawdata/ne_npz/"
-                f"ne3d_solution_{TARGET_TAG}_{WINDOW_TAG}_{FREQ_TAG}MHz{CALIBRATION_TAG}_summary.csv"
+                f"ne3d_solution_{TARGET_TAG}_{WINDOW_TAG}_{FREQ_TAG}MHz_summary.csv"
             )
             SAVE_PNG_PATH = (
                 f"/mnt/d/wsl/home/kinno-7010/Research_data/Tomography/output/multi-tomo/"
-                f"tomo_{TARGET_TAG}_{WINDOW_TAG}_{FREQ_TAG}MHz{CALIBRATION_TAG}.png"
+                f"tomo_{TARGET_TAG}_{WINDOW_TAG}_{FREQ_TAG}MHz.png"
             )
 
             args = SimpleNamespace(
@@ -4881,18 +4130,6 @@ if __name__ == "__main__":
                 run_pb_unit_diagnostics=RUN_PB_UNIT_DIAGNOSTICS,
                 pb_diagnostic_paths=PB_DIAGNOSTIC_PATHS,
                 calibration_reference_group=CALIBRATION_REFERENCE_GROUP,
-                auto_cross_calibrate_groups=AUTO_CROSS_CALIBRATE_GROUPS,
-                cross_calibration_initial_gain_by_group=CROSS_CALIBRATION_INITIAL_GAIN_BY_GROUP,
-                cross_calibration_max_iterations=CROSS_CALIBRATION_MAX_ITERATIONS,
-                cross_calibration_tolerance=CROSS_CALIBRATION_TOLERANCE,
-                cross_calibration_damping=CROSS_CALIBRATION_DAMPING,
-                cross_calibration_gain_min=CROSS_CALIBRATION_GAIN_MIN,
-                cross_calibration_gain_max=CROSS_CALIBRATION_GAIN_MAX,
-                cross_calibration_r_min=CROSS_CALIBRATION_R_MIN,
-                cross_calibration_r_max=CROSS_CALIBRATION_R_MAX,
-                cross_calibration_min_count=CROSS_CALIBRATION_MIN_COUNT,
-                cross_calibration_clip_sigma=CROSS_CALIBRATION_CLIP_SIGMA,
-                cross_calibration_recalibrate_after_lambda_selection=CROSS_CALIBRATION_RECALIBRATE_AFTER_LAMBDA_SELECTION,
 
                 use_temporal_despike=USE_TEMPORAL_DESPIKE,
                 ne3dtomo_global_ybk=NE3DTOMO_GLOBAL_YBK,

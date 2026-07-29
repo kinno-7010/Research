@@ -591,8 +591,8 @@ def render_npz_tomography(
 
 def main(argv: Optional[Sequence[str]] = None) -> Optional[Path]:
     TARGET_TIME = "20220613_030000"
-    SEARCH_WINDOW_DAYS = 7.0
-    FREQ = 42
+    SEARCH_WINDOW_DAYS = 5.0
+    FREQ = 33
     HARMONIC = 2
     # OTHER_TAG = "no-weight"
     OTHER_TAG = ""

@@ -39,7 +39,7 @@ import os, sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Tuple, Dict
+from typing import Any, List, Optional, Tuple, Dict
 import sunpy.map
 import numpy as np
 
@@ -1122,7 +1122,44 @@ def build_spheroid_surface_hgc(
         + float(params.b_rsun) * sa[:, :, None] * (cb[:, :, None] * e1[None, None, :] + sb[:, :, None] * e2[None, None, :])
     )
     pts_flat_hgs = pts_hgs.reshape((-1, 3))
-    pts_flat_hgc = transform_points_hgs_to_hgc(pts_flat_hgs, obstime_iso=obstime_iso, observer=observer)
+    pts_flat_hgc = transform_points_hgs_to_hgc(
+        pts_flat_hgs,
+        obstime_iso=obstime_iso,
+        observer=observer,
+    )
+
+    # Analytic normal of the local spheroid implicit surface:
+    #   ((q.axis_u)/a)^2 + ((q.e1)/b)^2 + ((q.e2)/b)^2 = 1.
+    # Its gradient gives the geometric shock-normal direction. The HGS normal
+    # is transformed to HGC using a small endpoint displacement, which is robust
+    # across SunPy versions without relying on differential transformations.
+    q_hgs = pts_flat_hgs - center[None, :]
+    a2 = max(float(params.a_rsun) ** 2, 1.0e-20)
+    b2 = max(float(params.b_rsun) ** 2, 1.0e-20)
+    q_axis = q_hgs @ axis_u
+    q_e1 = q_hgs @ e1
+    q_e2 = q_hgs @ e2
+    normal_hgs = (
+        (q_axis / a2)[:, None] * axis_u[None, :]
+        + (q_e1 / b2)[:, None] * e1[None, :]
+        + (q_e2 / b2)[:, None] * e2[None, :]
+    )
+    normal_hgs_norm = np.linalg.norm(normal_hgs, axis=1)
+    good_normal_hgs = np.isfinite(normal_hgs_norm) & (normal_hgs_norm > 0.0)
+    normal_hgs[good_normal_hgs] /= normal_hgs_norm[good_normal_hgs, None]
+    normal_hgs[~good_normal_hgs] = np.nan
+
+    normal_step_rsun = 1.0e-5
+    normal_tip_hgc = transform_points_hgs_to_hgc(
+        pts_flat_hgs + normal_step_rsun * normal_hgs,
+        obstime_iso=obstime_iso,
+        observer=observer,
+    )
+    normal_hgc = normal_tip_hgc - pts_flat_hgc
+    normal_hgc_norm = np.linalg.norm(normal_hgc, axis=1)
+    good_normal_hgc = np.isfinite(normal_hgc_norm) & (normal_hgc_norm > 0.0)
+    normal_hgc[good_normal_hgc] /= normal_hgc_norm[good_normal_hgc, None]
+    normal_hgc[~good_normal_hgc] = np.nan
 
     rr = np.sqrt(np.sum(pts_flat_hgs * pts_flat_hgs, axis=1)).reshape((int(n_alpha), int(n_beta)))
     valid = np.ones((int(n_alpha), int(n_beta)), dtype=bool)
@@ -1140,8 +1177,12 @@ def build_spheroid_surface_hgc(
 
     if not faces:
         return None
-    surf = pv.PolyData(pts_flat_hgc.astype(np.float64), np.asarray(faces, dtype=np.int64))
-    return surf.triangulate()
+    surf = pv.PolyData(
+        pts_flat_hgc.astype(np.float64),
+        np.asarray(faces, dtype=np.int64),
+    )
+    surf.point_data["spheroid_normal_hgc"] = normal_hgc.astype(np.float64)
+    return surf.triangulate().clean()
 
 
 def add_spheroid_dome_3d(
@@ -1752,6 +1793,358 @@ def _point_to_surface_distance_rsun(points_xyz: np.ndarray, surf: pv.PolyData) -
         return d
 
 
+
+# -----------------------------------------------------------------------------
+# Shock-normal angle theta_Bn on the Spheroid surface
+# -----------------------------------------------------------------------------
+
+def _hgc_skycoord_from_cartesian_points(
+    points_hgc_rsun: np.ndarray,
+    *,
+    obstime_iso: str,
+    observer: str = "earth",
+) -> SkyCoord:
+    """Create Heliographic Carrington coordinates from HGC Cartesian points."""
+    points = np.asarray(points_hgc_rsun, dtype=float)
+    if points.ndim != 2 or points.shape[1] != 3:
+        raise ValueError("points_hgc_rsun must have shape (N, 3).")
+
+    rep = CartesianRepresentation(
+        x=points[:, 0] * u.R_sun,
+        y=points[:, 1] * u.R_sun,
+        z=points[:, 2] * u.R_sun,
+    )
+    t = Time(obstime_iso)
+    try:
+        hgc_frame = frames.HeliographicCarrington(obstime=t, observer=observer)
+    except TypeError:
+        hgc_frame = frames.HeliographicCarrington(obstime=t)
+    return SkyCoord(rep, frame=hgc_frame)
+
+
+def interpolate_pfss_b_cartesian_on_hgc_points(
+    pfss_output,
+    points_hgc_rsun: np.ndarray,
+    *,
+    obstime_iso: str,
+    observer: str = "earth",
+    radial_epsilon_rsun: float = 1.0e-4,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Interpolate the PFSS magnetic field at arbitrary HGC Cartesian points.
+
+    Returns
+    -------
+    b_xyz : (N, 3) ndarray
+        Cartesian magnetic-field vectors in the Carrington basis. Invalid or
+        out-of-domain points are NaN.
+    valid : (N,) ndarray of bool
+        True where the PFSS field was successfully evaluated.
+
+    Notes
+    -----
+    pfsspy defines the model only in 1 < r/Rsun < Rss. Points outside that
+    shell are deliberately left invalid rather than extrapolated.
+    """
+    points = np.asarray(points_hgc_rsun, dtype=float)
+    if points.ndim != 2 or points.shape[1] != 3:
+        raise ValueError("points_hgc_rsun must have shape (N, 3).")
+
+    n_points = int(points.shape[0])
+    b_xyz = np.full((n_points, 3), np.nan, dtype=float)
+    radius = np.linalg.norm(points, axis=1)
+
+    rss = float(getattr(getattr(pfss_output, "grid", None), "rss", np.nan))
+    if not np.isfinite(rss):
+        raise ValueError("Could not determine PFSS source-surface radius from pfss_output.grid.rss.")
+
+    eps = float(abs(radial_epsilon_rsun))
+    domain = (
+        np.all(np.isfinite(points), axis=1)
+        & np.isfinite(radius)
+        & (radius > 1.0 + eps)
+        & (radius < rss - eps)
+    )
+    idx = np.where(domain)[0]
+    if idx.size == 0:
+        return b_xyz, np.zeros(n_points, dtype=bool)
+
+    coords_hgc = _hgc_skycoord_from_cartesian_points(
+        points[idx],
+        obstime_iso=obstime_iso,
+        observer=observer,
+    )
+    coords_pfss = coords_hgc.transform_to(pfss_output.coordinate_frame)
+
+    try:
+        if hasattr(pfss_output, "get_bvec"):
+            b_quantity = pfss_output.get_bvec(coords_pfss, out_type="cartesian")
+            b_values = np.asarray(getattr(b_quantity, "value", b_quantity), dtype=float)
+        else:
+            # Compatibility fallback for older pfsspy versions. _brgi returns
+            # Cartesian components in the PFSS/Carrington basis.
+            coords_pfss.representation_type = "spherical"
+            query = np.column_stack(
+                [
+                    coords_pfss.lon.to_value(u.rad),
+                    np.sin(coords_pfss.lat.to_value(u.rad)),
+                    np.log(coords_pfss.radius.to_value(u.R_sun)),
+                ]
+            )
+            b_values = np.asarray(pfss_output._brgi(query), dtype=float)
+    except Exception as exc:
+        raise RuntimeError(f"PFSS magnetic-field interpolation failed: {exc}") from exc
+
+    if b_values.ndim == 1:
+        b_values = b_values.reshape(1, 3)
+    if b_values.shape != (idx.size, 3):
+        raise RuntimeError(
+            "Unexpected PFSS vector shape: "
+            f"got {b_values.shape}, expected {(idx.size, 3)}."
+        )
+
+    good_local = np.all(np.isfinite(b_values), axis=1)
+    b_norm = np.linalg.norm(b_values, axis=1)
+    good_local &= np.isfinite(b_norm) & (b_norm > 0.0)
+    b_xyz[idx[good_local]] = b_values[good_local]
+
+    valid = np.all(np.isfinite(b_xyz), axis=1)
+    return b_xyz, valid
+
+
+def compute_spheroid_theta_bn_surface(
+    spheroid_surface_hgc: pv.PolyData,
+    pfss_output,
+    *,
+    obstime_iso: str,
+    observer: str = "earth",
+    radial_epsilon_rsun: float = 1.0e-4,
+    quasi_perpendicular_threshold_deg: float = 70.0,
+) -> Tuple[pv.PolyData, Dict[str, float]]:
+    r"""
+    Compute the acute shock-normal angle theta_Bn on a Spheroid surface.
+
+    The angle is defined as
+
+        theta_Bn = arccos(|B dot n| / (|B| |n|)),
+
+    so the result lies in 0--90 degrees and is independent of the arbitrary
+    inward/outward orientation of the triangulated surface normal.
+    """
+    if spheroid_surface_hgc is None or spheroid_surface_hgc.n_points == 0:
+        raise ValueError("spheroid_surface_hgc is empty.")
+
+    surface = spheroid_surface_hgc.triangulate().clean()
+    if "spheroid_normal_hgc" in surface.point_data:
+        normals = np.asarray(
+            surface.point_data["spheroid_normal_hgc"],
+            dtype=float,
+        )
+        normal_source = "analytic spheroid gradient"
+    else:
+        # Compatibility fallback for surfaces created by an older version of
+        # build_spheroid_surface_hgc().
+        surface = surface.compute_normals(
+            point_normals=True,
+            cell_normals=False,
+            split_vertices=False,
+            consistent_normals=True,
+            auto_orient_normals=True,
+            inplace=False,
+        )
+        normals = np.asarray(surface.point_data["Normals"], dtype=float)
+        normal_source = "PyVista point normals"
+
+    points = np.asarray(surface.points, dtype=float)
+    b_xyz, valid_b = interpolate_pfss_b_cartesian_on_hgc_points(
+        pfss_output,
+        points,
+        obstime_iso=obstime_iso,
+        observer=observer,
+        radial_epsilon_rsun=radial_epsilon_rsun,
+    )
+
+    n_norm = np.linalg.norm(normals, axis=1)
+    b_norm = np.linalg.norm(b_xyz, axis=1)
+    valid = (
+        valid_b
+        & np.all(np.isfinite(normals), axis=1)
+        & np.isfinite(n_norm)
+        & (n_norm > 0.0)
+        & np.isfinite(b_norm)
+        & (b_norm > 0.0)
+    )
+
+    theta_bn_deg = np.full(surface.n_points, np.nan, dtype=float)
+    cos_theta = np.full(surface.n_points, np.nan, dtype=float)
+    cos_theta[valid] = np.abs(np.einsum("ij,ij->i", b_xyz[valid], normals[valid])) / (
+        b_norm[valid] * n_norm[valid]
+    )
+    cos_theta[valid] = np.clip(cos_theta[valid], 0.0, 1.0)
+    theta_bn_deg[valid] = np.rad2deg(np.arccos(cos_theta[valid]))
+
+    surface.point_data["theta_Bn_deg"] = theta_bn_deg
+    surface.point_data["B_pfss_magnitude"] = b_norm
+    surface.point_data["pfss_valid"] = valid.astype(np.uint8)
+
+    n_valid = int(np.count_nonzero(valid))
+    n_total = int(surface.n_points)
+    threshold = float(quasi_perpendicular_threshold_deg)
+    if n_valid > 0:
+        values = theta_bn_deg[valid]
+        summary = {
+            "n_total": float(n_total),
+            "n_valid": float(n_valid),
+            "valid_fraction": float(n_valid / n_total),
+            "theta_min_deg": float(np.nanmin(values)),
+            "theta_median_deg": float(np.nanmedian(values)),
+            "theta_mean_deg": float(np.nanmean(values)),
+            "theta_max_deg": float(np.nanmax(values)),
+            "quasi_perpendicular_threshold_deg": threshold,
+            "quasi_perpendicular_fraction": float(np.mean(values >= threshold)),
+        }
+    else:
+        summary = {
+            "n_total": float(n_total),
+            "n_valid": 0.0,
+            "valid_fraction": 0.0,
+            "theta_min_deg": np.nan,
+            "theta_median_deg": np.nan,
+            "theta_mean_deg": np.nan,
+            "theta_max_deg": np.nan,
+            "quasi_perpendicular_threshold_deg": threshold,
+            "quasi_perpendicular_fraction": np.nan,
+        }
+
+    print(
+        "[INFO] theta_Bn on Spheroid: "
+        f"normal={normal_source}, "
+        f"valid={n_valid}/{n_total} ({100.0 * summary['valid_fraction']:.1f}%), "
+        f"min/median/mean/max="
+        f"{summary['theta_min_deg']:.2f}/"
+        f"{summary['theta_median_deg']:.2f}/"
+        f"{summary['theta_mean_deg']:.2f}/"
+        f"{summary['theta_max_deg']:.2f} deg, "
+        f"fraction(theta_Bn>={threshold:g} deg)="
+        f"{100.0 * summary['quasi_perpendicular_fraction']:.1f}%"
+    )
+    return surface, summary
+
+
+def add_spheroid_theta_bn_colormap(
+    plotter,
+    spheroid_surface_hgc: pv.PolyData,
+    pfss_output,
+    *,
+    obstime_iso: str,
+    observer: str = "earth",
+    cmap: str = "turbo",
+    opacity: float = 0.88,
+    outside_domain_color: str = "lightgray",
+    outside_domain_opacity: float = 0.10,
+    quasi_perpendicular_threshold_deg: float = 70.0,
+    scalar_bar_title: str = "theta_Bn [deg]",
+) -> Dict[str, object]:
+    """Color the PFSS-valid portion of the Spheroid by theta_Bn."""
+    theta_surface, summary = compute_spheroid_theta_bn_surface(
+        spheroid_surface_hgc,
+        pfss_output,
+        obstime_iso=obstime_iso,
+        observer=observer,
+        quasi_perpendicular_threshold_deg=quasi_perpendicular_threshold_deg,
+    )
+
+    # Draw the complete Spheroid faintly so the PFSS outer boundary is visually
+    # distinguishable from a missing Spheroid surface.
+    plotter.add_mesh(
+        theta_surface,
+        color=outside_domain_color,
+        opacity=float(outside_domain_opacity),
+        smooth_shading=True,
+        lighting=True,
+        pickable=False,
+    )
+
+    valid_mask = np.isfinite(
+        np.asarray(
+            theta_surface["theta_Bn_deg"],
+            dtype=float,
+        )
+    )
+
+    if not np.any(valid_mask):
+        print(
+            "[WARN] No Spheroid vertices lie inside "
+            "the valid PFSS domain."
+        )
+        return {
+            "surface": theta_surface,
+            "valid_surface": None,
+            "summary": summary,
+        }
+
+    # Keep only cells whose vertices all have valid theta_Bn values.
+    # This avoids interpolating colors across the PFSS
+    # source-surface boundary.
+    try:
+        valid_surface = theta_surface.threshold(
+            value=(float(quasi_perpendicular_threshold_deg), 90.0),
+            scalars="theta_Bn_deg",
+            preference="point",
+            all_scalars=True,
+        )
+    except TypeError:
+        valid_surface = theta_surface.threshold(
+            value=(float(quasi_perpendicular_threshold_deg), 90.0),
+            scalars="theta_Bn_deg",
+            preference="point",
+        )
+
+    if valid_surface.n_points == 0:
+        print(
+            "[WARN] theta_Bn values were computed, "
+            "but no all-valid surface cells remained."
+        )
+        return {
+            "surface": theta_surface,
+            "valid_surface": valid_surface,
+            "summary": summary,
+        }
+
+    scalar_bar_args = {
+        "title": scalar_bar_title,
+        "vertical": True,
+        "position_x": 0.04,
+        "position_y": 0.18,
+        "width": 0.08,
+        "height": 0.60,
+        "title_font_size": 14,
+        "label_font_size": 12,
+        "fmt": "%.0f",
+        "color": "black",
+    }
+
+    plotter.add_mesh(
+        valid_surface,
+        scalars="theta_Bn_deg",
+        cmap=cmap,
+        clim=(
+            float(quasi_perpendicular_threshold_deg),
+            90.0,
+        ),
+        opacity=float(opacity),
+        smooth_shading=True,
+        lighting=True,
+        scalar_bar_args=scalar_bar_args,
+        pickable=False,
+    )
+
+    return {
+        "surface": theta_surface,
+        "valid_surface": valid_surface,
+        "summary": summary,
+    }
+
 # -----------------------------------------------------------------------------
 # PFSS helpers (HMI -> PFSS -> 3D field-line overlay)
 # -----------------------------------------------------------------------------
@@ -1937,7 +2330,7 @@ def hmi_roi_pixels_like_2d_script(hmi_map):
     ny, nx = data.shape
     center_x, center_y = nx // 2, ny // 2
 
-    x_min_pix, x_max_pix = center_x - 512, center_x + 0
+    x_min_pix, x_max_pix = center_x - 512, center_x + 100
     y_min_pix, y_max_pix = center_y - 100, center_y + 512
 
     # 画像境界にクリップ
@@ -2248,6 +2641,7 @@ def add_pfss_from_hmi_3d_roi_seeds(
         "field_threshold_G": float(field_threshold),
         "x_lims_pix": tuple(map(int, x_lims_pix)),
         "y_lims_pix": tuple(map(int, y_lims_pix)),
+        "pfss_output": pfss_output,
     }
 
 
@@ -2572,9 +2966,9 @@ def _build_npz_path_candidates(
             out.append(
                 npz_dir / f"ne3d_solution_{target_tag}_{window_tag}_{freq_tag}MHz.npz"
             )
-            out.append(npz_dir / f"time_window_{window_tag}_earth_cor1a_ne3d_solution.npz")
-            out.append(npz_dir / f"time_window_{window_tag}_earth_only_ne3d_solution.npz")
-            out.append(npz_dir / f"time_window_{window_tag}_cor1a_only_ne3d_solution.npz")
+            # out.append(npz_dir / f"time_window_{window_tag}_earth_cor1a_ne3d_solution.npz")
+            # out.append(npz_dir / f"time_window_{window_tag}_earth_only_ne3d_solution.npz")
+            # out.append(npz_dir / f"time_window_{window_tag}_cor1a_only_ne3d_solution.npz")
         elif other_tag is not None:
             out.append(
                 npz_dir / f"ne3d_solution_{target_tag}_{window_tag}_{freq_tag}MHz_{other_tag}.npz"
@@ -2615,7 +3009,7 @@ def load_tomography_from_npz(Frequency_MHz: List[float], other_tag: str = None, 
     # HARMONIC = 2
     NPZ_DIR = Path(
         "/mnt/d/wsl/home/kinno-7010/Research_data/Tomography/Rawdata/ne_npz",
-        f"/mnt/d/wsl/home/kinno-7010/Research_data/Tomography/Rawdata/step1_timewindow_viewpoint_9cases_20220613_030000_33MHz/time_window_{int(SEARCH_WINDOW_DAYS)}d_cor1a_only/"
+        # f"/mnt/d/wsl/home/kinno-7010/Research_data/Tomography/Rawdata/step1_timewindow_viewpoint_9cases_20220613_030000_33MHz/time_window_{int(SEARCH_WINDOW_DAYS)}d_cor1a_only/"
     )
     OTHER_TAG = other_tag
 
@@ -2714,6 +3108,7 @@ def main(
     other_tag: str = None,
     time_window: float = 7.0,
     harmonic: int = 2,
+    THETA_BN_QUASI_PERP_DEG: float = 30.0
 ):
     OBSTIME_ISO = time_iso
 
@@ -2732,11 +3127,17 @@ def main(
 
     # ---- Tomography: load precomputed NPZ instead of recomputing inversion ----
     t_tomo_start = time.perf_counter()
-    tomo_result = load_tomography_from_npz(Frequency_MHz, other_tag, TARGET_TIME=time_tomography, SEARCH_WINDOW_DAYS=time_window, HARMONIC=harmonic)
+    tomo_result = load_tomography_from_npz(
+        Frequency_MHz,
+        other_tag,
+        TARGET_TIME=time_tomography,
+        SEARCH_WINDOW_DAYS=time_window,
+        HARMONIC=harmonic,
+    )
     grid = tomo_result["grid"]
     ne = tomo_result["ne"]
     obs0 = tomo_result["obs_ref"]
-    t_tomo_done = _log_elapsed("Tomography NPZ load", t_tomo_start, since_start=False)
+    _log_elapsed("Tomography NPZ load", t_tomo_start, since_start=False)
     _log_elapsed("Elapsed after tomography NPZ load", t_run_start, since_start=True)
 
     ISO_FREQ_MHZ = Frequency_MHz
@@ -2746,22 +3147,29 @@ def main(
     SPHEROID_OBSERVER = "earth"
 
     DO_PFSS = True
+    DO_THETA_BN = True
     HMI_FITS = "/mnt/d/wsl/home/kinno-7010/Research_data/SDO/HMI/Rawdata/hmi.M_720s.20220613_030000_TAI.fits"
     PFSS_RSS = rss
-    PFSS_NRHO = 40
+    PFSS_NRHO = 80
 
-    PFSS_SEED_N_LON = 15
-    PFSS_SEED_N_LAT = 15
-    PFSS_MAX_LINES = 150
-    PFSS_FIELD_THRESHOLD = 150.0
+    PFSS_SEED_N_LON = 50
+    PFSS_SEED_N_LAT = 50
+    PFSS_MAX_LINES = 300
+    PFSS_FIELD_THRESHOLD = 50.0
+
+    THETA_BN_CMAP = "turbo"
+    THETA_BN_OPACITY = 1.0
+    # THETA_BN_QUASI_PERP_DEG = 30.0
 
     SHOW_SUN = True
     SHOW_GUI = True
     SAVE_PNG = True
+    SHOW_RADIAL_BAND = True
     OTHER_TAG = "" if other_tag is None else f"_{other_tag}"
     PNG_PATH = Path(
-        f"/mnt/d/wsl/home/kinno-7010/Research_data/Tomography/output/multi-tomo/timewindow_viewpoint_9cases_20220613_030000_33MHz/"
-        f"tomo_sphe_{'-'.join(str(f) for f in ISO_FREQ_MHZ)}MHz_{time_tomography.replace(':', '')}_pm{time_window}d{OTHER_TAG}.png"
+        f"/mnt/d/wsl/home/kinno-7010/Research_data/Tomography/output/multi-tomo/thetaBn/"
+        f"tomo_sphe_thetaBn{int(THETA_BN_QUASI_PERP_DEG)}_{'-'.join(str(f) for f in ISO_FREQ_MHZ)}MHz_"
+        f"{time_tomography.replace(':', '')}_pm{time_window}d{OTHER_TAG}.png"
     )
 
     print(f"[INFO] ISO_FREQ_MHZ={ISO_FREQ_MHZ}, harmonic={HARMONIC}")
@@ -2770,11 +3178,11 @@ def main(
     t_grid_start = time.perf_counter()
     sg = build_tomography_structured_grid(grid, ne)
     print(f"[INFO] StructuredGrid bounds: {sg.bounds}")
-    t_grid_done = _log_elapsed("PyVista StructuredGrid build", t_grid_start)
+    _log_elapsed("PyVista StructuredGrid build", t_grid_start)
 
     # ---- Plot ----
     t_scene_start = time.perf_counter()
-    off_screen = (not SHOW_GUI)
+    off_screen = not SHOW_GUI
     if SHOW_GUI and not os.environ.get("DISPLAY"):
         print("[WARN] DISPLAY not set; forcing off-screen rendering.")
         off_screen = True
@@ -2814,8 +3222,22 @@ def main(
         range_text_mode="runinfo",
     )
 
-    add_solar_latlon_grid(p, radius=1.002, dlon_deg=30.0, dlat_deg=30.0, line_width=2, opacity=0.6)
-    add_sun_earth_line(p, obs0, length_rsun=5.0, start_rsun=1.0, color="orange", line_width=5)
+    add_solar_latlon_grid(
+        p,
+        radius=1.002,
+        dlon_deg=30.0,
+        dlat_deg=30.0,
+        line_width=2,
+        opacity=0.6,
+    )
+    add_sun_earth_line(
+        p,
+        obs0,
+        length_rsun=5.0,
+        start_rsun=1.0,
+        color="orange",
+        line_width=5,
+    )
 
     add_physical_axes_triad(
         p,
@@ -2829,6 +3251,7 @@ def main(
     )
 
     pfss_info = None
+    pfss_output = None
     if DO_PFSS:
         t_pfss_start = time.perf_counter()
         try:
@@ -2849,22 +3272,13 @@ def main(
                 closed_color="black",
                 prefer_fortran=True,
             )
+            pfss_output = pfss_info.get("pfss_output")
         except Exception as e:
             print(f"[WARN] PFSS overlay skipped due to error: {e}")
             pfss_info = None
+            pfss_output = None
         finally:
             _log_elapsed("PFSS calculation/overlay", t_pfss_start)
-
-    add_runinfo_legend(
-        p,
-        obstime_iso=OBSTIME_ISO,
-        iso_freqs_mhz=ISO_FREQ_MHZ,
-        harmonic=HARMONIC,
-        spheroid_params=spheroid_params,
-        pfss_params=pfss_info,
-        position="upper_right",
-        font_size=12,
-    )
 
     if spheroid_params is not None:
         t_spheroid_start = time.perf_counter()
@@ -2876,7 +3290,16 @@ def main(
             cross_tol_rsun=0.05,
             merge_tol_rsun=0.03,
         )
-        spheroid_info = add_spheroid_dome_3d(
+
+        # Build the surface once. The wireframe/footprint function is called with
+        # show_surface=False so the theta_Bn colormap is not obscured by magenta.
+        spheroid_surface = build_spheroid_surface_hgc(
+            spheroid_params,
+            obstime_iso=OBSTIME_ISO,
+            observer=SPHEROID_OBSERVER,
+        )
+
+        add_spheroid_dome_3d(
             p,
             spheroid_params,
             obstime_iso=OBSTIME_ISO,
@@ -2889,27 +3312,75 @@ def main(
             line_width=1,
             footprint_width=4,
             marker_radius=0.045,
-            show_surface=True,
+            show_surface=False,
             show_wireframe=True,
             show_footprint=True,
             show_markers=True,
-            return_surface=True,
+            return_surface=False,
         )
 
-        if spheroid_info and "surface" in spheroid_info:
-            spheroid_surface = spheroid_info["surface"]
-            add_surface_at_radius(
-                p,
-                spheroid_surface,
-                r0=r_scatter,
-                dr=r_scatter_dr,
-                mode="band",
-                color="#0011ff",
-                opacity=0.5,
-                label="Spheroid",
-            )
+        theta_bn_result = None
+        if spheroid_surface is not None and spheroid_surface.n_points > 0:
+            if DO_THETA_BN and pfss_output is not None:
+                try:
+                    theta_bn_result = add_spheroid_theta_bn_colormap(
+                        p,
+                        spheroid_surface,
+                        pfss_output,
+                        obstime_iso=OBSTIME_ISO,
+                        observer=SPHEROID_OBSERVER,
+                        cmap=THETA_BN_CMAP,
+                        opacity=THETA_BN_OPACITY,
+                        outside_domain_color="lightgray",
+                        outside_domain_opacity=0.10,
+                        quasi_perpendicular_threshold_deg=THETA_BN_QUASI_PERP_DEG,
+                        scalar_bar_title="theta_Bn [deg]",
+                    )
+                    summary = theta_bn_result["summary"]
+                    pending = getattr(p, "_pending_runinfo_lines", [])
+                    theta_line = (
+                        f"theta_Bn: median={summary['theta_median_deg']:.1f} deg, "
+                        f">={THETA_BN_QUASI_PERP_DEG:g} deg: "
+                        f"{100.0 * summary['quasi_perpendicular_fraction']:.1f}%"
+                    )
+                    if theta_line not in pending:
+                        pending.append(theta_line)
+                    p._pending_runinfo_lines = pending
+                except Exception as exc:
+                    print(f"[WARN] theta_Bn colormap skipped: {exc}")
+                    p.add_mesh(
+                        spheroid_surface,
+                        color="magenta",
+                        opacity=0.14,
+                        smooth_shading=True,
+                        lighting=True,
+                        pickable=False,
+                    )
+            else:
+                if DO_THETA_BN and pfss_output is None:
+                    print("[WARN] theta_Bn requires a valid PFSS output; drawing the Spheroid without theta_Bn colors.")
+                p.add_mesh(
+                    spheroid_surface,
+                    color="magenta",
+                    opacity=0.14,
+                    smooth_shading=True,
+                    lighting=True,
+                    pickable=False,
+                )
+
+            # if SHOW_RADIAL_BAND:
+            #     add_surface_at_radius(
+            #         p,
+            #         spheroid_surface,
+            #         r0=r_scatter,
+            #         dr=r_scatter_dr,
+            #         mode="band",
+            #         color="#0011ff",
+            #         opacity=0.35,
+            #         label="Spheroid",
+            #     )
         else:
-            print("[WARN] Spheroid surface not available for radial-band diagnostics.")
+            print("[WARN] Spheroid surface could not be built.")
 
         add_spheroid_tomography_overlap_points(
             p,
@@ -2922,7 +3393,20 @@ def main(
             label="Spheroid",
         )
 
-        _log_elapsed("Spheroid overlay", t_spheroid_start)
+        _log_elapsed("Spheroid overlay + theta_Bn", t_spheroid_start)
+
+    # Add run information after theta_Bn/radial-band diagnostics so all pending
+    # lines are included in a single text actor.
+    add_runinfo_legend(
+        p,
+        obstime_iso=OBSTIME_ISO,
+        iso_freqs_mhz=ISO_FREQ_MHZ,
+        harmonic=HARMONIC,
+        spheroid_params=spheroid_params,
+        pfss_params=pfss_info,
+        position="upper_right",
+        font_size=12,
+    )
 
     t_camera_start = time.perf_counter()
     set_camera_from_observation(p, obs0, distance_rsun=4.0)
@@ -2933,13 +3417,15 @@ def main(
     except Exception:
         pass
     t_render_ready = _log_elapsed("Camera setup + first render", t_camera_start)
-    t_scene_done = _log_elapsed("Total PyVista scene construction", t_scene_start)
-    print(f"[TIME] Total time from execution start to PyVista-display-ready: {t_render_ready - t_run_start:.2f} s")
+    _log_elapsed("Total PyVista scene construction", t_scene_start)
+    print(
+        "[TIME] Total time from execution start to PyVista-display-ready: "
+        f"{t_render_ready - t_run_start:.2f} s"
+    )
 
     if SAVE_PNG:
         PNG_PATH.parent.mkdir(parents=True, exist_ok=True)
         if off_screen:
-            # In headless/off-screen mode, there is no interactive camera update.
             t_png_start = time.perf_counter()
             p.show(screenshot=str(PNG_PATH), auto_close=True)
             _log_elapsed("PNG screenshot save", t_png_start)
@@ -2965,7 +3451,10 @@ def main(
                 except Exception:
                     pass
     else:
-        print(f"[TIME] Calling PyVista display at {time.perf_counter() - t_run_start:.2f} s since script start")
+        print(
+            f"[TIME] Calling PyVista display at "
+            f"{time.perf_counter() - t_run_start:.2f} s since script start"
+        )
         t_show_start = time.perf_counter()
         p.show()
         _log_elapsed("PyVista window duration", t_show_start)
@@ -2975,12 +3464,13 @@ if __name__ == "__main__":
     time_iso = "2022-06-13T03:26:29"
     
     TIME_TOMOGRAPHY = "2022-06-13T03:00:00"
-    Frequency_MHz = [33]
-    TIME_WINDOW_DAYS = 7.0
+    Frequency_MHz = [33, 43]
+    TIME_WINDOW_DAYS = 5.0
     HARMONIC = 2
     
     OTHER_TAG = None
     # OTHER_TAG = "no-weight"
+    THETA_BN_QUASI_PERP_DEG = 60
     
     rss = 2.5
 
@@ -3007,7 +3497,7 @@ if __name__ == "__main__":
         n_meridians=72,
         n_parallels=72,
         n_line_pts=360,
-        only_above_surface=True,
+        only_above_surface=False,
         only_visible=True,
     )
 
@@ -3021,7 +3511,8 @@ if __name__ == "__main__":
         spheroid_params=spheroid,
         other_tag=OTHER_TAG,
         time_window=TIME_WINDOW_DAYS,
-        harmonic=HARMONIC
+        harmonic=HARMONIC,
+        THETA_BN_QUASI_PERP_DEG=THETA_BN_QUASI_PERP_DEG
     )
     
         

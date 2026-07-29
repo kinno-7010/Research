@@ -1748,7 +1748,7 @@ if __name__ == "__main__":
     SHOW_GUI = True
     HARMONIC = 2
 
-    FREQ_MHZ_LIST = [25.0] #, 31.0, 40.0]
+    FREQ_MHZ_LIST = [34.0] #, 31.0, 40.0]
     # ISO_COLORS = ["tomato"]
     #ISO_COLORS = ["deepskyblue"]
     ISO_COLORS = ["gold"]

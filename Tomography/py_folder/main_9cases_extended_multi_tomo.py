@@ -34,7 +34,8 @@ STEP 1 contents
    - use the same Thomson-kernel normalization and ray-cache key
    - use the same density-prior and positivity settings
    - apply the same Earth-reference / COR1A relative radiometric calibration
-   - retain both Earth-view and STEREO-A observations in every comparison scenario
+   - support joint Earth-view + COR1A, Earth-view-only, and COR1A-only scenarios
+   - select each single-view data set as a subset of the corresponding joint time-window selection
 
 Important
 ---------
@@ -2571,7 +2572,12 @@ def clone_args_for_scenario(
     if bool(getattr(base_args, "save_png", False)):
         cloned.png_path = str(scenario_dir / f"{scenario_name}_isosurface.png")
 
-    return apply_defaults(cloned)
+    cloned = apply_defaults(cloned)
+    # Preserve the user-requested scenario settings before auto-grid selection
+    # mutates nr/nth/nph during problem preparation.  This makes resume/skip
+    # reliable for long multi-scenario runs.
+    cloned.step1_requested_scenario_config_hash = scenario_configuration_hash(cloned)
+    return cloned
 
 
 
@@ -2580,7 +2586,10 @@ def write_comparison_key_metrics(output_root: Path, rows: Sequence[Dict[str, obj
     """Write a lightweight comparison CSV while retaining lambda/parameter plotting columns."""
     wanted = [
         "scenario", "comparison_axis", "parameter_name", "parameter_value", "lambda",
-        "search_window_days", "out_n", "nr", "nth", "nph", "ds", "hm", "width_pix",
+        "search_window_days", "observation_groups", "n_observations",
+        "n_earth_view_observations", "n_cor1a_observations", "n_measurements",
+        "n_voxels", "unknown_to_measurement_ratio", "out_n", "nr", "nth", "nph",
+        "ds", "hm", "width_pix",
         "use_density_prior", "density_prior_model", "density_prior_scale", "density_prior_file",
         "wt_nr", "ne3dtomo_global_ybk", "calibration_mode",
         "misfit", "weighted_rms_rel", "normal_equation_relative_residual",
@@ -2670,9 +2679,19 @@ def make_final_summary_row(
 
     parameter_name = str(scenario_metadata.get("parameter_name", comparison_axis))
     parameter_value = scenario_metadata.get("parameter_value", scenario_metadata.get(parameter_name, np.nan))
+    observation_group_keys = [
+        base.tomography_observation_group_key(path)
+        for path in prepared.pb_paths
+    ]
+    n_earth_view_observations = sum(key.startswith("earth_") for key in observation_group_keys)
+    n_cor1a_observations = sum(key == "cor1a" for key in observation_group_keys)
     row: Dict[str, object] = {
         "scenario": str(scenario_name), "comparison_axis": str(comparison_axis),
-        "scenario_config_hash": scenario_configuration_hash(prepared.args),
+        "scenario_config_hash": str(getattr(
+            prepared.args,
+            "step1_requested_scenario_config_hash",
+            scenario_configuration_hash(prepared.args),
+        )),
         "parameter_name": parameter_name, "parameter_value": parameter_value,
         "scenario_note": str(scenario_metadata.get("note", "")), "output_dir": str(output_dir),
         "target_time": str(getattr(prepared.args, "target_time", "")),
@@ -2682,6 +2701,9 @@ def make_final_summary_row(
         "render_camera_lon_deg": float(render_camera_lonlat[0]), "render_camera_lat_deg": float(render_camera_lonlat[1]),
         "render_camera_lonlat_frame": "Carrington sub-Earth L0 / B0",
         "search_window_days": finite_or_nan(getattr(prepared.args, "search_window_days", np.nan)),
+        "observation_groups": json.dumps(sorted(set(observation_group_keys)), ensure_ascii=False),
+        "n_earth_view_observations": int(n_earth_view_observations),
+        "n_cor1a_observations": int(n_cor1a_observations),
         "n_observations": int(len(prepared.pb_paths)), "n_measurements": int(np.asarray(prepared.y_obs).size),
         "n_voxels": int(prepared.grid.nvox),
         "unknown_to_measurement_ratio": float(prepared.grid.nvox / max(1, np.asarray(prepared.y_obs).size)),
@@ -2784,6 +2806,14 @@ def scenario_parameter_metadata(scenario: Dict[str, object], scenario_args: Simp
     mapping = {
         "lambda": ("lambda", getattr(scenario_args, "lam", np.nan)),
         "time_window": ("search_window_days", getattr(scenario_args, "search_window_days", np.nan)),
+        "time_window_observation_set": (
+            "time_window_observation_set",
+            scenario.get(
+                "parameter_value",
+                f"{getattr(scenario_args, 'search_window_days', np.nan)}d / "
+                f"{getattr(scenario_args, 'observation_groups', [])}",
+            ),
+        ),
         "grid_resolution": ("grid", f"{scenario_args.nr}x{scenario_args.nth}x{scenario_args.nph}"),
         "density_prior": ("density_prior_model", getattr(scenario_args, "density_prior_model", "")),
         "density_prior_scale": ("density_prior_scale", getattr(scenario_args, "density_prior_scale", np.nan)),
@@ -2801,6 +2831,75 @@ def scenario_parameter_metadata(scenario: Dict[str, object], scenario_args: Simp
     name, value = mapping.get(axis, (axis, scenario.get("parameter_value", np.nan)))
     return {"parameter_name": name, "parameter_value": value, "note": scenario.get("note", "")}
 
+
+
+def build_time_window_observation_set_scenarios(
+    time_windows_days: Sequence[float] = (3.0, 5.0, 7.0),
+) -> List[Dict[str, object]]:
+    """Build the 3 time windows x 3 observation sets comparison matrix.
+
+    For every time window, the automatic file search is first run with both
+    Earth-view and COR1A enabled.  ``observation_groups`` is then applied inside
+    ``prepare_tomography_problem``.  Consequently, the Earth-only and COR1A-only
+    inputs are exact subsets of the corresponding joint selection.
+    """
+    scenarios: List[Dict[str, object]] = []
+    for window_days in time_windows_days:
+        window = float(window_days)
+        if not np.isfinite(window) or window <= 0:
+            raise ValueError(f"Invalid comparison time window: {window_days!r}")
+        window_tag = f"{window:g}d".replace(".", "p")
+
+        scenarios.extend([
+            {
+                "name": f"time_window_{window_tag}_earth_cor1a",
+                "comparison_axis": "time_window_observation_set",
+                "parameter_value": f"{window:g} days / Earth-view+COR1A",
+                "search_window_days": window,
+                "include_kcor_lasco": True,
+                "include_cor1a": True,
+                "observation_groups": ["earth_merged", "earth_lasco_only", "cor1a"],
+                "auto_cross_calibrate_groups": True,
+                "fixed_group_forward_gains": {},
+                "calibration_reference_group": "earth_merged",
+                "step1_run_lambda_scan": False,
+                "note": (
+                    "Joint reconstruction. Single-view cases for the same window "
+                    "are filtered from this joint file selection."
+                ),
+            },
+            {
+                "name": f"time_window_{window_tag}_earth_only",
+                "comparison_axis": "time_window_observation_set",
+                "parameter_value": f"{window:g} days / Earth-view only",
+                "search_window_days": window,
+                "include_kcor_lasco": True,
+                "include_cor1a": True,
+                "observation_groups": ["earth_merged", "earth_lasco_only"],
+                "auto_cross_calibrate_groups": False,
+                "fixed_group_forward_gains": {},
+                "cross_calibration_initial_gain_by_group": {},
+                "calibration_reference_group": "earth_merged",
+                "step1_run_lambda_scan": False,
+                "note": "Single-view reconstruction using only the Earth-view subset.",
+            },
+            {
+                "name": f"time_window_{window_tag}_cor1a_only",
+                "comparison_axis": "time_window_observation_set",
+                "parameter_value": f"{window:g} days / COR1A only",
+                "search_window_days": window,
+                "include_kcor_lasco": True,
+                "include_cor1a": True,
+                "observation_groups": ["cor1a"],
+                "auto_cross_calibrate_groups": False,
+                "fixed_group_forward_gains": {},
+                "cross_calibration_initial_gain_by_group": {},
+                "calibration_reference_group": "cor1a",
+                "step1_run_lambda_scan": False,
+                "note": "Single-view reconstruction using only the COR1A subset.",
+            },
+        ])
+    return scenarios
 
 
 
@@ -2869,7 +2968,11 @@ def _try_load_completed_scenario(
         print(f"[RESUME] Could not read {summary_path}: {exc}; scenario will be recomputed.")
         return None
 
-    expected_hash = scenario_configuration_hash(scenario_args)
+    expected_hash = str(getattr(
+        scenario_args,
+        "step1_requested_scenario_config_hash",
+        scenario_configuration_hash(scenario_args),
+    ))
     if str(row.get("scenario_config_hash", "")) != expected_hash:
         print("[RESUME] Existing summary has different/legacy settings; scenario will be recomputed.")
         return None
@@ -3473,55 +3576,18 @@ if __name__ == "__main__":
     STEP1_OVERLAP_REFERENCE_SCENARIO = "time_window_5d_earth_cor1a"
     STEP1_WRITE_OVERLAP_METRICS = True
 
-    # Comparison suite.  When True, the script runs the scenario list below instead
-    # of the single STEP1 diagnostic workflow.
+    # Comparison suite.  When True, all 3 time windows x 3 observation sets are
+    # run sequentially.  Each scenario receives its own output directory, NPZ,
+    # PNG, selected-observation CSV, residual diagnostics, and final summary.
     STEP1_RUN_COMPARISON_SUITE = True
     STEP1_COMPARISON_OUTPUT_DIR = (
         f"/mnt/d/wsl/home/kinno-7010/Research_data/Tomography/Rawdata/"
-        f"step1_comparison_suite_{TARGET_TAG}_{FREQ_TAG}MHz"
+        f"step1_timewindow_viewpoint_9cases_{TARGET_TAG}_{FREQ_TAG}MHz"
     )
-    STEP1_COMPARISON_SCENARIOS = [
-        # # 1) Time-window comparison.
-        # {"name": "time_window_3d", "comparison_axis": "time_window", "search_window_days": 3.0, "step1_run_lambda_scan": False},
-        # {"name": "time_window_5d", "comparison_axis": "time_window", "search_window_days": 5.0, "step1_run_lambda_scan": False},
-        # {"name": "time_window_7d", "comparison_axis": "time_window", "search_window_days": 7.0, "step1_run_lambda_scan": False},
-
-        # 1b) Viewpoint comparison using the same initially selected FITS set.
-        # The group filter is applied only after Earth/COR1A time matching, so the
-        # Earth-only and COR1A-only cases use exactly the corresponding subsets of
-        # the joint Earth-view + COR1A selection.
-        {
-            "name": f"viewpoint_earth_cor1a_{SEARCH_WINDOW_DAYS}d",
-            "comparison_axis": "observation_set",
-            "parameter_value": f"Earth-view+COR1A ({SEARCH_WINDOW_DAYS}d)",
-            "observation_groups": ["earth_merged", "earth_lasco_only", "cor1a"],
-            "auto_cross_calibrate_groups": True,
-            "calibration_reference_group": "earth_merged",
-            "step1_run_lambda_scan": False,
-            "note": "Joint reconstruction using both Earth-view and COR1A constraints.",
-        },
-        # {
-        #     "name": f"viewpoint_earth_only_{SEARCH_WINDOW_DAYS}d",
-        #     "comparison_axis": "observation_set",
-        #     "parameter_value": f"Earth-view only ({SEARCH_WINDOW_DAYS}d)",
-        #     "observation_groups": ["earth_merged", "earth_lasco_only"],
-        #     "auto_cross_calibrate_groups": False,
-        #     "fixed_group_forward_gains": {},
-        #     "calibration_reference_group": "earth_merged",
-        #     "step1_run_lambda_scan": False,
-        #     "note": "Single-view reconstruction using only Earth-view constraints.",
-        # },
-        # {
-        #     "name": f"viewpoint_cor1a_only_{SEARCH_WINDOW_DAYS}d",
-        #     "comparison_axis": "observation_set",
-        #     "parameter_value": f"COR1A only ({SEARCH_WINDOW_DAYS}d)",
-        #     "observation_groups": ["cor1a"],
-        #     "auto_cross_calibrate_groups": False,
-        #     "fixed_group_forward_gains": {},
-        #     "calibration_reference_group": "cor1a",
-        #     "step1_run_lambda_scan": False,
-        #     "note": "Single-view reconstruction using only COR1A constraints.",
-        # },
+    STEP1_COMPARISON_SCENARIOS = (
+        build_time_window_observation_set_scenarios(TIME_WINDOW_COMPARISON_DAYS)
+        + [
+        # Additional optional scenarios can still be appended below.
 
         # 2) Keep the requested lambda=1..19 comparison unchanged.
         # *[
@@ -3607,7 +3673,8 @@ if __name__ == "__main__":
         # # 10) Positivity diagnostic. The 'none' case reveals negative-solution dependence.
         # {"name": "positivity_clip", "comparison_axis": "positivity", "positivity_method": "clip", "step1_run_lambda_scan": False},
         # {"name": "positivity_none", "comparison_axis": "positivity", "positivity_method": "none", "step1_run_lambda_scan": False},
-    ] # + ([
+        ]
+    ) # + ([
     #     {
     #         "name": "validation_leave_one_out",
     #         "comparison_axis": "validation",

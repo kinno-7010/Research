@@ -43,7 +43,6 @@ if str(_RADIO_DATA_DIR) not in sys.path:
 
 import radio_event_search as _radio_es
 
-from predict_type2_const_speed import f_model_from_r, invert_r_from_f
 from wind_hf_assa_dynamic_spectrum import (
     combine_spectra,
     create_dataframe,
@@ -57,6 +56,33 @@ from wind_hf_assa_dynamic_spectrum import (
 WIND_RAW_DIR = Path("/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/Wind/Rawdata")
 HF_RAW_DIR = Path("/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/HF_plot/Rawdata")
 ASSA_RAW_DIR = Path("/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/e-Callisto/Rawdata")
+DEFAULT_DENSITY_PRIOR_NPZ = Path(
+    "/mnt/d/wsl/home/kinno-7010/Research_data/SDO_Mk4_SOHO/pB/"
+    "pB_spherical_median_prior_errorbar_20220613_0258_"
+    "fit1.5-4.0_prior_model.npz"
+)
+PLASMA_FREQUENCY_COEFFICIENT_MHZ = 8.98e-3
+DENSITY_MODEL_PARAMETERS = {
+    "saito_eq": {
+        "c1": 1.36e6,
+        "d1": 2.14,
+        "c2": 1.68e8,
+        "d2": 6.13,
+        "display_label": "Saito equatorial background",
+    },
+    "saito_eq_CH": {
+        "c1": 5.27e6,
+        "d1": 3.30,
+        "c2": 3.54e6,
+        "d2": 5.80,
+        "display_label": "Saito equatorial coronal hole",
+    },
+}
+SUPPORTED_DENSITY_MODELS = (
+    "saito_eq",
+    "saito_eq_CH",
+    "median_prior",
+)
 
 
 DEFAULT_PEAK_START = [
@@ -173,16 +199,444 @@ def _load_hf_stacked(paths: Sequence[Path], polarization: str) -> Tuple[pd.Datet
     return combined_times[order], freq_mhz, combined_values[order]
 
 
-def _freq_to_r(f_mhz: np.ndarray | float, branch: str = "F", factor: float = 1.0) -> np.ndarray | float:
-    f_arr = np.asarray(f_mhz, dtype=float)
-    vec = np.vectorize(lambda v: invert_r_from_f(float(v), branch=branch, factor=factor))
-    return vec(f_arr)
+def _return_scalar_if_scalar_input(
+    original: np.ndarray | float,
+    converted: np.ndarray,
+) -> np.ndarray | float:
+    """Return a Python float for scalar input and an ndarray otherwise."""
+    if np.asarray(original).ndim == 0:
+        return float(np.asarray(converted))
+    return converted
 
 
-def _r_to_freq(r_rs: np.ndarray | float, branch: str = "F", factor: float = 1.0) -> np.ndarray | float:
-    r_arr = np.asarray(r_rs, dtype=float)
-    vec = np.vectorize(lambda v: f_model_from_r(float(v), branch=branch, factor=factor))
-    return vec(r_arr)
+def _load_median_density_prior(npz_path: Path | str) -> dict[str, object]:
+    """
+    Load the monotonic log-log PCHIP density prior written by main_spherical_median.py.
+
+    The NPZ must contain ``log_r_knots`` and ``log_ne_knots``. The same
+    endpoint-slope extrapolation as ``evaluate_monotonic_loglog_prior`` is used.
+    A dense monotonic lookup table is also prepared for the inverse conversion
+    from plasma-emission frequency to heliocentric distance.
+    """
+    from scipy.interpolate import PchipInterpolator
+
+    prior_path = Path(npz_path).expanduser()
+    if not prior_path.is_file():
+        raise FileNotFoundError(f"Median-density prior NPZ not found: {prior_path}")
+
+    with np.load(prior_path, allow_pickle=False) as data:
+        required_keys = ("log_r_knots", "log_ne_knots")
+        missing_keys = [key for key in required_keys if key not in data.files]
+        if missing_keys:
+            raise KeyError(
+                f"Density-prior NPZ is missing required keys {missing_keys}: "
+                f"{prior_path}"
+            )
+
+        log_r_knots = np.asarray(data["log_r_knots"], dtype=np.float64).ravel()
+        log_ne_knots = np.asarray(data["log_ne_knots"], dtype=np.float64).ravel()
+        model_name = (
+            str(np.asarray(data["model_name"]).item())
+            if "model_name" in data.files
+            else "monotonic_loglog_pchip"
+        )
+        fit_target = (
+            str(np.asarray(data["fit_target"]).item())
+            if "fit_target" in data.files
+            else "azimuthal_median_density"
+        )
+        target_yyyymmdd = (
+            str(np.asarray(data["target_yyyymmdd"]).item())
+            if "target_yyyymmdd" in data.files
+            else ""
+        )
+        target_hhmm = (
+            str(np.asarray(data["target_hhmm"]).item())
+            if "target_hhmm" in data.files
+            else ""
+        )
+
+    if log_r_knots.size < 2 or log_r_knots.size != log_ne_knots.size:
+        raise ValueError(
+            "Invalid density-prior knots: log_r_knots and log_ne_knots must "
+            "have the same length of at least two."
+        )
+    if not np.all(np.isfinite(log_r_knots)) or not np.all(np.isfinite(log_ne_knots)):
+        raise ValueError("Density-prior knots contain non-finite values.")
+    if np.any(np.diff(log_r_knots) <= 0):
+        raise ValueError("log_r_knots must be strictly increasing.")
+    if np.any(np.diff(log_ne_knots) > 1.0e-10):
+        raise ValueError(
+            "log_ne_knots must be non-increasing for a unique frequency-height conversion."
+        )
+
+    interpolator = PchipInterpolator(
+        log_r_knots,
+        log_ne_knots,
+        extrapolate=False,
+    )
+    slope_inner = float(
+        (log_ne_knots[1] - log_ne_knots[0])
+        / (log_r_knots[1] - log_r_knots[0])
+    )
+    slope_outer = float(
+        (log_ne_knots[-1] - log_ne_knots[-2])
+        / (log_r_knots[-1] - log_r_knots[-2])
+    )
+    slope_inner = float(np.clip(slope_inner, -30.0, -0.05))
+    slope_outer = float(np.clip(slope_outer, -30.0, -0.05))
+
+    n_lookup = max(8192, 512 * log_r_knots.size)
+    inverse_log_r = np.linspace(
+        log_r_knots[0],
+        log_r_knots[-1],
+        n_lookup,
+        dtype=np.float64,
+    )
+    inverse_log_ne = np.asarray(interpolator(inverse_log_r), dtype=np.float64)
+    inverse_log_ne = np.minimum.accumulate(inverse_log_ne)
+
+    inverse_log_ne_ascending = inverse_log_ne[::-1]
+    inverse_log_r_ascending = inverse_log_r[::-1]
+    inverse_log_ne_unique, unique_indices = np.unique(
+        inverse_log_ne_ascending,
+        return_index=True,
+    )
+    inverse_log_r_unique = inverse_log_r_ascending[unique_indices]
+    if inverse_log_ne_unique.size < 2:
+        raise ValueError("Density-prior curve is constant and cannot be inverted.")
+
+    prior = {
+        "density_model": "median_prior",
+        "model_kind": "median_prior",
+        "display_label": "azimuthal-median pB PCHIP prior",
+        "path": prior_path,
+        "model_name": model_name,
+        "fit_target": fit_target,
+        "target_yyyymmdd": target_yyyymmdd,
+        "target_hhmm": target_hhmm,
+        "log_r_knots": log_r_knots,
+        "log_ne_knots": log_ne_knots,
+        "interpolator": interpolator,
+        "slope_inner": slope_inner,
+        "slope_outer": slope_outer,
+        "inverse_log_ne": inverse_log_ne_unique,
+        "inverse_log_r": inverse_log_r_unique,
+    }
+    print(
+        "[INFO] Loaded density model 'median_prior': "
+        f"{prior_path} (model={model_name}, target={fit_target})"
+    )
+    return prior
+
+
+def _double_power_density(
+    r_rs: np.ndarray | float,
+    c1: float,
+    d1: float,
+    c2: float,
+    d2: float,
+) -> np.ndarray | float:
+    """Evaluate ne(r) = C1 r^-d1 + C2 r^-d2 in cm^-3."""
+    r_arr = np.asarray(r_rs, dtype=np.float64)
+    ne = np.full(r_arr.shape, np.nan, dtype=np.float64)
+    valid = np.isfinite(r_arr) & (r_arr > 0)
+    if np.any(valid):
+        r_valid = r_arr[valid]
+        ne[valid] = (
+            float(c1) * np.power(r_valid, -float(d1))
+            + float(c2) * np.power(r_valid, -float(d2))
+        )
+    return _return_scalar_if_scalar_input(r_rs, ne)
+
+
+def _double_power_log_slope(
+    r_rs: float,
+    c1: float,
+    d1: float,
+    c2: float,
+    d2: float,
+) -> float:
+    """Return d log10(ne) / d log10(r) for the double-power-law model."""
+    term1 = float(c1) * float(r_rs) ** (-float(d1))
+    term2 = float(c2) * float(r_rs) ** (-float(d2))
+    return -(
+        float(d1) * term1 + float(d2) * term2
+    ) / (term1 + term2)
+
+
+def _load_double_power_density_model(
+    density_model: str,
+) -> dict[str, object]:
+    """Build a monotonic inverse lookup for a selected Saito double-power model."""
+    if density_model not in DENSITY_MODEL_PARAMETERS:
+        raise ValueError(
+            f"Unsupported double-power density model: {density_model}"
+        )
+
+    params = DENSITY_MODEL_PARAMETERS[density_model]
+    c1 = float(params["c1"])
+    d1 = float(params["d1"])
+    c2 = float(params["c2"])
+    d2 = float(params["d2"])
+
+    log_r_lookup = np.linspace(
+        np.log10(0.5),
+        np.log10(100.0),
+        32768,
+        dtype=np.float64,
+    )
+    r_lookup = np.power(10.0, log_r_lookup)
+    ne_lookup = np.asarray(
+        _double_power_density(r_lookup, c1, d1, c2, d2),
+        dtype=np.float64,
+    )
+    log_ne_lookup = np.log10(ne_lookup)
+    log_ne_lookup = np.minimum.accumulate(log_ne_lookup)
+
+    inverse_log_ne_ascending = log_ne_lookup[::-1]
+    inverse_log_r_ascending = log_r_lookup[::-1]
+    inverse_log_ne_unique, unique_indices = np.unique(
+        inverse_log_ne_ascending,
+        return_index=True,
+    )
+    inverse_log_r_unique = inverse_log_r_ascending[unique_indices]
+
+    log_r_knots = np.array(
+        [log_r_lookup[0], log_r_lookup[-1]],
+        dtype=np.float64,
+    )
+    log_ne_knots = np.array(
+        [log_ne_lookup[0], log_ne_lookup[-1]],
+        dtype=np.float64,
+    )
+    slope_inner = float(
+        _double_power_log_slope(0.5, c1, d1, c2, d2)
+    )
+    slope_outer = float(
+        _double_power_log_slope(100.0, c1, d1, c2, d2)
+    )
+
+    model = {
+        "density_model": density_model,
+        "model_kind": "double_power_law",
+        "display_label": str(params["display_label"]),
+        "c1": c1,
+        "d1": d1,
+        "c2": c2,
+        "d2": d2,
+        "log_r_knots": log_r_knots,
+        "log_ne_knots": log_ne_knots,
+        "slope_inner": slope_inner,
+        "slope_outer": slope_outer,
+        "inverse_log_ne": inverse_log_ne_unique,
+        "inverse_log_r": inverse_log_r_unique,
+    }
+    print(
+        f"[INFO] Loaded density model '{density_model}': "
+        f"ne(r)={c1:.3e} r^-{d1:.2f} + {c2:.3e} r^-{d2:.2f} cm^-3"
+    )
+    return model
+
+
+def _load_density_model(
+    density_model: str,
+    density_prior_npz: Path | str,
+    density_model_factor: float = 1.0,
+) -> dict[str, object]:
+    """
+    Load a selectable density model and attach its multiplicative density factor.
+
+    The factor is applied as ``ne_scaled(r) = density_model_factor * ne(r)``
+    for both the analytic Saito models and the NPZ median prior.
+    """
+    density_model = str(density_model).strip()
+    density_model_factor = float(density_model_factor)
+    if not np.isfinite(density_model_factor) or density_model_factor <= 0:
+        raise ValueError(
+            "density_model_factor must be a positive finite float, got "
+            f"{density_model_factor}"
+        )
+
+    if density_model == "median_prior":
+        model = _load_median_density_prior(density_prior_npz)
+    elif density_model in DENSITY_MODEL_PARAMETERS:
+        model = _load_double_power_density_model(density_model)
+    else:
+        raise ValueError(
+            f"Unknown density_model={density_model!r}. "
+            f"Choose one of {SUPPORTED_DENSITY_MODELS}."
+        )
+
+    model["density_model_factor"] = density_model_factor
+    model["scaled_display_label"] = (
+        f"{density_model_factor:g}× {model['display_label']}"
+    )
+    print(
+        "[INFO] Density-model scaling: "
+        f"ne_scaled(r)={density_model_factor:g} × {density_model}"
+    )
+    return model
+
+
+def _evaluate_density_model(
+    r_rs: np.ndarray | float,
+    density_model_data: dict[str, object],
+) -> np.ndarray | float:
+    """Evaluate the selected, factor-scaled electron-density model in cm^-3."""
+    model_kind = str(density_model_data["model_kind"])
+    density_model_factor = float(
+        density_model_data.get("density_model_factor", 1.0)
+    )
+
+    if model_kind == "double_power_law":
+        ne = np.asarray(
+            _double_power_density(
+                r_rs,
+                c1=float(density_model_data["c1"]),
+                d1=float(density_model_data["d1"]),
+                c2=float(density_model_data["c2"]),
+                d2=float(density_model_data["d2"]),
+            ),
+            dtype=np.float64,
+        )
+        ne *= density_model_factor
+        return _return_scalar_if_scalar_input(r_rs, ne)
+
+    if model_kind != "median_prior":
+        raise ValueError(f"Unsupported density model kind: {model_kind}")
+
+    r_arr = np.asarray(r_rs, dtype=np.float64)
+    ne = np.full(r_arr.shape, np.nan, dtype=np.float64)
+    valid = np.isfinite(r_arr) & (r_arr > 0)
+    if not np.any(valid):
+        return _return_scalar_if_scalar_input(r_rs, ne)
+
+    log_r_knots = np.asarray(
+        density_model_data["log_r_knots"],
+        dtype=np.float64,
+    )
+    log_ne_knots = np.asarray(
+        density_model_data["log_ne_knots"],
+        dtype=np.float64,
+    )
+    interpolator = density_model_data["interpolator"]
+    slope_inner = float(density_model_data["slope_inner"])
+    slope_outer = float(density_model_data["slope_outer"])
+
+    x = np.log10(r_arr[valid])
+    y = np.asarray(interpolator(x), dtype=np.float64)
+    inner = x < log_r_knots[0]
+    outer = x > log_r_knots[-1]
+    if np.any(inner):
+        y[inner] = log_ne_knots[0] + slope_inner * (
+            x[inner] - log_r_knots[0]
+        )
+    if np.any(outer):
+        y[outer] = log_ne_knots[-1] + slope_outer * (
+            x[outer] - log_r_knots[-1]
+        )
+
+    ne[valid] = density_model_factor * np.power(10.0, y)
+    return _return_scalar_if_scalar_input(r_rs, ne)
+
+
+def _freq_to_r(
+    f_mhz: np.ndarray | float,
+    density_model_data: dict[str, object],
+    harmonic: int = 2,
+) -> np.ndarray | float:
+    """Convert observed plasma-emission frequency [MHz] to radius [Rsun]."""
+    harmonic = int(harmonic)
+    if harmonic < 1:
+        raise ValueError(f"harmonic must be >= 1, got {harmonic}")
+
+    f_arr = np.asarray(f_mhz, dtype=np.float64)
+    r_rs = np.full(f_arr.shape, np.nan, dtype=np.float64)
+    valid = np.isfinite(f_arr) & (f_arr > 0)
+    if not np.any(valid):
+        return _return_scalar_if_scalar_input(f_mhz, r_rs)
+
+    ne_cm3 = np.square(
+        f_arr[valid]
+        / (float(harmonic) * PLASMA_FREQUENCY_COEFFICIENT_MHZ)
+    )
+    density_model_factor = float(
+        density_model_data.get("density_model_factor", 1.0)
+    )
+    if not np.isfinite(density_model_factor) or density_model_factor <= 0:
+        raise ValueError(
+            "density_model_factor must be a positive finite float, got "
+            f"{density_model_factor}"
+        )
+
+    # Invert factor * ne_model(r) = ne_from_frequency by evaluating the
+    # unscaled inverse model at ne_from_frequency / factor.
+    target_log_ne = np.log10(ne_cm3 / density_model_factor)
+
+    log_r_knots = np.asarray(
+        density_model_data["log_r_knots"],
+        dtype=np.float64,
+    )
+    log_ne_knots = np.asarray(
+        density_model_data["log_ne_knots"],
+        dtype=np.float64,
+    )
+    slope_inner = float(density_model_data["slope_inner"])
+    slope_outer = float(density_model_data["slope_outer"])
+    inverse_log_ne = np.asarray(
+        density_model_data["inverse_log_ne"],
+        dtype=np.float64,
+    )
+    inverse_log_r = np.asarray(
+        density_model_data["inverse_log_r"],
+        dtype=np.float64,
+    )
+
+    log_r = np.empty_like(target_log_ne)
+    inner = target_log_ne > log_ne_knots[0]
+    outer = target_log_ne < log_ne_knots[-1]
+    middle = ~(inner | outer)
+
+    if np.any(inner):
+        log_r[inner] = log_r_knots[0] + (
+            target_log_ne[inner] - log_ne_knots[0]
+        ) / slope_inner
+    if np.any(outer):
+        log_r[outer] = log_r_knots[-1] + (
+            target_log_ne[outer] - log_ne_knots[-1]
+        ) / slope_outer
+    if np.any(middle):
+        log_r[middle] = np.interp(
+            target_log_ne[middle],
+            inverse_log_ne,
+            inverse_log_r,
+        )
+
+    r_rs[valid] = np.power(10.0, log_r)
+    return _return_scalar_if_scalar_input(f_mhz, r_rs)
+
+
+def _r_to_freq(
+    r_rs: np.ndarray | float,
+    density_model_data: dict[str, object],
+    harmonic: int = 2,
+) -> np.ndarray | float:
+    """Convert radius [Rsun] to observed plasma-emission frequency [MHz]."""
+    harmonic = int(harmonic)
+    if harmonic < 1:
+        raise ValueError(f"harmonic must be >= 1, got {harmonic}")
+
+    ne_cm3 = np.asarray(
+        _evaluate_density_model(r_rs, density_model_data),
+        dtype=np.float64,
+    )
+    f_mhz = (
+        float(harmonic)
+        * PLASMA_FREQUENCY_COEFFICIENT_MHZ
+        * np.sqrt(np.maximum(ne_cm3, 0.0))
+    )
+    return _return_scalar_if_scalar_input(r_rs, f_mhz)
 
 
 def _lane_to_series(lane: Sequence[Tuple[str, float]], name: str) -> pd.Series:
@@ -411,7 +865,10 @@ def plot_bandsplit_fig1_with_main_peak_points(
     end_time: str = "2022-06-13T03:33:00",
     min_frequency: float = 25,
     max_frequency: float = 47,
-    model_factor: float = 2.8,
+    density_model: str = "median_prior",
+    density_prior_npz: Path | str = DEFAULT_DENSITY_PRIOR_NPZ,
+    density_model_factor: float = 1.0,
+    plasma_harmonic: int = 2,
     cadence: str = "0.5s",
     polarization: str = "RH",
     cmap: str = "viridis",
@@ -430,6 +887,16 @@ def plot_bandsplit_fig1_with_main_peak_points(
     end_time_ts = pd.Timestamp(end_time)
     if start_time_ts >= end_time_ts:
         raise ValueError("Start time must be earlier than end time.")
+    plasma_harmonic = int(plasma_harmonic)
+    if plasma_harmonic < 1:
+        raise ValueError(
+            f"plasma_harmonic must be >= 1, got {plasma_harmonic}"
+        )
+    density_model_data = _load_density_model(
+        density_model=density_model,
+        density_prior_npz=density_prior_npz,
+        density_model_factor=density_model_factor,
+    )
 
     n_segments = len(peak_start_time)
     if not (len(peak_end_time) == n_segments == len(peak_freq_min) == len(peak_freq_max)):
@@ -648,7 +1115,7 @@ def plot_bandsplit_fig1_with_main_peak_points(
                 marker="x",
                 s=100,
                 zorder=12,
-                label=f"{freq_dens_red_start:.2f}[MHz] @ {_freq_to_r(freq_dens_red_start, branch='H', factor=model_factor):.3f}[$R_\\odot$] $\\rightarrow$ {freq_red_mid:.3f}[MHz] @ {_freq_to_r(freq_red_mid, branch='H', factor=model_factor):.3f}[$R_\\odot$]",
+                label=f"{freq_dens_red_start:.2f}[MHz] @ {_freq_to_r(freq_dens_red_start, density_model_data, harmonic=plasma_harmonic):.3f}[$R_\\odot$] $\\rightarrow$ {freq_red_mid:.3f}[MHz] @ {_freq_to_r(freq_red_mid, density_model_data, harmonic=plasma_harmonic):.3f}[$R_\\odot$]",
             )
             ax.scatter(
                 xnum_red[np.argmin(np.abs(t_sec_total - t_sec_red[-1]))],
@@ -677,7 +1144,7 @@ def plot_bandsplit_fig1_with_main_peak_points(
                 marker="x",
                 s=100,
                 zorder=12,
-                label=f"{freq_dens_blue_start:.2f}[MHz] @ {_freq_to_r(freq_dens_blue_start, branch='H', factor=model_factor):.3f}[$R_\\odot$] $\\rightarrow$ {freq_dens_blue_end:.2f}[MHz] @ {_freq_to_r(freq_dens_blue_end, branch='H', factor=model_factor):.3f}[$R_\\odot$]",
+                label=f"{freq_dens_blue_start:.2f}[MHz] @ {_freq_to_r(freq_dens_blue_start, density_model_data, harmonic=plasma_harmonic):.3f}[$R_\\odot$] $\\rightarrow$ {freq_dens_blue_end:.2f}[MHz] @ {_freq_to_r(freq_dens_blue_end, density_model_data, harmonic=plasma_harmonic):.3f}[$R_\\odot$]",
             )
 
     t_line_red = dt.datetime.fromisoformat("2022-06-13T03:25:30")
@@ -712,11 +1179,24 @@ def plot_bandsplit_fig1_with_main_peak_points(
     secax = ax.secondary_yaxis(
         "right",
         functions=(
-            lambda f_mhz: _freq_to_r(f_mhz, branch="H", factor=model_factor),
-            lambda r_rs: _r_to_freq(r_rs, branch="H", factor=model_factor),
+            lambda f_mhz: _freq_to_r(
+                f_mhz,
+                density_model_data,
+                harmonic=plasma_harmonic,
+            ),
+            lambda r_rs: _r_to_freq(
+                r_rs,
+                density_model_data,
+                harmonic=plasma_harmonic,
+            ),
         ),
     )
-    secax.set_ylabel(f"Radial distance (Harmonic) [R$_\\odot$] ({model_factor}× Saito1977)", fontsize=14)
+    secax.set_ylabel(
+        "Heliocentric distance [R$_\\odot$]\n"
+        f"(harmonic={plasma_harmonic}; "
+        f"{density_model_data['scaled_display_label']})",
+        fontsize=14,
+    )
     secax.tick_params(axis="y", labelsize=12)
     secax.yaxis.set_major_locator(MultipleLocator(0.1))
     secax.yaxis.set_major_formatter(FuncFormatter(lambda val, _: f"{val:.1f}"))
@@ -741,14 +1221,24 @@ def main() -> None:
     end_time = "2022-06-13T03:37:00"
     min_frequency = 23
     max_frequency = 47
+    density_model = "saito_eq"
+    # Choose from: "saito_eq", "saito_eq_CH", "median_prior"
+    density_prior_npz = DEFAULT_DENSITY_PRIOR_NPZ
+    density_model_factor = 2.0
+    # ne_scaled(r) = density_model_factor * ne_model(r)
+    plasma_harmonic = 2
     use_removed_background = True
-    output_path = Path("/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/HF_plot/output/bandsplit_fig1_with_main_peak_points.png")
+    output_path = Path(f"/mnt/d/wsl/home/kinno-7010/Research_data/RadioData/HF_plot/output/bandsplit_fig1_with_main_peak_points_{density_model_factor}{density_model}.png")
 
     plot_bandsplit_fig1_with_main_peak_points(
         start_time=start_time,
         end_time=end_time,
         min_frequency=min_frequency,
         max_frequency=max_frequency,
+        density_model=density_model,
+        density_prior_npz=density_prior_npz,
+        density_model_factor=density_model_factor,
+        plasma_harmonic=plasma_harmonic,
         use_removed_background=use_removed_background,
         output_path=output_path,
         show=True,

@@ -704,7 +704,7 @@ def fit_monotonic_loglog_prior(
     # Enforce a physically non-increasing radial prior.  Since the knot grid has
     # no points inside excluded intervals, PAVA does not create an artificial
     # constant block there; the final PCHIP curve bridges the gap directly.
-    knot_log_ne = _pava_nonincreasing(knot_log_ne, weights=knot_weight)
+    # knot_log_ne = _pava_nonincreasing(knot_log_ne, weights=knot_weight)
     log_r_knots = np.log10(knot_r)
 
     fit_result = {
@@ -1558,7 +1558,7 @@ if __name__ == "__main__":
 
     # K-Cor/LASCO接続の影響が残る区間はprior fitから除外する。
     # データ点とエラーバーは表示するが、橙色のprior線の決定には使わない。
-    FIT_EXCLUDE_R_RANGES = [(2.3, 2.8)]
+    FIT_EXCLUDE_R_RANGES = [(2.2, 2.8)]
 
     # Tomographyの主使用範囲に合わせ、K-CorとLASCOの両方を含む範囲でfitする。
     main(

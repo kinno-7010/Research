@@ -48,9 +48,11 @@ try:
 except Exception as e:
     raise SystemExit("pyvista is required: pip install pyvista") from e
 import astropy.units as u
+from astropy.io import fits
 from astropy.time import Time
 from astropy.coordinates import SkyCoord, CartesianRepresentation
 from sunpy.coordinates import frames
+from sunpy.time import parse_time
 
 
 @dataclass
@@ -2148,6 +2150,36 @@ def add_spheroid_theta_bn_colormap(
 # -----------------------------------------------------------------------------
 # PFSS helpers (HMI -> PFSS -> 3D field-line overlay)
 # -----------------------------------------------------------------------------
+def _load_hmi_map_for_pfss(hmi_fits: str):
+    """
+    Load an HMI map, normalizing the non-standard CEA latitude unit used by
+    ``hmi.Mrdailysynframe_720s`` before SunPy validates the FITS metadata.
+    """
+    header = fits.getheader(hmi_fits)
+    cunit2 = str(header.get("CUNIT2", "")).strip().lower().replace(" ", "")
+    if cunit2 != "sin(deg)":
+        return sunpy.map.Map(hmi_fits)
+
+    data = fits.getdata(hmi_fits)
+    normalized_header = header.copy()
+    normalized_header["CUNIT1"] = "deg"
+    normalized_header["CUNIT2"] = "deg"
+    normalized_header["CDELT1"] = abs(float(normalized_header["CDELT1"]))
+    normalized_header["CDELT2"] = (
+        180.0 / np.pi
+    ) * float(normalized_header["CDELT2"])
+    # Daily synchronic frames move the current 120-degree strip to the leading
+    # map edge. The exported FITS longitude reference is therefore antipodal to
+    # the Carrington convention used by SunPy/PFSSPy.
+    normalized_header["CRVAL1"] = float(normalized_header["CRVAL1"]) + 180.0
+    if "DATE-OBS" not in normalized_header and "T_OBS" in normalized_header:
+        normalized_header["DATE-OBS"] = parse_time(
+            normalized_header["T_OBS"]
+        ).isot
+
+    return sunpy.map.Map(data, normalized_header)
+
+
 def compute_pfss_output_from_hmi(
     hmi_fits: str,
     *,
@@ -2155,13 +2187,22 @@ def compute_pfss_output_from_hmi(
     rss: float = 2.5,
     helio_shape: Tuple[int, int] = (180, 360),
     fill_nan: float = 0.0,
+    obstime_iso: Optional[str] = None,
 ):
     """
-    Compute PFSS solution from a single full-disk HMI magnetogram.
+    Compute a PFSS solution from either:
 
-    Key stability points:
-      - Limit threads (WSL/OpenMPの不安定化回避)
-      - Import pfsspy via _safe_import_pfsspy() (numbaブロックを一貫させる)
+      1. an HMI daily synchronic or polar-filled synoptic radial-field CEA map, or
+      2. the previous single full-disk HMI magnetogram input.
+
+    For ``hmi.Mrdailysynframe_720s`` and ``hmi.synoptic_mr_polfil_720s`` data,
+    the map is already a global Carrington CEA radial-field map. Its HMI
+    metadata are corrected, the map is resampled to ``helio_shape`` for
+    computational efficiency, and it is passed directly to ``pfsspy.Input``
+    without the full-disk -> CAR -> CEA conversion.
+
+    The legacy full-disk conversion is retained only as a fallback so that
+    unrelated behavior is unchanged.
     """
     # Limit threading to reduce segfault risk on some WSL/OpenMP stacks.
     os.environ.setdefault("NUMBA_NUM_THREADS", "1")
@@ -2171,65 +2212,137 @@ def compute_pfss_output_from_hmi(
 
     pfsspy, utils, _ = _safe_import_pfsspy()
 
-    hmi = sunpy.map.Map(hmi_fits)
+    hmi = _load_hmi_map_for_pfss(hmi_fits)
 
     nlat, nlon = int(helio_shape[0]), int(helio_shape[1])
     if nlat < 2 or nlon < 2:
         raise ValueError(f"helio_shape must be >= (2,2); got {helio_shape}")
 
-    # --- Build a CAR header that spans exactly 360 deg in longitude and 180 deg in latitude ---
-    cdelt1 = 360.0 / float(nlon)
-    cdelt2 = 180.0 / float(nlat)
+    ctype1 = str(hmi.meta.get("CTYPE1", "")).strip().upper()
+    ctype2 = str(hmi.meta.get("CTYPE2", "")).strip().upper()
+    is_synoptic_cea = (
+        ctype1 in {"CRLN-CEA", "HGLN-CEA"}
+        and ctype2 in {"CRLT-CEA", "HGLT-CEA"}
+    )
 
-    car_header = {
-        "NAXIS": 2,
-        "NAXIS1": nlon,
-        "NAXIS2": nlat,
-        "CTYPE1": "CRLN-CAR",
-        "CTYPE2": "CRLT-CAR",
-        "CUNIT1": "deg",
-        "CUNIT2": "deg",
-        "CDELT1": cdelt1,
-        "CDELT2": cdelt2,
-        "CRPIX1": (nlon / 2.0) + 0.5,
-        "CRPIX2": (nlat / 2.0) + 0.5,
-        "CRVAL1": 180.0,
-        "CRVAL2": 0.0,
-        "LONPOLE": 180.0,
-        "DATE-OBS": getattr(hmi.date, "isot", str(hmi.date)),
-    }
+    if is_synoptic_cea:
+        # HMI CEA maps contain non-standard metadata in some SunPy/pfsspy
+        # versions. The utility modifies the remaining metadata in place.
+        if hasattr(utils, "fix_hmi_meta"):
+            try:
+                utils.fix_hmi_meta(hmi)
+            except Exception as exc:
+                print(f"[WARN] HMI synoptic metadata correction was skipped: {exc}")
 
-    # Propagate useful metadata if present.
-    for key in (
-        "HGLN_OBS", "HGLT_OBS", "DSUN_OBS", "RSUN_REF", "RSUN_OBS",
-        "CRLN_OBS", "CRLT_OBS", "SOLAR_B0", "SOLAR_P0"
-    ):
-        if key in hmi.meta:
-            car_header[key] = hmi.meta[key]
+        # The input is already a global Carrington CEA map of Br. Resample in
+        # the native CEA pixel coordinates, preserving the projection while
+        # reducing the 3600x1440 map to the requested PFSS resolution.
+        if hmi.data.shape != (nlat, nlon):
+            bmap_cea = hmi.resample(
+                u.Quantity([nlon, nlat], u.pix),
+                method="linear",
+            )
+        else:
+            bmap_cea = hmi
 
-    if "RSUN_REF" not in car_header and "rsun_ref" in hmi.meta:
-        car_header["RSUN_REF"] = hmi.meta["rsun_ref"]
-    if "DSUN_OBS" not in car_header and "dsun_obs" in hmi.meta:
-        car_header["DSUN_OBS"] = hmi.meta["dsun_obs"]
+        cea_data = np.asarray(bmap_cea.data, dtype=float).copy()
+        cea_data[~np.isfinite(cea_data)] = float(fill_nan)
+        cea_meta = bmap_cea.meta.copy()
 
-    # ---- Reproject to CAR ----
-    bmap_car = hmi.reproject_to(car_header)
+        # Mx cm^-2 and gauss are physically identical. Using the FITS-standard
+        # gauss label allows Astropy/pfsspy to retain an explicit magnetic unit.
+        bunit_text = str(cea_meta.get("BUNIT", "")).strip().lower().replace(" ", "")
+        if bunit_text in {
+            "mx/cm^2",
+            "mx/cm2",
+            "mxcm-2",
+            "mxcm^-2",
+            "maxwell/cm^2",
+        }:
+            cea_meta["BUNIT"] = "G"
 
-    car_data = np.array(bmap_car.data, dtype=float)
-    car_data[~np.isfinite(car_data)] = float(fill_nan)
-    bmap_car = sunpy.map.Map(car_data, bmap_car.meta)
+        if obstime_iso is not None:
+            pfss_time = Time(obstime_iso)
+            cea_meta["DATE-OBS"] = pfss_time.isot
+            cea_meta["T_OBS"] = pfss_time.isot
+            try:
+                from sunpy.coordinates import get_body_heliographic_stonyhurst
 
-    # ---- Convert CAR -> CEA (pfsspy requirement) ----
-    cea_out = utils.car_to_cea(bmap_car)
-    if isinstance(cea_out, tuple) and len(cea_out) == 2:
-        cea_data, cea_meta = cea_out
+                earth_hgs = get_body_heliographic_stonyhurst("earth", pfss_time)
+                cea_meta["HGLN_OBS"] = float(earth_hgs.lon.to_value(u.deg))
+                cea_meta["HGLT_OBS"] = float(earth_hgs.lat.to_value(u.deg))
+                cea_meta["DSUN_OBS"] = float(earth_hgs.radius.to_value(u.m))
+                earth_hgc = earth_hgs.transform_to(
+                    frames.HeliographicCarrington(obstime=pfss_time, observer="earth")
+                )
+                cea_meta["CRLN_OBS"] = float(earth_hgc.lon.to_value(u.deg)) % 360.0
+                cea_meta["CRLT_OBS"] = float(earth_hgc.lat.to_value(u.deg))
+            except Exception as exc:
+                print(f"[WARN] PFSS observer metadata retime was incomplete: {exc}")
+
         bmap_cea = sunpy.map.Map(cea_data, cea_meta)
+        print(
+            "[INFO] PFSS input: HMI global radial-field synoptic CEA map; "
+            f"resampled to {bmap_cea.data.shape[1]}x{bmap_cea.data.shape[0]}, "
+            f"BUNIT={bmap_cea.meta.get('BUNIT', 'unknown')}, "
+            f"obstime={getattr(bmap_cea.date, 'isot', bmap_cea.date)}"
+        )
     else:
-        bmap_cea = cea_out
+        # Legacy fallback for a single full-disk HMI magnetogram. This branch
+        # preserves the previous behavior and is not used for the CEA inputs.
+        cdelt1 = 360.0 / float(nlon)
+        cdelt2 = 180.0 / float(nlat)
 
-    cea_data = np.array(bmap_cea.data, dtype=float)
-    cea_data[~np.isfinite(cea_data)] = float(fill_nan)
-    bmap_cea = sunpy.map.Map(cea_data, bmap_cea.meta)
+        car_header = {
+            "NAXIS": 2,
+            "NAXIS1": nlon,
+            "NAXIS2": nlat,
+            "CTYPE1": "CRLN-CAR",
+            "CTYPE2": "CRLT-CAR",
+            "CUNIT1": "deg",
+            "CUNIT2": "deg",
+            "CDELT1": cdelt1,
+            "CDELT2": cdelt2,
+            "CRPIX1": (nlon / 2.0) + 0.5,
+            "CRPIX2": (nlat / 2.0) + 0.5,
+            "CRVAL1": 180.0,
+            "CRVAL2": 0.0,
+            "LONPOLE": 180.0,
+            "DATE-OBS": getattr(hmi.date, "isot", str(hmi.date)),
+        }
+
+        for key in (
+            "HGLN_OBS", "HGLT_OBS", "DSUN_OBS", "RSUN_REF", "RSUN_OBS",
+            "CRLN_OBS", "CRLT_OBS", "SOLAR_B0", "SOLAR_P0"
+        ):
+            if key in hmi.meta:
+                car_header[key] = hmi.meta[key]
+
+        if "RSUN_REF" not in car_header and "rsun_ref" in hmi.meta:
+            car_header["RSUN_REF"] = hmi.meta["rsun_ref"]
+        if "DSUN_OBS" not in car_header and "dsun_obs" in hmi.meta:
+            car_header["DSUN_OBS"] = hmi.meta["dsun_obs"]
+
+        bmap_car = hmi.reproject_to(car_header)
+
+        car_data = np.array(bmap_car.data, dtype=float)
+        car_data[~np.isfinite(car_data)] = float(fill_nan)
+        bmap_car = sunpy.map.Map(car_data, bmap_car.meta)
+
+        cea_out = utils.car_to_cea(bmap_car)
+        if isinstance(cea_out, tuple) and len(cea_out) == 2:
+            cea_data, cea_meta = cea_out
+            bmap_cea = sunpy.map.Map(cea_data, cea_meta)
+        else:
+            bmap_cea = cea_out
+
+        cea_data = np.array(bmap_cea.data, dtype=float)
+        cea_data[~np.isfinite(cea_data)] = float(fill_nan)
+        bmap_cea = sunpy.map.Map(cea_data, bmap_cea.meta)
+        print(
+            "[WARN] PFSS input is not a Carrington CEA synoptic radial-field map; "
+            "using the legacy full-disk conversion."
+        )
 
     # ---- PFSS solve ----
     rss_val = float(rss)
@@ -2246,7 +2359,6 @@ def compute_pfss_output_from_hmi(
 
     pfss_output = pfsspy.pfss(pfss_input)
     return pfss_output, bmap_cea
-
 
 def build_visible_hemisphere_seeds(
     pfss_output,
@@ -2360,6 +2472,9 @@ def build_pfss_seeds_from_hmi_roi(
     margin_pix: int = 50,
     r_seed_rsun: float = 1.001,
     rng_seed: int = 42,
+    observer_lonlat_deg: Optional[Tuple[float, float]] = None,
+    visible_lon_half_width_deg: float = 90.0,
+    observer_screen_quadrant: Optional[str] = None,
 ):
     """
     2Dコードの define_field_line_seeds() と同等の seed 生成を、3D PFSS 用に提供する。
@@ -2439,8 +2554,68 @@ def build_pfss_seeds_from_hmi_roi(
     lat = lat.to(u.deg)
     good = np.isfinite(lon.value) & np.isfinite(lat.value)
 
+    if observer_lonlat_deg is not None:
+        obs_lon_deg = float(observer_lonlat_deg[0]) % 360.0
+        half_width = float(abs(visible_lon_half_width_deg))
+        lon_deg = lon.to_value(u.deg) % 360.0
+        dlon_deg = ((lon_deg - obs_lon_deg + 180.0) % 360.0) - 180.0
+
+        obs_lat_deg = float(observer_lonlat_deg[1])
+        obs_lon_rad = np.deg2rad(obs_lon_deg)
+        obs_lat_rad = np.deg2rad(obs_lat_deg)
+        observer_hat = np.array(
+            [
+                np.cos(obs_lat_rad) * np.cos(obs_lon_rad),
+                np.cos(obs_lat_rad) * np.sin(obs_lon_rad),
+                np.sin(obs_lat_rad),
+            ],
+            dtype=float,
+        )
+        lat_rad = lat.to_value(u.rad)
+        lon_rad = lon.to_value(u.rad)
+        surface_xyz = np.column_stack(
+            [
+                np.cos(lat_rad) * np.cos(lon_rad),
+                np.cos(lat_rad) * np.sin(lon_rad),
+                np.sin(lat_rad),
+            ]
+        )
+        good &= (surface_xyz @ observer_hat) >= 0.0
+        if half_width < 90.0:
+            good &= np.abs(dlon_deg) <= half_width
+
+        if observer_screen_quadrant is not None:
+            quadrant = str(observer_screen_quadrant).strip().lower()
+            valid_quadrants = {"upper_left", "upper_right", "lower_left", "lower_right"}
+            if quadrant not in valid_quadrants:
+                raise ValueError(
+                    f"observer_screen_quadrant must be one of {sorted(valid_quadrants)}; "
+                    f"got {observer_screen_quadrant!r}."
+                )
+
+            view_direction = -observer_hat
+            screen_right = np.cross(view_direction, np.array([0.0, 0.0, 1.0]))
+            right_norm = np.linalg.norm(screen_right)
+            if not np.isfinite(right_norm) or right_norm == 0.0:
+                raise RuntimeError("Could not construct the observer-plane horizontal axis.")
+            screen_right /= right_norm
+            screen_up = np.cross(screen_right, view_direction)
+            screen_up /= np.linalg.norm(screen_up)
+
+            screen_x = surface_xyz @ screen_right
+            screen_y = surface_xyz @ screen_up
+
+            if quadrant.endswith("left"):
+                good &= screen_x <= 0.0
+            else:
+                good &= screen_x >= 0.0
+            if quadrant.startswith("upper"):
+                good &= screen_y >= 0.0
+            else:
+                good &= screen_y <= 0.0
+
     if np.count_nonzero(good) == 0:
-        raise RuntimeError("All ROI seeds became invalid after transforming to PFSS frame (off-disk / WCS issue).")
+        raise RuntimeError("All ROI seeds became invalid after transforming to PFSS frame or applying the visibility filter.")
 
     seeds_out = SkyCoord(
         lon[good],
@@ -2456,6 +2631,7 @@ def add_pfss_from_hmi_3d_roi_seeds(
     obs0,
     *,
     hmi_fits: str,
+    obstime_iso: Optional[str] = None,
     rss: float = 2.5,
     nrho: int = 50,
     helio_shape: Tuple[int, int] = (180, 360),
@@ -2466,6 +2642,7 @@ def add_pfss_from_hmi_3d_roi_seeds(
     use_strong_field: bool = True,
     field_threshold: float = 200.0,
     max_lines: int = 300,
+    global_seed_lat_max_deg: float = 80.0,
     tracer_step_size: float = 0.01,
     tracer_max_steps: int = 20000,
     line_width: int = 5,
@@ -2473,31 +2650,90 @@ def add_pfss_from_hmi_3d_roi_seeds(
     open_color: str = "red",
     closed_color: str = "black",
     prefer_fortran: bool = True,
+    seed_view_quadrant: Optional[str] = None,
+    global_seed_mode: bool = False,
 ):
     """
     2DのPFSS（HMI ROI + 強磁場 seed）と同条件の seed を用いて、3D（PyVista）へ PFSS を描画する。
 
-    - seed は build_pfss_seeds_from_hmi_roi() で生成
+    - synoptic CEA入力では、PFSS計算に実際に使用したHMI mapの画素座標からseedを生成
+    - global_seed_mode=True の場合は、HMI CEA map全体の画素格子から全球seedを生成
+    - global_seed_mode=False の場合は、従来どおりEarth可視領域／指定象限に制限
     - open/closed は fline.open を優先し、無ければ終端半径でフォールバック
     - 色は open=open_color, closed=closed_color
     """
-    # PFSS解
+    # PFSS solution. For a synoptic CEA input, ``pfss_seed_map`` is the
+    # metadata-corrected and resampled global radial-field map used by PFSS.
     _, _, tracing = _safe_import_pfsspy()
-    pfss_output, _ = compute_pfss_output_from_hmi(
+    pfss_output, pfss_seed_map = compute_pfss_output_from_hmi(
         hmi_fits,
         nrho=nrho,
         rss=rss,
         helio_shape=helio_shape,
+        obstime_iso=obstime_iso,
     )
 
-    # HMI map（seed作成用）
-    hmi_map = sunpy.map.Map(hmi_fits)
+    source_hmi_map = _load_hmi_map_for_pfss(hmi_fits)
+    ctype1 = str(source_hmi_map.meta.get("CTYPE1", "")).strip().upper()
+    ctype2 = str(source_hmi_map.meta.get("CTYPE2", "")).strip().upper()
+    is_synoptic_cea = (
+        ctype1 in {"CRLN-CEA", "HGLN-CEA"}
+        and ctype2 in {"CRLT-CEA", "HGLT-CEA"}
+    )
 
-    # ROIが指定されなければ 2Dコードと同じ ROI を採用
-    if x_lims_pix is None or y_lims_pix is None:
-        x_lims_pix, y_lims_pix = hmi_roi_pixels_like_2d_script(hmi_map)
+    if is_synoptic_cea:
+        # A synoptic CEA map covers the complete Carrington surface.
+        hmi_map = pfss_seed_map
+        ny, nx = hmi_map.data.shape
+        if global_seed_mode:
+            # Use a uniform grid in the actual HMI CEA pixel coordinates.
+            # Keep the full longitude range while avoiding the CEA polar edge,
+            # where PythonTracer becomes singular. The reference PFSS renderer
+            # uses the same +/-80 degree seed limit.
+            x_lims_pix = (0, int(nx - 1))
+            row_world = hmi_map.pixel_to_world(
+                np.full(ny, 0.5 * (nx - 1), dtype=float) * u.pix,
+                np.arange(ny, dtype=float) * u.pix,
+            )
+            row_lat_deg = SkyCoord(row_world).lat.to_value(u.deg)
+            valid_rows = np.flatnonzero(
+                np.isfinite(row_lat_deg)
+                & (np.abs(row_lat_deg) <= float(global_seed_lat_max_deg))
+            )
+            if valid_rows.size == 0:
+                raise RuntimeError(
+                    "No global PFSS seed rows remain inside the latitude limit."
+                )
+            y_lims_pix = (int(valid_rows[0]), int(valid_rows[-1]))
+            seed_map_mode = (
+                "global HMI synoptic CEA pixel grid "
+                f"(|lat|<={float(global_seed_lat_max_deg):g} deg)"
+            )
+            observer_lonlat_deg = None
+            observer_screen_quadrant = None
+        else:
+            if x_lims_pix is None or y_lims_pix is None:
+                x_lims_pix = (0, int(nx))
+                y_lims_pix = (0, int(ny))
+            seed_map_mode = "Earth-visible HMI synoptic CEA radial field"
+            observer_lonlat_deg = getattr(obs0, "lonlat_deg", None)
+            observer_screen_quadrant = seed_view_quadrant
+    else:
+        # Preserve the original full-disk ROI behavior for legacy inputs.
+        hmi_map = source_hmi_map
+        if x_lims_pix is None or y_lims_pix is None:
+            x_lims_pix, y_lims_pix = hmi_roi_pixels_like_2d_script(hmi_map)
+        seed_map_mode = "legacy full-disk HMI ROI"
+        observer_lonlat_deg = None
+        observer_screen_quadrant = None
 
-    # seeds（2D同様）
+    # Always derive seeds from the actual HMI map pixels used by PFSS.
+    # Global mode uses a uniform full-map CEA pixel grid. Local mode preserves
+    # the original strong-field/ROI behavior.
+    global_synoptic_mode = bool(is_synoptic_cea and global_seed_mode)
+    effective_use_strong_field = bool(use_strong_field and not global_synoptic_mode)
+    effective_margin_pix = 0 if global_synoptic_mode else 50
+
     seeds = build_pfss_seeds_from_hmi_roi(
         hmi_map,
         pfss_output,
@@ -2505,11 +2741,43 @@ def add_pfss_from_hmi_3d_roi_seeds(
         y_lims_pix=y_lims_pix,
         n_seeds_x=int(n_seeds_x),
         n_seeds_y=int(n_seeds_y),
-        use_strong_field=bool(use_strong_field),
+        use_strong_field=effective_use_strong_field,
         field_threshold=float(field_threshold),
+        margin_pix=effective_margin_pix,
         r_seed_rsun=1.001,
         rng_seed=42,
+        observer_lonlat_deg=observer_lonlat_deg,
+        observer_screen_quadrant=observer_screen_quadrant,
     )
+
+    if seeds is None or len(seeds) == 0:
+        raise RuntimeError("No PFSS seeds were generated.")
+
+    n_seed_candidates = int(len(seeds))
+    if global_synoptic_mode and int(max_lines) > 0 and n_seed_candidates > int(max_lines):
+        # Keep the traced subset distributed over the complete CEA map instead
+        # of taking the first latitude rows from the flattened seed grid.
+        map_aspect = float(nx) / float(ny)
+        n_keep_x = min(
+            int(n_seeds_x),
+            max(1, int(np.ceil(np.sqrt(float(max_lines) * map_aspect)))),
+        )
+        n_keep_y = min(
+            int(n_seeds_y),
+            max(1, int(max_lines) // n_keep_x),
+        )
+        keep_x = np.unique(
+            np.rint(np.linspace(0, int(n_seeds_x) - 1, n_keep_x)).astype(int)
+        )
+        keep_y = np.unique(
+            np.rint(np.linspace(0, int(n_seeds_y) - 1, n_keep_y)).astype(int)
+        )
+        keep_indices = (
+            keep_y[:, None] * int(n_seeds_x) + keep_x[None, :]
+        ).ravel()
+        seeds = seeds[keep_indices]
+
+    n_seed_traced = int(min(len(seeds), int(max_lines))) if int(max_lines) > 0 else int(len(seeds))
 
     # tracer選択（2Dに合わせるなら FortranTracer 推奨）
     tracer = None
@@ -2553,12 +2821,26 @@ def add_pfss_from_hmi_3d_roi_seeds(
         raise RuntimeError("No available PFSS tracer backend (neither PythonTracer nor FortranTracer).")
 
     print(f"[INFO] PFSS tracer (ROI-seeds): {tracer_used}")
-    print(f"[INFO] ROI pixels: x={x_lims_pix}, y={y_lims_pix}, strong={use_strong_field}, thr={field_threshold:g} G, seeds={len(seeds)}")
+    print(
+        f"[INFO] PFSS seed map: {seed_map_mode}; "
+        f"pixels x={x_lims_pix}, y={y_lims_pix}, "
+        f"global={bool(is_synoptic_cea and global_seed_mode)}, "
+        f"strong={effective_use_strong_field}, "
+        f"thr={field_threshold:g} G, "
+        f"view_quadrant={observer_screen_quadrant}, "
+        f"seed_candidates={n_seed_candidates}, seed_traced={n_seed_traced}"
+    )
 
     n_open = 0
     n_closed = 0
     n_lines = 0
     lw = max(2, int(line_width))
+    target_hgc_frame = None
+    if obstime_iso is not None:
+        try:
+            target_hgc_frame = frames.HeliographicCarrington(obstime=Time(obstime_iso), observer="earth")
+        except TypeError:
+            target_hgc_frame = frames.HeliographicCarrington(obstime=Time(obstime_iso))
 
     for seed in seeds:
         if n_lines >= int(max_lines):
@@ -2591,6 +2873,8 @@ def add_pfss_from_hmi_3d_roi_seeds(
                 sc = getattr(fline, "coords", getattr(fline, "coordinates", None))
                 if sc is None:
                     continue
+                if target_hgc_frame is not None:
+                    sc = sc.transform_to(target_hgc_frame)
                 xyz = sc.cartesian.xyz.to_value(u.R_sun).T
             except Exception:
                 continue
@@ -2637,8 +2921,22 @@ def add_pfss_from_hmi_3d_roi_seeds(
         "n_open": int(n_open),
         "n_closed": int(n_closed),
         "tracer": tracer_used,
-        "seed_mode": "HMI_ROI_strong_field" if use_strong_field else "HMI_ROI_grid",
+        "seed_mode": (
+            "HMI_synoptic_CEA_global_grid"
+            if global_synoptic_mode
+            else "HMI_synoptic_CEA_strong_field"
+            if is_synoptic_cea and use_strong_field
+            else "HMI_synoptic_CEA_grid"
+            if is_synoptic_cea
+            else "HMI_ROI_strong_field"
+            if use_strong_field
+            else "HMI_ROI_grid"
+        ),
         "field_threshold_G": float(field_threshold),
+        "seed_view_quadrant": observer_screen_quadrant,
+        "global_seed_mode": bool(is_synoptic_cea and global_seed_mode),
+        "n_seed_candidates": int(n_seed_candidates),
+        "n_seed_traced": int(n_seed_traced),
         "x_lims_pix": tuple(map(int, x_lims_pix)),
         "y_lims_pix": tuple(map(int, y_lims_pix)),
         "pfss_output": pfss_output,
@@ -3148,14 +3446,17 @@ def main(
 
     DO_PFSS = True
     DO_THETA_BN = True
-    HMI_FITS = "/mnt/d/wsl/home/kinno-7010/Research_data/SDO/HMI/Rawdata/hmi.M_720s.20220613_030000_TAI.fits"
+    HMI_FITS = "/mnt/d/wsl/home/kinno-7010/Research_data/SDO/HMI/Rawdata/hmi.Mrdailysynframe_720s.20220613_000000_TAI.data.fits"
     PFSS_RSS = rss
     PFSS_NRHO = 80
 
-    PFSS_SEED_N_LON = 50
-    PFSS_SEED_N_LAT = 50
-    PFSS_MAX_LINES = 300
-    PFSS_FIELD_THRESHOLD = 50.0
+    PFSS_SEED_N_LON = 100
+    PFSS_SEED_N_LAT = 100
+    PFSS_MAX_LINES = 1000
+    PFSS_FIELD_THRESHOLD = 100.0
+    PFSS_SEED_LAT_MAX_DEG = 80.0
+    PFSS_GLOBAL_SEEDS = True
+    PFSS_SEED_VIEW_QUADRANT = None
 
     THETA_BN_CMAP = "turbo"
     THETA_BN_OPACITY = 1.0
@@ -3259,6 +3560,7 @@ def main(
                 p,
                 obs0,
                 hmi_fits=HMI_FITS,
+                obstime_iso=OBSTIME_ISO,
                 rss=PFSS_RSS,
                 nrho=PFSS_NRHO,
                 n_seeds_x=PFSS_SEED_N_LON,
@@ -3266,8 +3568,11 @@ def main(
                 use_strong_field=True,
                 field_threshold=PFSS_FIELD_THRESHOLD,
                 max_lines=PFSS_MAX_LINES,
+                global_seed_lat_max_deg=PFSS_SEED_LAT_MAX_DEG,
                 line_width=5,
                 opacity=1.0,
+                seed_view_quadrant=PFSS_SEED_VIEW_QUADRANT,
+                global_seed_mode=PFSS_GLOBAL_SEEDS,
                 open_color="red",
                 closed_color="black",
                 prefer_fortran=True,

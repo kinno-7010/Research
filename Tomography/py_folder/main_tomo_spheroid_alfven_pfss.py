@@ -118,7 +118,7 @@ COR1A_DATA_DIR = Path(
 )
 HMI_FITS = Path(
     "/mnt/d/wsl/home/kinno-7010/Research_data/SDO/HMI/Rawdata/"
-    "hmi.M_720s.20220613_030000_TAI.fits"
+    "hmi.synoptic_mr_polfil_720s.2258.Mr_polfil.fits"
 )
 DENSITY_PRIOR_FILE = Path(
     "/mnt/d/wsl/home/kinno-7010/Research_data/SDO_Mk4_SOHO/pB/"
@@ -171,12 +171,15 @@ PFSS_HELIO_SHAPE = (180, 360)
 PFSS_OUTSIDE_RSS_MODE = "mask"  # radial_extrapolation: Rssより外側をr^{-2}で外挿 | mask: Rssより外側は計算しない | raise: SpheroidがRssを超えた場合に計算を停止
 PFSS_SAMPLE_CHUNK_SIZE = 20_000
 
+PFSS_GLOBAL_SEEDS = True
 SHOW_PFSS_FIELD_LINES = True
-PFSS_SEED_N_X = 30
-PFSS_SEED_N_Y = 30
-PFSS_FIELD_THRESHOLD_G = 50.0
-PFSS_MAX_LINES = 300
-PFSS_LINE_WIDTH = 3
+PFSS_SEED_N_X = 50
+PFSS_SEED_N_Y = 50
+PFSS_FIELD_THRESHOLD_G = 30.0
+PFSS_MAX_LINES = 1000
+PFSS_LINE_WIDTH = 5
+# PFSS_SEED_VIEW_QUADRANT = "upper_left"
+PFSS_SEED_VIEW_QUADRANT = None
 
 # ---- Plasma composition ----
 # For n_He/n_H = 0.10 and complete ionization:
@@ -588,6 +591,177 @@ def build_density_interpolator(volume: TomographyVolume):
 
 
 # =============================================================================
+# PFSS solution from HMI
+# =============================================================================
+
+def compute_pfss_output_from_hmi(
+    overlay_module: ModuleType,
+    hmi_fits: Path,
+    *,
+    nrho: int = 50,
+    rss: float = 2.5,
+    helio_shape: Tuple[int, int] = (180, 360),
+    fill_nan: float = 0.0,
+    obstime_iso: Optional[str] = None,
+):
+    """
+    Compute PFSS from either a polar-filled HMI synoptic CEA radial-field map
+    or the legacy single full-disk HMI magnetogram input.
+
+    This is the PFSS-input procedure used by main_npz_thetaBn.py.  A synoptic
+    CEA map is metadata-corrected, resampled in its native projection, retimed
+    to the requested observation time, and passed directly to pfsspy.Input.
+    """
+    os.environ.setdefault("NUMBA_NUM_THREADS", "1")
+    os.environ.setdefault("OMP_NUM_THREADS", "1")
+    os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+    os.environ.setdefault("MKL_NUM_THREADS", "1")
+
+    pfsspy, utils, _ = overlay_module._safe_import_pfsspy()
+    hmi = sunpy.map.Map(str(hmi_fits))
+
+    nlat, nlon = int(helio_shape[0]), int(helio_shape[1])
+    if nlat < 2 or nlon < 2:
+        raise ValueError(f"helio_shape must be >= (2,2); got {helio_shape}")
+
+    ctype1 = str(hmi.meta.get("CTYPE1", "")).strip().upper()
+    ctype2 = str(hmi.meta.get("CTYPE2", "")).strip().upper()
+    is_synoptic_cea = (
+        ctype1 in {"CRLN-CEA", "HGLN-CEA"}
+        and ctype2 in {"CRLT-CEA", "HGLT-CEA"}
+    )
+
+    if is_synoptic_cea:
+        if hasattr(utils, "fix_hmi_meta"):
+            try:
+                utils.fix_hmi_meta(hmi)
+            except Exception as exc:
+                print(f"[WARN] HMI synoptic metadata correction was skipped: {exc}")
+
+        if hmi.data.shape != (nlat, nlon):
+            bmap_cea = hmi.resample(
+                u.Quantity([nlon, nlat], u.pix),
+                method="linear",
+            )
+        else:
+            bmap_cea = hmi
+
+        cea_data = np.asarray(bmap_cea.data, dtype=float).copy()
+        cea_data[~np.isfinite(cea_data)] = float(fill_nan)
+        cea_meta = bmap_cea.meta.copy()
+
+        bunit_text = str(cea_meta.get("BUNIT", "")).strip().lower().replace(" ", "")
+        if bunit_text in {
+            "mx/cm^2",
+            "mx/cm2",
+            "mxcm-2",
+            "mxcm^-2",
+            "maxwell/cm^2",
+        }:
+            cea_meta["BUNIT"] = "G"
+
+        if obstime_iso is not None:
+            pfss_time = Time(obstime_iso)
+            cea_meta["DATE-OBS"] = pfss_time.isot
+            cea_meta["T_OBS"] = pfss_time.isot
+            try:
+                from sunpy.coordinates import get_body_heliographic_stonyhurst
+
+                earth_hgs = get_body_heliographic_stonyhurst("earth", pfss_time)
+                cea_meta["HGLN_OBS"] = float(earth_hgs.lon.to_value(u.deg))
+                cea_meta["HGLT_OBS"] = float(earth_hgs.lat.to_value(u.deg))
+                cea_meta["DSUN_OBS"] = float(earth_hgs.radius.to_value(u.m))
+                earth_hgc = earth_hgs.transform_to(
+                    frames.HeliographicCarrington(
+                        obstime=pfss_time,
+                        observer="earth",
+                    )
+                )
+                cea_meta["CRLN_OBS"] = (
+                    float(earth_hgc.lon.to_value(u.deg)) % 360.0
+                )
+                cea_meta["CRLT_OBS"] = float(earth_hgc.lat.to_value(u.deg))
+            except Exception as exc:
+                print(f"[WARN] PFSS observer metadata retime was incomplete: {exc}")
+
+        bmap_cea = sunpy.map.Map(cea_data, cea_meta)
+        print(
+            "[INFO] PFSS input: HMI global radial-field synoptic CEA map; "
+            f"resampled to {bmap_cea.data.shape[1]}x{bmap_cea.data.shape[0]}, "
+            f"BUNIT={bmap_cea.meta.get('BUNIT', 'unknown')}, "
+            f"obstime={getattr(bmap_cea.date, 'isot', bmap_cea.date)}"
+        )
+    else:
+        cdelt1 = 360.0 / float(nlon)
+        cdelt2 = 180.0 / float(nlat)
+
+        car_header = {
+            "NAXIS": 2,
+            "NAXIS1": nlon,
+            "NAXIS2": nlat,
+            "CTYPE1": "CRLN-CAR",
+            "CTYPE2": "CRLT-CAR",
+            "CUNIT1": "deg",
+            "CUNIT2": "deg",
+            "CDELT1": cdelt1,
+            "CDELT2": cdelt2,
+            "CRPIX1": (nlon / 2.0) + 0.5,
+            "CRPIX2": (nlat / 2.0) + 0.5,
+            "CRVAL1": 180.0,
+            "CRVAL2": 0.0,
+            "LONPOLE": 180.0,
+            "DATE-OBS": getattr(hmi.date, "isot", str(hmi.date)),
+        }
+
+        for key in (
+            "HGLN_OBS", "HGLT_OBS", "DSUN_OBS", "RSUN_REF", "RSUN_OBS",
+            "CRLN_OBS", "CRLT_OBS", "SOLAR_B0", "SOLAR_P0",
+        ):
+            if key in hmi.meta:
+                car_header[key] = hmi.meta[key]
+
+        if "RSUN_REF" not in car_header and "rsun_ref" in hmi.meta:
+            car_header["RSUN_REF"] = hmi.meta["rsun_ref"]
+        if "DSUN_OBS" not in car_header and "dsun_obs" in hmi.meta:
+            car_header["DSUN_OBS"] = hmi.meta["dsun_obs"]
+
+        bmap_car = hmi.reproject_to(car_header)
+        car_data = np.array(bmap_car.data, dtype=float)
+        car_data[~np.isfinite(car_data)] = float(fill_nan)
+        bmap_car = sunpy.map.Map(car_data, bmap_car.meta)
+
+        cea_out = utils.car_to_cea(bmap_car)
+        if isinstance(cea_out, tuple) and len(cea_out) == 2:
+            cea_data, cea_meta = cea_out
+            bmap_cea = sunpy.map.Map(cea_data, cea_meta)
+        else:
+            bmap_cea = cea_out
+
+        cea_data = np.array(bmap_cea.data, dtype=float)
+        cea_data[~np.isfinite(cea_data)] = float(fill_nan)
+        bmap_cea = sunpy.map.Map(cea_data, bmap_cea.meta)
+        print(
+            "[WARN] PFSS input is not a Carrington CEA synoptic radial-field map; "
+            "using the legacy full-disk conversion."
+        )
+
+    rss_val = float(rss)
+    try:
+        pfss_input = pfsspy.Input(bmap_cea, nrho=nrho, rss=rss_val)
+    except TypeError as exc:
+        if "unexpected keyword argument" in str(exc) and "nrho" in str(exc):
+            try:
+                pfss_input = pfsspy.Input(bmap_cea, nrho, rss=rss_val)
+            except TypeError:
+                pfss_input = pfsspy.Input(bmap_cea, nrho, rss_val)
+        else:
+            raise
+
+    pfss_output = pfsspy.pfss(pfss_input)
+    return pfss_output, bmap_cea
+
+
+# =============================================================================
 # PFSS field sampling
 # =============================================================================
 
@@ -807,46 +981,286 @@ def build_and_sample_spheroid(
 # PFSS line rendering without recomputing the PFSS solution
 # =============================================================================
 
+def hmi_roi_pixels_like_2d_script(hmi_map):
+    """Return the legacy full-disk HMI ROI used by main_npz_thetaBn.py."""
+    data = hmi_map.data
+    ny, nx = data.shape
+    center_x, center_y = nx // 2, ny // 2
+
+    x_min_pix, x_max_pix = center_x - 512, center_x + 100
+    y_min_pix, y_max_pix = center_y - 100, center_y + 512
+
+    x_min_pix = int(np.clip(x_min_pix, 0, nx - 1))
+    x_max_pix = int(np.clip(x_max_pix, 1, nx))
+    y_min_pix = int(np.clip(y_min_pix, 0, ny - 1))
+    y_max_pix = int(np.clip(y_max_pix, 1, ny))
+
+    if x_max_pix <= x_min_pix:
+        x_min_pix, x_max_pix = 0, nx
+    if y_max_pix <= y_min_pix:
+        y_min_pix, y_max_pix = 0, ny
+
+    return (x_min_pix, x_max_pix), (y_min_pix, y_max_pix)
+
+
+def build_pfss_seeds_from_hmi_roi(
+    hmi_map,
+    pfss_output,
+    *,
+    x_lims_pix,
+    y_lims_pix,
+    n_seeds_x: int = 20,
+    n_seeds_y: int = 20,
+    use_strong_field: bool = True,
+    field_threshold: float = 200.0,
+    margin_pix: int = 50,
+    r_seed_rsun: float = 1.001,
+    rng_seed: int = 42,
+    observer_lonlat_deg: Optional[Tuple[float, float]] = None,
+    visible_lon_half_width_deg: float = 90.0,
+    observer_screen_quadrant: Optional[str] = None,
+):
+    """Build the strong-field PFSS seeds used by main_npz_thetaBn.py."""
+    xmin, xmax = map(int, x_lims_pix)
+    ymin, ymax = map(int, y_lims_pix)
+
+    if use_strong_field:
+        roi = np.array(hmi_map.data[ymin:ymax, xmin:xmax], dtype=float)
+        abs_roi = np.abs(roi)
+        mask = np.isfinite(abs_roi) & (abs_roi > float(field_threshold))
+        yy, xx = np.where(mask)
+
+        if xx.size == 0:
+            use_strong_field = False
+        else:
+            n_target = int(min(n_seeds_x * n_seeds_y, xx.size))
+            rng = np.random.default_rng(int(rng_seed))
+            if xx.size > n_target:
+                pick = rng.choice(xx.size, size=n_target, replace=False)
+                xx = xx[pick]
+                yy = yy[pick]
+
+            x_pixels = xx + xmin
+            y_pixels = yy + ymin
+
+    if not use_strong_field:
+        x0 = xmin + int(margin_pix)
+        x1 = xmax - int(margin_pix)
+        y0 = ymin + int(margin_pix)
+        y1 = ymax - int(margin_pix)
+
+        if x1 <= x0:
+            x0, x1 = xmin, xmax
+        if y1 <= y0:
+            y0, y1 = ymin, ymax
+
+        x_1d = np.linspace(x0, x1, int(n_seeds_x))
+        y_1d = np.linspace(y0, y1, int(n_seeds_y))
+        x_grid, y_grid = np.meshgrid(x_1d, y_1d, indexing="xy")
+        x_pixels = x_grid.ravel()
+        y_pixels = y_grid.ravel()
+
+    seeds_world = hmi_map.pixel_to_world(
+        x_pixels * u.pixel,
+        y_pixels * u.pixel,
+    )
+    if not isinstance(seeds_world, SkyCoord):
+        seeds_world = SkyCoord(seeds_world)
+
+    try:
+        seeds_pfss = seeds_world.transform_to(pfss_output.coordinate_frame)
+    except Exception:
+        seeds_pfss = SkyCoord(seeds_world).transform_to(
+            pfss_output.coordinate_frame
+        )
+
+    lon = getattr(seeds_pfss, "lon", None)
+    lat = getattr(seeds_pfss, "lat", None)
+    if lon is None or lat is None:
+        raise RuntimeError(
+            "Seeds could not be represented with lon/lat in the PFSS coordinate frame."
+        )
+
+    lon = lon.to(u.deg)
+    lat = lat.to(u.deg)
+    good = np.isfinite(lon.value) & np.isfinite(lat.value)
+
+    if observer_lonlat_deg is not None:
+        obs_lon_deg = float(observer_lonlat_deg[0]) % 360.0
+        half_width = float(abs(visible_lon_half_width_deg))
+        lon_deg = lon.to_value(u.deg) % 360.0
+        dlon_deg = ((lon_deg - obs_lon_deg + 180.0) % 360.0) - 180.0
+        good &= np.abs(dlon_deg) <= half_width
+
+        if observer_screen_quadrant is not None:
+            quadrant = str(observer_screen_quadrant).strip().lower()
+            valid_quadrants = {
+                "upper_left",
+                "upper_right",
+                "lower_left",
+                "lower_right",
+            }
+            if quadrant not in valid_quadrants:
+                raise ValueError(
+                    "observer_screen_quadrant must be one of "
+                    f"{sorted(valid_quadrants)}; got {observer_screen_quadrant!r}."
+                )
+
+            obs_lat_deg = float(observer_lonlat_deg[1])
+            obs_lon_rad = np.deg2rad(obs_lon_deg)
+            obs_lat_rad = np.deg2rad(obs_lat_deg)
+            observer_hat = np.array(
+                [
+                    np.cos(obs_lat_rad) * np.cos(obs_lon_rad),
+                    np.cos(obs_lat_rad) * np.sin(obs_lon_rad),
+                    np.sin(obs_lat_rad),
+                ],
+                dtype=float,
+            )
+            view_direction = -observer_hat
+            screen_right = np.cross(
+                view_direction,
+                np.array([0.0, 0.0, 1.0]),
+            )
+            right_norm = np.linalg.norm(screen_right)
+            if not np.isfinite(right_norm) or right_norm == 0.0:
+                raise RuntimeError(
+                    "Could not construct the observer-plane horizontal axis."
+                )
+            screen_right /= right_norm
+            screen_up = np.cross(screen_right, view_direction)
+            screen_up /= np.linalg.norm(screen_up)
+
+            lat_rad = lat.to_value(u.rad)
+            lon_rad = lon.to_value(u.rad)
+            surface_xyz = np.column_stack(
+                [
+                    np.cos(lat_rad) * np.cos(lon_rad),
+                    np.cos(lat_rad) * np.sin(lon_rad),
+                    np.sin(lat_rad),
+                ]
+            )
+            screen_x = surface_xyz @ screen_right
+            screen_y = surface_xyz @ screen_up
+
+            if quadrant.endswith("left"):
+                good &= screen_x <= 0.0
+            else:
+                good &= screen_x >= 0.0
+            if quadrant.startswith("upper"):
+                good &= screen_y >= 0.0
+            else:
+                good &= screen_y <= 0.0
+
+    if np.count_nonzero(good) == 0:
+        raise RuntimeError(
+            "All ROI seeds became invalid after transforming to PFSS frame "
+            "or applying the visibility filter."
+        )
+
+    return SkyCoord(
+        lon[good],
+        lat[good],
+        float(r_seed_rsun) * u.R_sun,
+        frame=pfss_output.coordinate_frame,
+    )
+
+
 def add_pfss_field_lines_from_output(
     plotter: pv.Plotter,
     overlay_module: ModuleType,
     pfss_output,
+    pfss_seed_map,
+    obs0,
     *,
     hmi_fits: Path,
     obstime_iso: str,
 ) -> dict:
+    """Render PFSS lines with the seed selection used by main_npz_thetaBn.py."""
     _, _, tracing = overlay_module._safe_import_pfsspy()
-    hmi_map = sunpy.map.Map(str(hmi_fits))
-    x_lims, y_lims = overlay_module.hmi_roi_pixels_like_2d_script(hmi_map)
-    seeds = overlay_module.build_pfss_seeds_from_hmi_roi(
+
+    source_hmi_map = sunpy.map.Map(str(hmi_fits))
+    ctype1 = str(source_hmi_map.meta.get("CTYPE1", "")).strip().upper()
+    ctype2 = str(source_hmi_map.meta.get("CTYPE2", "")).strip().upper()
+    is_synoptic_cea = (
+        ctype1 in {"CRLN-CEA", "HGLN-CEA"}
+        and ctype2 in {"CRLT-CEA", "HGLT-CEA"}
+    )
+
+    if is_synoptic_cea:
+        hmi_map = pfss_seed_map
+        ny, nx = hmi_map.data.shape
+        x_lims = (0, int(nx))
+        y_lims = (0, int(ny))
+        seed_map_mode = "Earth-visible HMI synoptic CEA radial field"
+        # observer_lonlat_deg = getattr(obs0, "lonlat_deg", None)
+        # observer_screen_quadrant = PFSS_SEED_VIEW_QUADRANT
+        observer_lonlat_deg = None
+        observer_screen_quadrant = None
+    else:
+        hmi_map = source_hmi_map
+        x_lims, y_lims = hmi_roi_pixels_like_2d_script(hmi_map)
+        seed_map_mode = "legacy full-disk HMI ROI"
+        observer_lonlat_deg = None
+        observer_screen_quadrant = None
+
+    seeds = build_pfss_seeds_from_hmi_roi(
         hmi_map,
         pfss_output,
         x_lims_pix=x_lims,
         y_lims_pix=y_lims,
         n_seeds_x=PFSS_SEED_N_X,
         n_seeds_y=PFSS_SEED_N_Y,
-        use_strong_field=True,
+        use_strong_field=False,
         field_threshold=PFSS_FIELD_THRESHOLD_G,
         r_seed_rsun=1.001,
         rng_seed=42,
+        observer_lonlat_deg=observer_lonlat_deg,
+        observer_screen_quadrant=observer_screen_quadrant,
     )
 
     tracer = None
     tracer_name = None
+
     if hasattr(tracing, "FortranTracer"):
         try:
             tracer = tracing.FortranTracer(max_steps="auto", step_size=1.0)
-            tracer_name = "FortranTracer"
+            tracer_name = "FortranTracer(max_steps='auto', step_size=1)"
+        except TypeError:
+            try:
+                tracer = tracing.FortranTracer(max_steps=2000, step_size=1.0)
+                tracer_name = "FortranTracer(max_steps=2000, step_size=1)"
+            except Exception:
+                tracer = None
         except Exception:
             tracer = None
+
     if tracer is None and hasattr(tracing, "PythonTracer"):
-        tracer = tracing.PythonTracer(atol=1.0e-4, rtol=1.0e-4)
-        tracer_name = "PythonTracer"
+        try:
+            tracer = tracing.PythonTracer(atol=1.0e-4, rtol=1.0e-4)
+            tracer_name = "PythonTracer"
+        except Exception:
+            tracer = None
+
     if tracer is None:
-        raise RuntimeError("No usable pfsspy tracer backend.")
+        raise RuntimeError(
+            "No available PFSS tracer backend "
+            "(neither PythonTracer nor FortranTracer)."
+        )
+
+    print(f"[INFO] PFSS tracer (ROI-seeds): {tracer_name}")
+    print(
+        f"[INFO] PFSS seed map: {seed_map_mode}; "
+        f"pixels x={x_lims}, y={y_lims}, "
+        f"strong=True, thr={PFSS_FIELD_THRESHOLD_G:g} G, "
+        f"view_quadrant={observer_screen_quadrant}, seeds={len(seeds)}"
+    )
 
     target_frame = _hgc_frame(obstime_iso)
-    n_lines = n_open = n_closed = 0
+    n_lines = 0
+    n_open = 0
+    n_closed = 0
+
     for seed in seeds:
         if n_lines >= PFSS_MAX_LINES:
             break
@@ -856,6 +1270,7 @@ def add_pfss_field_lines_from_output(
             continue
         if container is None:
             continue
+
         field_lines = getattr(container, "field_lines", None)
         if field_lines is None:
             field_lines = [container]
@@ -863,6 +1278,13 @@ def add_pfss_field_lines_from_output(
         for field_line in field_lines:
             if n_lines >= PFSS_MAX_LINES:
                 break
+
+            is_open = None
+            if hasattr(field_line, "open"):
+                is_open = bool(field_line.open)
+            elif hasattr(field_line, "is_open"):
+                is_open = bool(field_line.is_open)
+
             coords = getattr(
                 field_line,
                 "coords",
@@ -875,20 +1297,33 @@ def add_pfss_field_lines_from_output(
                 xyz = coords_hgc.cartesian.xyz.to_value(u.R_sun).T
             except Exception:
                 continue
-            if xyz.ndim != 2 or xyz.shape[0] < 2 or not np.all(np.isfinite(xyz)):
+
+            if xyz.ndim != 2 or xyz.shape[0] < 2 or xyz.shape[1] != 3:
+                continue
+            if not np.all(np.isfinite(xyz)):
+                continue
+            if np.nanmax(np.abs(xyz)) > 1.0e3:
                 continue
 
-            is_open = bool(
-                getattr(field_line, "open", getattr(field_line, "is_open", False))
-            )
-            color = "red" if is_open else "black"
-            n_open += int(is_open)
-            n_closed += int(not is_open)
+            if is_open is None:
+                try:
+                    end_r = coords_hgc.radius[-1].to_value(u.R_sun)
+                    is_open = bool(end_r > 2.0)
+                except Exception:
+                    is_open = False
+
+            if is_open:
+                n_open += 1
+                color = "red"
+            else:
+                n_closed += 1
+                color = "black"
+
             plotter.add_mesh(
                 overlay_module._polyline_from_points(xyz),
                 color=color,
-                line_width=int(PFSS_LINE_WIDTH),
-                opacity=0.85,
+                line_width=max(2, int(PFSS_LINE_WIDTH)),
+                opacity=1.0,
                 lighting=False,
                 render_lines_as_tubes=True,
                 pickable=False,
@@ -896,14 +1331,25 @@ def add_pfss_field_lines_from_output(
             n_lines += 1
 
     print(
-        f"[INFO] PFSS lines rendered from existing solution: total={n_lines}, "
-        f"open={n_open}, closed={n_closed}, tracer={tracer_name}"
+        f"[INFO] PFSS(ROI-seeds) lines: total={n_lines}, "
+        f"open={n_open}, closed={n_closed}"
     )
     return {
-        "n_lines": n_lines,
-        "n_open": n_open,
-        "n_closed": n_closed,
+        "rss": float(PFSS_RSS),
+        "nrho": int(PFSS_NRHO),
+        "n_lines": int(n_lines),
+        "n_open": int(n_open),
+        "n_closed": int(n_closed),
         "tracer": tracer_name,
+        "seed_mode": (
+            "HMI_synoptic_CEA_strong_field"
+            if is_synoptic_cea
+            else "HMI_ROI_strong_field"
+        ),
+        "field_threshold_G": float(PFSS_FIELD_THRESHOLD_G),
+        "seed_view_quadrant": observer_screen_quadrant,
+        "x_lims_pix": tuple(map(int, x_lims)),
+        "y_lims_pix": tuple(map(int, y_lims)),
     }
 
 
@@ -940,6 +1386,7 @@ def render_scene(
     overlay_module: ModuleType,
     volume: TomographyVolume,
     pfss_output,
+    pfss_seed_map,
     spheroid_params,
     sampled: SpheroidSampling,
 ) -> None:
@@ -1000,6 +1447,8 @@ def render_scene(
                 plotter,
                 overlay_module,
                 pfss_output,
+                pfss_seed_map,
+                volume.observer,
                 hmi_fits=HMI_FITS,
                 obstime_iso=SPHEROID_TIME_ISO,
             )
@@ -1165,11 +1614,13 @@ def main() -> None:
     volume = load_tomography_volume(npz_path, overlay_module)
 
     print(f"[INFO] Computing PFSS from HMI: {HMI_FITS}")
-    pfss_output, _ = overlay_module.compute_pfss_output_from_hmi(
-        str(HMI_FITS),
+    pfss_output, pfss_seed_map = compute_pfss_output_from_hmi(
+        overlay_module,
+        HMI_FITS,
         nrho=PFSS_NRHO,
         rss=PFSS_RSS,
         helio_shape=PFSS_HELIO_SHAPE,
+        obstime_iso=SPHEROID_TIME_ISO,
     )
 
     spheroid_params, sampled = build_and_sample_spheroid(
@@ -1182,6 +1633,7 @@ def main() -> None:
         overlay_module,
         volume,
         pfss_output,
+        pfss_seed_map,
         spheroid_params,
         sampled,
     )
